@@ -53,27 +53,27 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
   ];
 
   return (
-    <section id="community" className="py-20 bg-white border-b-2 border-black">
+    <section id="community" className="py-20 bg-[#080812]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Header */}
         <div className="text-center max-w-3xl mx-auto mb-12">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#C15D00' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#C15D00' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               Peer Learning & Community
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-4">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
             Making things is better together.
           </h2>
-          <p className="text-base sm:text-lg text-black font-medium leading-relaxed">
+          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
             Have a question, a challenge or an idea you can’t stop thinking about? Find other builders who are ready to think, experiment and figure things out with you.
           </p>
         </div>
 
         {/* Community Channel Tabs & Action */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8 pb-4 border-b-2 border-black/10">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8 pb-4 border-b border-white/15">
           <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto" role="tablist">
             {channels.map((chan) => {
               const isActive = activeChannel === chan.id;
@@ -83,10 +83,10 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
                   role="tab"
                   aria-selected={isActive}
                   onClick={() => setActiveChannel(chan.id)}
-                  className={`px-3.5 py-1.5 text-xs sm:text-sm font-bold rounded-xl border-2 border-black transition-all cursor-pointer ${
+                  className={`px-3.5 py-1.5 text-xs sm:text-sm font-bold rounded-xl border-2 transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-[#B11469] text-white brand-shadow-sm -translate-y-0.5'
-                      : 'bg-white text-black hover:bg-black/5'
+                      ? 'bg-[#B11469] text-white border-white/30 brand-shadow -translate-y-0.5'
+                      : 'bg-white/5 border-white/15 text-white hover:bg-white/10'
                   }`}
                 >
                   {chan.label}
@@ -113,49 +113,51 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
             return (
               <div
                 key={post.id}
-                className="bg-white rounded-2xl border-2 border-black brand-shadow p-6 transition-all"
+                className="bg-[#10101c]/95 backdrop-blur-md rounded-2xl border-2 border-white/20 brand-shadow p-6 transition-all text-white"
               >
                 {/* Author Info & Channel Tag */}
                 <div className="flex items-center justify-between gap-4 mb-3">
                   <div className="flex items-center gap-3">
                     <div
-                      className="w-10 h-10 rounded-full border-2 border-black flex items-center justify-center font-bold text-xs"
+                      className="w-10 h-10 rounded-full border-2 border-black flex items-center justify-center font-bold text-xs text-black"
                       style={{ backgroundColor: post.author.avatarBg }}
                     >
                       {post.author.name.charAt(0)}
                     </div>
                     <div>
-                      <div className="text-sm font-bold text-black flex items-center gap-2">
+                      <div className="text-sm font-bold text-white flex items-center gap-2">
                         <span>{post.author.name}</span>
-                        <span className="text-xs font-normal text-black/60">• {post.author.grade}</span>
+                        <span className="text-xs font-normal text-white/60">• {post.author.grade}</span>
                       </div>
-                      <div className="text-xs text-black/60">
+                      <div className="text-xs text-white/60">
                         {post.author.school}
                       </div>
                     </div>
                   </div>
 
-                  <span className="text-[11px] font-bold text-black/70 px-2.5 py-1 rounded-md bg-black/5 border border-black/10">
+                  <span className="text-[11px] font-bold text-white/70 px-2.5 py-1 rounded-md bg-white/10 border border-white/15">
                     {post.timestamp}
                   </span>
                 </div>
 
                 {/* Title & Question */}
-                <h3 className="font-chewy text-2xl text-black mb-2 hover:text-[#B11469] transition-colors">
+                <h3 className="font-chewy text-2xl text-white mb-2 hover:text-[#FFF025] transition-colors">
                   {post.title}
                 </h3>
-                <p className="text-sm text-black leading-relaxed mb-5">
+                <p className="text-sm text-white/85 leading-relaxed mb-5">
                   {post.question}
                 </p>
 
                 {/* Reaction Controls & Reply Button */}
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t-2 border-black/10">
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/15">
                   <div className="flex items-center gap-2">
                     {/* Heart Reaction */}
                     <button
                       onClick={() => handleToggleReaction(post.id, 'hearts')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 border-black text-xs font-bold transition-all cursor-pointer ${
-                        post.userReacted?.hearts ? 'bg-[#FFF025] brand-shadow-sm' : 'bg-white hover:bg-black/5'
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 text-xs font-bold transition-all cursor-pointer ${
+                        post.userReacted?.hearts
+                          ? 'bg-[#FFF025] text-black border-black brand-shadow'
+                          : 'bg-white/10 text-white border-white/20 hover:bg-white/15'
                       }`}
                       aria-label="React with Heart"
                     >
@@ -166,8 +168,10 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
                     {/* Bulb Reaction */}
                     <button
                       onClick={() => handleToggleReaction(post.id, 'bulbs')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 border-black text-xs font-bold transition-all cursor-pointer ${
-                        post.userReacted?.bulbs ? 'bg-[#FFF025] brand-shadow-sm' : 'bg-white hover:bg-black/5'
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 text-xs font-bold transition-all cursor-pointer ${
+                        post.userReacted?.bulbs
+                          ? 'bg-[#FFF025] text-black border-black brand-shadow'
+                          : 'bg-white/10 text-white border-white/20 hover:bg-white/15'
                       }`}
                       aria-label="React with Idea Bulb"
                     >
@@ -178,8 +182,10 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
                     {/* Rocket Reaction */}
                     <button
                       onClick={() => handleToggleReaction(post.id, 'rockets')}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 border-black text-xs font-bold transition-all cursor-pointer ${
-                        post.userReacted?.rockets ? 'bg-[#FFF025] brand-shadow-sm' : 'bg-white hover:bg-black/5'
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border-2 text-xs font-bold transition-all cursor-pointer ${
+                        post.userReacted?.rockets
+                          ? 'bg-[#FFF025] text-black border-black brand-shadow'
+                          : 'bg-white/10 text-white border-white/20 hover:bg-white/15'
                       }`}
                       aria-label="React with Rocket"
                     >
@@ -192,7 +198,7 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
                     onClick={() =>
                       setExpandedReplies((prev) => ({ ...prev, [post.id]: !isExpanded }))
                     }
-                    className="inline-flex items-center gap-1.5 text-xs font-bold text-black hover:text-[#B11469] cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-white hover:text-[#FFF025] cursor-pointer"
                   >
                     <MessageSquare className="w-4 h-4" />
                     <span>{post.repliesCount} {post.repliesCount === 1 ? 'Reply' : 'Replies'}</span>
@@ -201,17 +207,17 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
 
                 {/* Expanded Replies Thread */}
                 {isExpanded && (
-                  <div className="mt-4 pt-4 border-t border-black/15 space-y-3">
+                  <div className="mt-4 pt-4 border-t border-white/15 space-y-3">
                     {post.replies.map((reply) => (
                       <div
                         key={reply.id}
-                        className="p-3.5 rounded-xl border border-black/20 bg-black/5 text-xs"
+                        className="p-3.5 rounded-xl border border-white/15 bg-white/5 text-xs text-white"
                       >
-                        <div className="flex items-center justify-between font-bold text-black mb-1">
-                          <span>{reply.author} <span className="font-normal text-black/60">({reply.school})</span></span>
-                          <span className="text-black/50 text-[10px]">{reply.timestamp}</span>
+                        <div className="flex items-center justify-between font-bold text-white mb-1">
+                          <span>{reply.author} <span className="font-normal text-white/60">({reply.school})</span></span>
+                          <span className="text-white/50 text-[10px]">{reply.timestamp}</span>
                         </div>
-                        <p className="text-black leading-relaxed">{reply.text}</p>
+                        <p className="text-white/85 leading-relaxed">{reply.text}</p>
                       </div>
                     ))}
 
@@ -227,7 +233,7 @@ export const CommunityPreview: React.FC<CommunityPreviewProps> = ({
                           if (e.key === 'Enter') handleSendReply(post.id);
                         }}
                         placeholder="Write a helpful tip or encouraging word..."
-                        className="flex-1 px-3 py-2 text-xs font-medium border-2 border-black rounded-xl bg-white text-black placeholder:text-black/40 focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                        className="flex-1 px-3 py-2 text-xs font-medium border-2 border-white/20 rounded-xl bg-white/10 text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#FFF025]"
                       />
                       <button
                         onClick={() => handleSendReply(post.id)}

@@ -25,9 +25,9 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-project-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/70 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-md overflow-y-auto"
     >
-      <div className="relative w-full max-w-3xl bg-white rounded-3xl border-2 border-black brand-shadow-lg overflow-hidden my-8">
+      <div className="relative w-full max-w-3xl bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow overflow-hidden my-8 shadow-2xl">
         
         {/* Header Bar */}
         <div
@@ -36,11 +36,11 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
         >
           <div className="flex items-center gap-3">
             <span
-              className="px-2.5 py-0.5 text-xs font-black uppercase rounded border border-black bg-white text-black"
+              className="px-2.5 py-0.5 text-xs font-black uppercase rounded border border-black bg-black text-[#FFF025]"
             >
               {project.category}
             </span>
-            <span className="text-xs font-bold text-black/80">
+            <span className="text-xs font-bold text-black">
               Created by {project.creator.name} • {project.creator.school}
             </span>
           </div>
@@ -56,36 +56,36 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
 
         {/* Project Title & Tagline */}
         <div className="px-6 pt-6 pb-4">
-          <h2 id="modal-project-title" className="font-chewy text-3xl sm:text-4xl text-black">
+          <h2 id="modal-project-title" className="font-chewy text-3xl sm:text-4xl text-white">
             {project.title}
           </h2>
-          <p className="text-sm font-semibold text-black/70 mt-1">
+          <p className="text-sm font-semibold text-white/70 mt-1">
             {project.tagline}
           </p>
 
           {/* Navigation Tabs */}
-          <div className="flex gap-2 mt-5 border-b-2 border-black/10 pb-1" role="tablist">
+          <div className="flex gap-2 mt-5 border-b-2 border-white/15 pb-1" role="tablist">
             <button
               role="tab"
               aria-selected={activeTab === 'overview'}
               onClick={() => setActiveTab('overview')}
-              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 border-black transition-all cursor-pointer ${
+              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 transition-all cursor-pointer ${
                 activeTab === 'overview'
-                  ? 'bg-[#FFF025] brand-shadow-sm -translate-y-0.5'
-                  : 'bg-white hover:bg-black/5'
+                  ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                  : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
-              <Play className="w-3.5 h-3.5 fill-black" />
+              <Play className="w-3.5 h-3.5 fill-current" />
               <span>Interactive Preview</span>
             </button>
             <button
               role="tab"
               aria-selected={activeTab === 'learned'}
               onClick={() => setActiveTab('learned')}
-              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 border-black transition-all cursor-pointer ${
+              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 transition-all cursor-pointer ${
                 activeTab === 'learned'
-                  ? 'bg-[#FFF025] brand-shadow-sm -translate-y-0.5'
-                  : 'bg-white hover:bg-black/5'
+                  ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                  : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
               <BookOpen className="w-3.5 h-3.5" />
@@ -95,10 +95,10 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
               role="tab"
               aria-selected={activeTab === 'code'}
               onClick={() => setActiveTab('code')}
-              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 border-black transition-all cursor-pointer ${
+              className={`inline-flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg border-2 transition-all cursor-pointer ${
                 activeTab === 'code'
-                  ? 'bg-[#FFF025] brand-shadow-sm -translate-y-0.5'
-                  : 'bg-white hover:bg-black/5'
+                  ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                  : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
               <Code className="w-3.5 h-3.5" />
@@ -112,7 +112,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
           {activeTab === 'overview' && (
             <div className="space-y-5">
               {/* Interactive Demo Simulation Area */}
-              <div className="relative rounded-2xl border-2 border-black bg-black p-6 text-center text-white overflow-hidden min-h-[220px] flex flex-col justify-center items-center">
+              <div className="relative rounded-2xl border-2 border-white/20 bg-black/60 p-6 text-center text-white overflow-hidden min-h-[220px] flex flex-col justify-center items-center">
                 <div
                   className="absolute inset-0 opacity-20 pointer-events-none"
                   style={{
@@ -134,7 +134,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
                     </div>
                     <button
                       onClick={() => setSimPlaying(false)}
-                      className="px-4 py-2 rounded-xl text-xs font-bold border border-white/30 text-white bg-white/10 hover:bg-white/20"
+                      className="px-4 py-2 rounded-xl text-xs font-bold border border-white/30 text-white bg-white/10 hover:bg-white/20 cursor-pointer"
                     >
                       Reset Demo View
                     </button>
@@ -152,7 +152,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
                     </p>
                     <button
                       onClick={() => setSimPlaying(true)}
-                      className="px-6 py-2.5 text-xs font-black text-black rounded-xl border-2 border-white cursor-pointer hover:scale-105 transition-transform"
+                      className="px-6 py-2.5 text-xs font-black text-black rounded-xl border-2 border-black cursor-pointer hover:scale-105 transition-transform"
                       style={{ backgroundColor: '#FFF025' }}
                     >
                       Launch Interactive Preview
@@ -163,25 +163,24 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
 
               {/* Description */}
               <div>
-                <h4 className="text-xs font-black uppercase tracking-wider text-black mb-1">
+                <h4 className="text-xs font-black uppercase tracking-wider text-white/80 mb-1">
                   About this Build
                 </h4>
-                <p className="text-sm text-black leading-relaxed">
+                <p className="text-sm text-white/90 leading-relaxed">
                   {project.description}
                 </p>
               </div>
 
               {/* Tools Used */}
               <div>
-                <h4 className="text-xs font-black uppercase tracking-wider text-black mb-2">
+                <h4 className="text-xs font-black uppercase tracking-wider text-white/80 mb-2">
                   Tools & Technologies
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {project.tools.map((tool, idx) => (
                     <span
                       key={idx}
-                      className="px-3 py-1 rounded-lg border-2 border-black text-xs font-bold text-black"
-                      style={{ backgroundColor: '#FFFFFF' }}
+                      className="px-3 py-1 rounded-lg border-2 border-white/20 text-xs font-bold text-white bg-white/5"
                     >
                       {tool}
                     </span>
@@ -193,25 +192,25 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
 
           {activeTab === 'learned' && (
             <div className="space-y-4">
-              <h4 className="text-sm font-bold text-black">
+              <h4 className="text-sm font-bold text-white">
                 Creator Reflection & Takeaways:
               </h4>
-              <p className="text-xs text-black/75">
+              <p className="text-xs text-white/75">
                 Every Build Buds project emphasizes what the student discovered along the way, not just the finished code.
               </p>
               <div className="space-y-3 mt-3">
                 {project.whatLearned.map((item, idx) => (
                   <div
                     key={idx}
-                    className="p-3.5 rounded-xl border-2 border-black bg-white brand-shadow-sm flex items-start gap-3"
+                    className="p-3.5 rounded-xl border-2 border-white/20 bg-white/5 brand-shadow-sm flex items-start gap-3"
                   >
                     <span
-                      className="w-6 h-6 rounded-full border-2 border-black flex items-center justify-center text-xs font-black shrink-0 mt-0.5"
+                      className="w-6 h-6 rounded-full border-2 border-black flex items-center justify-center text-xs font-black shrink-0 mt-0.5 text-black"
                       style={{ backgroundColor: '#FFF025' }}
                     >
                       {idx + 1}
                     </span>
-                    <span className="text-xs font-medium text-black leading-relaxed">
+                    <span className="text-xs font-medium text-white/90 leading-relaxed">
                       {item}
                     </span>
                   </div>
@@ -223,16 +222,16 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
           {activeTab === 'code' && (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-black">
+                <span className="text-xs font-bold text-white">
                   Published Code Snippet
                 </span>
                 <button
                   onClick={handleCopy}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg border-2 border-black bg-white hover:bg-black/5 cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg border-2 border-white/20 bg-white/10 text-white hover:bg-white/20 cursor-pointer"
                 >
                   {copiedCode ? (
                     <>
-                      <Check className="w-3.5 h-3.5 text-black" />
+                      <Check className="w-3.5 h-3.5 text-[#FFF025]" />
                       <span>Copied!</span>
                     </>
                   ) : (
@@ -243,7 +242,7 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
                   )}
                 </button>
               </div>
-              <pre className="p-4 rounded-xl border-2 border-black bg-black text-[#FFF025] font-mono text-xs overflow-x-auto leading-relaxed">
+              <pre className="p-4 rounded-xl border-2 border-white/20 bg-black text-[#FFF025] font-mono text-xs overflow-x-auto leading-relaxed">
                 <code>{project.sourceCodeSnippet}</code>
               </pre>
             </div>
@@ -251,13 +250,13 @@ export const ProjectDetailModal: React.FC<ProjectDetailModalProps> = ({ project,
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-black/5 border-t-2 border-black flex items-center justify-between">
-          <div className="text-xs text-black font-semibold">
+        <div className="px-6 py-4 bg-white/5 border-t-2 border-white/15 flex items-center justify-between">
+          <div className="text-xs text-white/80 font-semibold">
             {project.creator.school}
           </div>
           <button
             onClick={onClose}
-            className="px-5 py-2 text-xs font-bold text-black bg-white rounded-xl border-2 border-black hover:bg-black/10 cursor-pointer"
+            className="px-5 py-2 text-xs font-bold text-white bg-white/10 hover:bg-white/20 rounded-xl border-2 border-white/20 cursor-pointer"
           >
             Close
           </button>

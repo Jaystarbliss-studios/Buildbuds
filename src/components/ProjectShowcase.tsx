@@ -29,27 +29,27 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
   ];
 
   return (
-    <section id="discover" className="py-20 bg-white border-b-2 border-black">
+    <section id="discover" className="py-20 bg-[#0a0a14]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-12">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#B11469' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               Student Project Showcase
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-4">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
             Look what we’re building.
           </h2>
-          <p className="text-base sm:text-lg text-black font-medium leading-relaxed">
+          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
             Every project starts with an idea. Discover what other builders are making, get inspired and share something of your own.
           </p>
         </div>
 
         {/* Filter Bar & Search */}
-        <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-10 pb-6 border-b-2 border-black/10">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-10 pb-6 border-b border-white/15">
           {/* Category Filter Tabs */}
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto" role="tablist">
             {categories.map((cat) => {
@@ -61,21 +61,20 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                   role="tab"
                   aria-selected={isActive}
                   onClick={() => setSelectedCategory(cat.id)}
-                  className={`inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl border-2 border-black transition-all duration-150 cursor-pointer ${
+                  className={`inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-bold rounded-xl border-2 transition-all duration-150 cursor-pointer ${
                     isActive
-                      ? 'brand-shadow -translate-y-0.5'
-                      : 'bg-white hover:bg-black/5 active:translate-y-0'
+                      ? 'border-black brand-shadow -translate-y-0.5 text-black'
+                      : 'border-white/20 bg-white/5 hover:bg-white/10 text-white'
                   }`}
                   style={{
-                    backgroundColor: isActive ? '#FFF025' : '#FFFFFF',
-                    color: '#000000',
+                    backgroundColor: isActive ? '#FFF025' : undefined,
                   }}
                 >
                   {cat.icon}
                   <span>{cat.label}</span>
                   <span
                     className={`ml-1 text-[11px] font-black px-1.5 py-0.2 rounded-md ${
-                      isActive ? 'bg-black text-white' : 'bg-black/10 text-black'
+                      isActive ? 'bg-black text-white' : 'bg-white/15 text-white'
                     }`}
                   >
                     {count}
@@ -92,7 +91,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by title, tool, or tag..."
-              className="w-full px-4 py-2 text-xs sm:text-sm font-medium border-2 border-black rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#B11469] text-black placeholder:text-black/50"
+              className="w-full px-4 py-2.5 text-xs sm:text-sm font-medium border-2 border-white/20 rounded-xl bg-white/10 focus:outline-none focus:ring-2 focus:ring-[#FFF025] text-white placeholder:text-white/50"
             />
           </div>
         </div>
@@ -120,16 +119,15 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
               return (
                 <article
                   key={project.id}
-                  className="group flex flex-col bg-white rounded-2xl border-2 border-black brand-shadow transition-all duration-200 hover:-translate-y-1.5 hover:shadow-[6px_6px_0px_#000000] overflow-hidden"
+                  className="group flex flex-col bg-[#10101c]/95 backdrop-blur-md rounded-2xl border-2 border-white/20 brand-shadow transition-all duration-200 hover:-translate-y-1.5 hover:border-[#FFF025] overflow-hidden text-white"
                 >
                   {/* Visual Top Preview Frame */}
                   <div
-                    className="relative h-48 border-b-2 border-black p-4 flex flex-col justify-between overflow-hidden"
-                    style={{ backgroundColor: '#000000' }}
+                    className="relative h-48 border-b-2 border-black/40 p-4 flex flex-col justify-between overflow-hidden bg-black"
                   >
                     {/* Background geometric decorative pattern */}
                     <div
-                      className="absolute inset-0 opacity-15 pointer-events-none"
+                      className="absolute inset-0 opacity-20 pointer-events-none"
                       style={{
                         backgroundImage: `radial-gradient(${project.previewAccent} 1.5px, transparent 1.5px)`,
                         backgroundSize: '16px 16px',
@@ -147,7 +145,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                       >
                         {project.category}
                       </span>
-                      <span className="text-[11px] font-bold text-white/80 bg-white/10 px-2 py-0.5 rounded border border-white/20">
+                      <span className="text-[11px] font-bold text-white/90 bg-white/15 px-2 py-0.5 rounded border border-white/20">
                         {project.demoType.replace('-', ' ')}
                       </span>
                     </div>
@@ -170,7 +168,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
 
                     {/* Creator Attribution */}
                     <div className="relative z-10 flex items-center justify-between text-xs text-white/80 pt-2 border-t border-white/10">
-                      <span className="font-medium">{project.creator.name}</span>
+                      <span className="font-medium text-white">{project.creator.name}</span>
                       <span className="text-white/60 text-[11px]">{project.creator.school}</span>
                     </div>
                   </div>
@@ -178,13 +176,13 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                   {/* Card Content Body */}
                   <div className="p-6 flex-1 flex flex-col justify-between">
                     <div>
-                      <h3 className="font-chewy text-2xl text-black mb-1 group-hover:text-[#B11469] transition-colors">
+                      <h3 className="font-chewy text-2xl text-white mb-1 group-hover:text-[#FFF025] transition-colors">
                         {project.title}
                       </h3>
-                      <p className="text-xs font-semibold text-black/70 mb-3">
+                      <p className="text-xs font-semibold text-white/75 mb-3">
                         {project.tagline}
                       </p>
-                      <p className="text-xs text-black leading-relaxed line-clamp-3 mb-4">
+                      <p className="text-xs text-white/80 leading-relaxed line-clamp-3 mb-4">
                         {project.description}
                       </p>
 
@@ -193,7 +191,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                         {project.tools.slice(0, 3).map((tool, idx) => (
                           <span
                             key={idx}
-                            className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/5 text-black border border-black/10"
+                            className="text-[11px] font-bold px-2 py-0.5 rounded bg-white/10 text-white border border-white/15"
                           >
                             {tool}
                           </span>
@@ -202,7 +200,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                     </div>
 
                     {/* Interactive Action Button */}
-                    <div className="pt-4 border-t-2 border-black/10 flex items-center justify-between">
+                    <div className="pt-4 border-t border-white/15 flex items-center justify-between">
                       <button
                         onClick={() => onSelectProject(project)}
                         className="inline-flex items-center gap-2 px-4 py-2 text-xs font-black text-black rounded-xl border-2 border-black transition-transform active:translate-y-0.5 hover:-translate-y-0.5 cursor-pointer"
@@ -213,7 +211,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
                         <span>View Project</span>
                       </button>
 
-                      <span className="text-[11px] font-bold text-black/60">
+                      <span className="text-[11px] font-bold text-white/60">
                         {project.whatLearned.length} learning takeaways
                       </span>
                     </div>
@@ -225,7 +223,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
         )}
 
         {/* Section Bottom CTA Banner */}
-        <div className="mt-16 p-8 rounded-2xl border-2 border-black brand-shadow bg-black text-white flex flex-col md:flex-row items-center justify-between gap-6">
+        <div className="mt-16 p-8 rounded-3xl border-2 border-white/20 brand-shadow bg-[#10101c]/95 backdrop-blur-md text-white flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="text-center md:text-left">
             <h3 className="font-chewy text-3xl sm:text-4xl text-white mb-2">
               Have a build of your own to showcase?
@@ -236,7 +234,7 @@ export const ProjectShowcase: React.FC<ProjectShowcaseProps> = ({
           </div>
           <button
             onClick={onSubmitProjectClick}
-            className="px-6 py-3.5 text-sm font-black text-black rounded-xl border-2 border-white brand-shadow-yellow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 whitespace-nowrap cursor-pointer shrink-0"
+            className="px-6 py-3.5 text-sm font-black text-black rounded-xl border-2 border-white brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 whitespace-nowrap cursor-pointer shrink-0"
             style={{ backgroundColor: '#FFF025' }}
           >
             Share a Project

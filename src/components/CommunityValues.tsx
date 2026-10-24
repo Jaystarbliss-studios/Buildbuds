@@ -42,21 +42,21 @@ export const CommunityValues: React.FC = () => {
   ];
 
   return (
-    <section className="py-20 bg-white border-b-2 border-black">
+    <section className="py-20 bg-[#0a0a14]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-16">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#B11469' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#B11469' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               Community Culture & Trust
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-4">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
             Build boldly. Be kind. Help each other grow.
           </h2>
-          <p className="text-base sm:text-lg text-black font-medium leading-relaxed">
+          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
             Build Buds is built on mutual respect and shared curiosity. We want every creator—from elementary beginner to high school veteran—to feel supported.
           </p>
         </div>
@@ -66,7 +66,7 @@ export const CommunityValues: React.FC = () => {
           {principles.map((item, idx) => (
             <div
               key={idx}
-              className="p-6 rounded-3xl border-2 border-black brand-shadow bg-white hover:-translate-y-1 transition-transform flex flex-col justify-between"
+              className="p-6 rounded-3xl border-2 border-white/20 brand-shadow bg-[#10101c]/95 backdrop-blur-md hover:-translate-y-1 transition-transform flex flex-col justify-between text-white"
             >
               <div>
                 <div
@@ -76,16 +76,16 @@ export const CommunityValues: React.FC = () => {
                   {item.icon}
                 </div>
 
-                <h3 className="font-chewy text-2xl text-black mb-2">
+                <h3 className="font-chewy text-2xl text-white mb-2">
                   {item.title}
                 </h3>
 
-                <p className="text-xs text-black/80 leading-relaxed">
+                <p className="text-xs text-white/80 leading-relaxed">
                   {item.desc}
                 </p>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-black/10 text-[11px] font-bold text-black/60">
+              <div className="mt-4 pt-3 border-t border-white/15 text-[11px] font-bold text-white/60">
                 Core Value #{idx + 1}
               </div>
             </div>
@@ -93,15 +93,15 @@ export const CommunityValues: React.FC = () => {
         </div>
 
         {/* Safety & Parent/Teacher note */}
-        <div className="mt-12 p-6 rounded-2xl border-2 border-black bg-white brand-shadow flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left">
+        <div className="mt-12 p-6 rounded-2xl border-2 border-white/20 bg-[#10101c]/95 backdrop-blur-md brand-shadow flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left text-white">
           <div className="w-12 h-12 rounded-2xl border-2 border-black bg-[#FFF025] flex items-center justify-center shrink-0">
             <ShieldCheck className="w-6 h-6 text-black stroke-[2.5]" />
           </div>
           <div>
-            <h4 className="text-sm font-bold text-black">
+            <h4 className="text-sm font-bold text-white">
               For Parents, Educators and Mentors
             </h4>
-            <p className="text-xs text-black/75 mt-0.5">
+            <p className="text-xs text-white/75 mt-0.5">
               Build Buds focuses strictly on creative coding, peer constructive review, and positive digital citizenship across participating schools.
             </p>
           </div>

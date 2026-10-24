@@ -4,6 +4,8 @@
  */
 
 import React, { useState } from 'react';
+import { SpaceBackdrop } from './components/SpaceBackdrop.tsx';
+import { SparkleCursor } from './components/SparkleCursor.tsx';
 import { SiteHeader } from './components/SiteHeader.tsx';
 import { HeroSection } from './components/HeroSection.tsx';
 import { ProjectShowcase } from './components/ProjectShowcase.tsx';
@@ -66,7 +68,13 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-white text-black flex flex-col font-sans selection:bg-[#FFF025] selection:text-black">
+    <div className="min-h-screen bg-[#06060c] text-white flex flex-col font-sans selection:bg-[#FFF025] selection:text-black relative">
+      {/* Sticky/Fixed Space Backdrop with stars and cosmic brand nebula */}
+      <SpaceBackdrop />
+
+      {/* Fairy dust / cosmic sparkle mouse trail */}
+      <SparkleCursor />
+
       {/* 1. Refined Responsive Navigation Header */}
       <SiteHeader
         onJoinClick={() => {

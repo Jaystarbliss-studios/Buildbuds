@@ -14,21 +14,21 @@ export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChalle
   const sideChallenges = SAMPLE_CHALLENGES.filter((c) => !c.featured);
 
   return (
-    <section id="challenges" className="py-20 bg-white border-b-2 border-black">
+    <section id="challenges" className="py-20 bg-[#080812]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-14">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#FFF025' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               Community Missions & Prompts
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-4">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
             What will you build next?
           </h2>
-          <p className="text-base sm:text-lg text-black font-medium leading-relaxed">
+          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
             Need an idea or a spark of inspiration? Jump into creative prompts and friendly building challenges designed to exercise your maker muscles.
           </p>
         </div>
@@ -37,7 +37,7 @@ export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChalle
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           
           {/* Featured Challenge Card */}
-          <div className="lg:col-span-7 flex flex-col justify-between p-8 rounded-3xl border-2 border-black brand-shadow-lg bg-black text-white relative overflow-hidden">
+          <div className="lg:col-span-7 flex flex-col justify-between p-8 rounded-3xl border-2 border-white/20 brand-shadow-lg bg-[#10101c]/95 text-white relative overflow-hidden">
             {/* Background geometric accents */}
             <div
               className="absolute -top-12 -right-12 w-48 h-48 rounded-full opacity-30 pointer-events-none"
@@ -86,7 +86,7 @@ export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChalle
               </div>
               <button
                 onClick={() => onJoinChallengeClick(featuredChallenge)}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 text-xs sm:text-sm font-black text-black rounded-xl border-2 border-white brand-shadow-yellow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 text-xs sm:text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer"
                 style={{ backgroundColor: '#FFF025' }}
               >
                 <span>Take on this Challenge</span>
@@ -100,7 +100,7 @@ export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChalle
             {sideChallenges.map((challenge) => (
               <div
                 key={challenge.id}
-                className="flex-1 p-6 rounded-3xl border-2 border-black brand-shadow bg-white flex flex-col justify-between hover:-translate-y-1 transition-transform"
+                className="flex-1 p-6 rounded-3xl border-2 border-white/20 brand-shadow bg-[#10101c]/95 flex flex-col justify-between hover:-translate-y-1 transition-transform text-white"
                 style={{ borderLeft: `8px solid ${challenge.accentColor}` }}
               >
                 <div>
@@ -114,27 +114,27 @@ export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChalle
                     >
                       {challenge.badgeText}
                     </span>
-                    <span className="text-xs font-semibold text-black/60">
+                    <span className="text-xs font-semibold text-white/60">
                       {challenge.timeframe}
                     </span>
                   </div>
 
-                  <h4 className="font-chewy text-2xl text-black mb-2">
+                  <h4 className="font-chewy text-2xl text-white mb-2">
                     {challenge.title}
                   </h4>
 
-                  <p className="text-xs text-black/80 leading-relaxed mb-4">
+                  <p className="text-xs text-white/80 leading-relaxed mb-4">
                     {challenge.description}
                   </p>
                 </div>
 
-                <div className="pt-3 border-t-2 border-black/10 flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-black/60">
+                <div className="pt-3 border-t border-white/15 flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-white/60">
                     Open to all grades
                   </span>
                   <button
                     onClick={() => onJoinChallengeClick(challenge)}
-                    className="text-xs font-bold text-black underline hover:text-[#B11469] cursor-pointer"
+                    className="text-xs font-bold text-white underline hover:text-[#FFF025] cursor-pointer"
                   >
                     View prompt details →
                   </button>

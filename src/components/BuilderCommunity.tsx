@@ -28,24 +28,24 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
   };
 
   return (
-    <section className="py-20 bg-white border-b-2 border-black">
+    <section className="py-20 bg-[#0a0a14]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-14">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#C15D00' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#C15D00' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               Collaborative Culture
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-3">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-3">
             Your people are building here.
           </h2>
-          <p className="font-chewy text-xl sm:text-2xl text-[#B11469] mb-4">
+          <p className="font-chewy text-xl sm:text-2xl text-[#FFF025] mb-4">
             Different schools. Different ideas. One community of builders.
           </p>
-          <p className="text-base text-black font-medium leading-relaxed max-w-2xl mx-auto">
+          <p className="text-base text-white/80 font-medium leading-relaxed max-w-2xl mx-auto">
             Build Buds connects creators across schools. You do not need to be an expert coder to belong—curiosity and the excitement of making things are all you need.
           </p>
         </div>
@@ -58,14 +58,14 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
               <div
                 key={idx}
                 onClick={() => setSelectedPersona(isSelected ? null : idx)}
-                className={`p-6 rounded-3xl border-2 border-black transition-all duration-200 cursor-pointer ${
+                className={`p-6 rounded-3xl border-2 transition-all duration-200 cursor-pointer ${
                   isSelected
-                    ? 'brand-shadow-lg -translate-y-1.5'
-                    : 'bg-white hover:-translate-y-1 brand-shadow'
+                    ? 'border-[#FFF025] brand-shadow -translate-y-1.5'
+                    : 'bg-[#10101c]/95 border-white/20 hover:-translate-y-1 brand-shadow text-white'
                 }`}
                 style={{
-                  backgroundColor: isSelected ? persona.accentColor : '#FFFFFF',
-                  color: isSelected && persona.accentColor === '#B11469' ? '#FFFFFF' : '#000000',
+                  backgroundColor: isSelected ? persona.accentColor : undefined,
+                  color: isSelected && persona.accentColor === '#FFF025' ? '#000000' : '#FFFFFF',
                 }}
               >
                 <div className="flex items-center justify-between mb-4">
@@ -75,7 +75,7 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
                     {getIcon(persona.iconType)}
                   </div>
                   <span
-                    className="text-[11px] font-black uppercase px-2.5 py-0.5 rounded-md border border-black bg-black text-white"
+                    className="text-[11px] font-black uppercase px-2.5 py-0.5 rounded-md border border-white/20 bg-white/15 text-white"
                   >
                     Active Group
                   </span>
@@ -83,7 +83,7 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
 
                 <h3
                   className={`font-chewy text-2xl sm:text-3xl mb-2 ${
-                    isSelected && persona.accentColor === '#B11469' ? 'text-white' : 'text-black'
+                    isSelected && persona.accentColor === '#FFF025' ? 'text-black' : 'text-white'
                   }`}
                 >
                   {persona.role}
@@ -91,17 +91,17 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
 
                 <p
                   className={`text-xs font-medium leading-relaxed mb-4 ${
-                    isSelected && persona.accentColor === '#B11469' ? 'text-white/90' : 'text-black/80'
+                    isSelected && persona.accentColor === '#FFF025' ? 'text-black/85' : 'text-white/80'
                   }`}
                 >
                   {persona.tagline}
                 </p>
 
                 <div
-                  className={`pt-3 border-t-2 text-xs font-bold ${
-                    isSelected && persona.accentColor === '#B11469'
-                      ? 'border-white/20 text-white'
-                      : 'border-black/10 text-black/70'
+                  className={`pt-3 border-t text-xs font-bold ${
+                    isSelected && persona.accentColor === '#FFF025'
+                      ? 'border-black/20 text-black/80'
+                      : 'border-white/15 text-white/70'
                   }`}
                 >
                   Examples: {persona.exampleProject}
@@ -112,23 +112,23 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
         </div>
 
         {/* Cross-School Network Visual Banner */}
-        <div className="mt-12 p-6 rounded-2xl border-2 border-black bg-black/5 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="mt-12 p-6 rounded-2xl border-2 border-white/20 bg-[#10101c]/95 backdrop-blur-md flex flex-col md:flex-row items-center justify-between gap-4 text-white">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl border-2 border-black bg-[#FFF025] flex items-center justify-center text-black shrink-0">
               <School className="w-5 h-5 stroke-[2.5]" />
             </div>
             <div>
-              <div className="text-sm font-black text-black">
+              <div className="text-sm font-black text-white">
                 Connecting Student Builders Across Classrooms & Campuses
               </div>
-              <p className="text-xs text-black/70">
+              <p className="text-xs text-white/70">
                 Build Buds is a cross-school creator network, not a closed school portal. Everyone learns faster together.
               </p>
             </div>
           </div>
           <button
             onClick={onJoinClick}
-            className="px-5 py-2.5 text-xs font-black text-black rounded-xl border-2 border-black bg-[#FFF025] brand-shadow-sm hover:-translate-y-0.5 transition-transform cursor-pointer shrink-0"
+            className="px-5 py-2.5 text-xs font-black text-black rounded-xl border-2 border-black bg-[#FFF025] brand-shadow hover:-translate-y-0.5 transition-transform cursor-pointer shrink-0"
           >
             Find Fellow Builders
           </button>

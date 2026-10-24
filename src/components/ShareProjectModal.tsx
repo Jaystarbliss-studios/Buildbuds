@@ -67,28 +67,28 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="share-project-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
     >
-      <div className="relative w-full max-w-xl bg-white rounded-3xl border-2 border-black brand-shadow-lg p-6 sm:p-8 my-8">
+      <div className="relative w-full max-w-xl bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-8 shadow-2xl">
         <button
           onClick={onClose}
           aria-label="Close modal"
-          className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-black bg-white hover:bg-black/10 transition-colors cursor-pointer"
+          className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-white/20 bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
         >
           <X className="w-5 h-5 stroke-[2.5]" />
         </button>
 
         <div className="mb-6">
           <span
-            className="inline-block px-3 py-1 rounded-md border border-black text-xs font-black uppercase mb-2"
+            className="inline-block px-3 py-1 rounded-md border border-black text-xs font-black uppercase mb-2 text-black"
             style={{ backgroundColor: '#FFF025' }}
           >
             Showcase Your Build
           </span>
-          <h3 id="share-project-modal-title" className="font-chewy text-3xl sm:text-4xl text-black">
+          <h3 id="share-project-modal-title" className="font-chewy text-3xl sm:text-4xl text-white">
             Publish a Project
           </h3>
-          <p className="text-xs text-black/75 font-medium mt-1">
+          <p className="text-xs text-white/75 font-medium mt-1">
             Share what you built, what tools you used, and what you learned with other young creators.
           </p>
         </div>
@@ -102,7 +102,7 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 Project Title *
               </label>
               <input
@@ -110,17 +110,17 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="e.g. Gravity Jump"
-                className="w-full px-3.5 py-2 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3.5 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
               />
             </div>
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 Category
               </label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value as any)}
-                className="w-full px-3.5 py-2 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3.5 py-2 text-sm border-2 border-white/20 rounded-xl bg-[#1c1c30] text-white focus:outline-none focus:border-[#FFF025]"
               >
                 <option value="games">Games</option>
                 <option value="websites">Websites</option>
@@ -131,7 +131,7 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Short Tagline
             </label>
             <input
@@ -139,12 +139,12 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
               value={tagline}
               onChange={(e) => setTagline(e.target.value)}
               placeholder="e.g. 2D platformer with space physics"
-              className="w-full px-3.5 py-2 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Description *
             </label>
             <textarea
@@ -152,12 +152,12 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Tell others what your creation does, how it works, and who it is for..."
-              className="w-full px-3.5 py-2 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Tools Used (comma separated)
             </label>
             <input
@@ -165,12 +165,12 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
               value={toolsStr}
               onChange={(e) => setToolsStr(e.target.value)}
               placeholder="e.g. React, Canvas, Web Audio"
-              className="w-full px-3.5 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               What Did You Learn While Making It?
             </label>
             <input
@@ -178,13 +178,13 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
               value={learningNotes}
               onChange={(e) => setLearningNotes(e.target.value)}
               placeholder="e.g. How to use vector math for collision detection"
-              className="w-full px-3.5 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 Your Name / Nickname
               </label>
               <input
@@ -192,11 +192,11 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
                 value={creatorName}
                 onChange={(e) => setCreatorName(e.target.value)}
                 placeholder="e.g. Maya"
-                className="w-full px-3 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
               />
             </div>
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 Your School
               </label>
               <input
@@ -204,7 +204,7 @@ export const ShareProjectModal: React.FC<ShareProjectModalProps> = ({
                 value={schoolName}
                 onChange={(e) => setSchoolName(e.target.value)}
                 placeholder="e.g. Riverdale STEM"
-                className="w-full px-3 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
               />
             </div>
           </div>

@@ -62,13 +62,13 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="new-discussion-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
     >
-      <div className="relative w-full max-w-lg bg-white rounded-3xl border-2 border-black brand-shadow-lg p-6 sm:p-8 my-8">
+      <div className="relative w-full max-w-lg bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-8 shadow-2xl">
         <button
           onClick={onClose}
           aria-label="Close modal"
-          className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-black bg-white hover:bg-black/10 transition-colors cursor-pointer"
+          className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-white/20 bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
         >
           <X className="w-5 h-5 stroke-[2.5]" />
         </button>
@@ -80,10 +80,10 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
           >
             Start a Conversation
           </span>
-          <h3 id="new-discussion-title" className="font-chewy text-3xl sm:text-4xl text-black">
+          <h3 id="new-discussion-title" className="font-chewy text-3xl sm:text-4xl text-white">
             Ask a Question or Share an Idea
           </h3>
-          <p className="text-xs text-black/75 font-medium mt-1">
+          <p className="text-xs text-white/75 font-medium mt-1">
             Connect with other student builders across schools who are ready to help.
           </p>
         </div>
@@ -96,7 +96,7 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Select Discussion Channel
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -110,10 +110,10 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
                   key={c.id}
                   type="button"
                   onClick={() => setChannel(c.id as any)}
-                  className={`py-2 px-3 text-xs font-bold rounded-xl border-2 border-black text-left transition-all ${
+                  className={`py-2 px-3 text-xs font-bold rounded-xl border-2 text-left transition-all cursor-pointer ${
                     channel === c.id
-                      ? 'bg-[#FFF025] brand-shadow-sm font-black'
-                      : 'bg-white hover:bg-black/5'
+                      ? 'bg-[#FFF025] text-black border-black brand-shadow-sm font-black'
+                      : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
                   }`}
                 >
                   {c.label}
@@ -123,7 +123,7 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Discussion Title *
             </label>
             <input
@@ -131,12 +131,12 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g. How can I make my platformer jumping feel lighter?"
-              className="w-full px-3.5 py-2.5 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+            <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
               Your Question or Idea Details *
             </label>
             <textarea
@@ -144,13 +144,13 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="Explain what you are trying to build, what you have tried, and where you are stuck..."
-              className="w-full px-3.5 py-2.5 text-sm border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+              className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 Your Name / Nickname
               </label>
               <input
@@ -158,11 +158,11 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
                 value={authorName}
                 onChange={(e) => setAuthorName(e.target.value)}
                 placeholder="e.g. Maya"
-                className="w-full px-3.5 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3.5 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
               />
             </div>
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
                 School Name
               </label>
               <input
@@ -170,7 +170,7 @@ export const NewDiscussionModal: React.FC<NewDiscussionModalProps> = ({
                 value={schoolName}
                 onChange={(e) => setSchoolName(e.target.value)}
                 placeholder="e.g. Westfield Middle"
-                className="w-full px-3.5 py-2 text-xs border-2 border-black rounded-xl bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#B11469]"
+                className="w-full px-3.5 py-2 text-xs border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
               />
             </div>
           </div>

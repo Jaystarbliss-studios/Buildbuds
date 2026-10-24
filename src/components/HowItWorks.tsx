@@ -44,21 +44,21 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
   ];
 
   return (
-    <section id="how-it-works" className="py-20 bg-white border-b-2 border-black">
+    <section id="how-it-works" className="py-20 bg-[#080812]/80 backdrop-blur-md border-b border-white/15 text-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Heading */}
         <div className="text-center max-w-3xl mx-auto mb-16">
-          <div className="inline-flex items-center gap-2 mb-3">
-            <span className="w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#B11469' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-black">
+          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
+            <span className="text-xs font-bold uppercase tracking-wider text-white">
               The Build Buds Journey
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-black tracking-normal mb-4">
+          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
             Got an idea? Let’s build on it.
           </h2>
-          <p className="text-base sm:text-lg text-black font-medium leading-relaxed">
+          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
             From the moment inspiration strikes to celebrating your live project, here is how young builders bring ideas to life together.
           </p>
         </div>
@@ -71,14 +71,14 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
               <div
                 key={step.num}
                 onClick={() => setActiveStep(idx)}
-                className={`relative flex flex-col justify-between p-6 rounded-3xl border-2 border-black transition-all duration-200 cursor-pointer ${
+                className={`relative flex flex-col justify-between p-6 rounded-3xl border-2 transition-all duration-200 cursor-pointer ${
                   isSelected
-                    ? 'brand-shadow-lg -translate-y-2'
-                    : 'bg-white hover:-translate-y-1 brand-shadow'
+                    ? 'border-[#FFF025] brand-shadow -translate-y-2'
+                    : 'bg-[#10101c]/95 border-white/20 hover:-translate-y-1 brand-shadow text-white'
                 }`}
                 style={{
-                  backgroundColor: isSelected ? step.accent : '#FFFFFF',
-                  color: isSelected && step.accent === '#B11469' ? '#FFFFFF' : '#000000',
+                  backgroundColor: isSelected ? step.accent : undefined,
+                  color: isSelected && (step.accent === '#FFF025' || step.accent === '#C15D00') ? '#000000' : '#FFFFFF',
                 }}
               >
                 {/* Step Top Bar: Number & Icon */}
@@ -86,14 +86,14 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
                   <div className="flex items-center justify-between mb-4">
                     <span
                       className={`text-2xl font-black font-mono px-3 py-1 rounded-xl border-2 border-black ${
-                        isSelected && step.accent === '#B11469' ? 'bg-white text-black' : 'bg-black text-white'
+                        isSelected && step.accent === '#FFF025' ? 'bg-black text-white' : 'bg-black text-[#FFF025]'
                       }`}
                     >
                       {step.num}
                     </span>
                     <div
                       className={`w-10 h-10 rounded-xl border-2 border-black flex items-center justify-center ${
-                        isSelected && step.accent === '#B11469' ? 'bg-white text-black' : 'bg-white text-black'
+                        isSelected && step.accent === '#FFF025' ? 'bg-black text-[#FFF025]' : 'bg-white text-black'
                       }`}
                     >
                       {step.icon}
@@ -102,7 +102,7 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
 
                   <h3
                     className={`font-chewy text-2xl sm:text-3xl mb-2 ${
-                      isSelected && step.accent === '#B11469' ? 'text-white' : 'text-black'
+                      isSelected && step.accent === '#FFF025' ? 'text-black' : 'text-white'
                     }`}
                   >
                     {step.title}
@@ -110,7 +110,7 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
 
                   <p
                     className={`text-xs font-semibold leading-relaxed mb-4 ${
-                      isSelected && step.accent === '#B11469' ? 'text-white/90' : 'text-black/80'
+                      isSelected && step.accent === '#FFF025' ? 'text-black/85' : 'text-white/80'
                     }`}
                   >
                     {step.description}
@@ -120,9 +120,9 @@ export const HowItWorks: React.FC<HowItWorksProps> = ({ onJoinClick }) => {
                 {/* Additional Detail Box */}
                 <div
                   className={`pt-3 border-t-2 text-xs leading-relaxed ${
-                    isSelected && step.accent === '#B11469'
-                      ? 'border-white/30 text-white/80'
-                      : 'border-black/15 text-black/70'
+                    isSelected && step.accent === '#FFF025'
+                      ? 'border-black/20 text-black/80'
+                      : 'border-white/15 text-white/70'
                   }`}
                 >
                   {step.detail}
