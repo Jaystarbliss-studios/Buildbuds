@@ -126,27 +126,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   };
 
   return (
-    <section className="relative overflow-hidden pt-12 pb-20 lg:pt-20 lg:pb-28 border-b border-white/15">
-      {/* Background Image requested by user: public/assets/aistudio/images/beautiful build buds.png */}
-      <div
-        className="absolute inset-0 bg-cover bg-center bg-no-repeat -z-10 opacity-70"
-        style={{
-          backgroundImage: `url('/assets/aistudio/images/beautiful-build-buds.png'), url('/assets/aistudio/images/beautiful%20build%20buds.png')`,
-        }}
-      />
-      {/* Dark cosmic atmospheric scrim for high contrast and cosmic depth */}
-      <div
-        className="absolute inset-0 -z-10 bg-gradient-to-b from-[#06060c]/70 via-[#06060c]/65 to-[#06060c]/90 backdrop-blur-[1px]"
+    <section className="relative overflow-hidden z-10 isolate pt-12 pb-20 lg:pt-20 lg:pb-28 border-b border-white/20">
+      {/* Direct Background Image - 100% visible: public/assets/aistudio/images/beautiful-build-buds.png */}
+      <img
+        src="/assets/aistudio/images/beautiful-build-buds.png"
+        alt="Build Buds colorful waves"
+        className="absolute inset-0 w-full h-full object-cover object-center z-0 select-none pointer-events-none opacity-95"
       />
 
-      {/* Playful background glowing accents */}
+      {/* Light transparent gradient that lets the image shine through and gently fades into the dark theme at the bottom */}
       <div
-        className="absolute top-10 right-10 w-44 h-44 rounded-full pointer-events-none opacity-30 blur-3xl"
-        style={{ backgroundColor: '#FFF025' }}
-      />
-      <div
-        className="absolute bottom-10 left-12 w-52 h-52 rounded-full pointer-events-none opacity-25 blur-3xl"
-        style={{ backgroundColor: '#B11469' }}
+        className="absolute inset-0 z-0 bg-gradient-to-b from-black/30 via-black/15 to-[#06060c] pointer-events-none"
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
@@ -155,12 +145,12 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           {/* Left Text Column (7 cols) */}
           <div className="lg:col-span-7 flex flex-col justify-center text-left">
             {/* Official Headline with 'A world of possibilities.' REMOVED as requested */}
-            <h1 className="font-chewy text-6xl sm:text-7xl lg:text-8xl text-white leading-[1.04] tracking-normal mb-8">
+            <h1 className="font-chewy text-6xl sm:text-7xl lg:text-8xl text-white leading-[1.04] tracking-normal mb-8 drop-shadow-[0_4px_20px_rgba(0,0,0,0.9)]">
               Big ideas.{' '}
-              <span className="relative inline-block" style={{ color: '#FFF025' }}>
+              <span className="relative inline-block text-[#FFF025] drop-shadow-[0_4px_24px_rgba(0,0,0,0.9)]">
                 Little builds.
                 <span
-                  className="absolute bottom-2 left-0 w-full h-3 sm:h-4 -z-10 rounded opacity-60"
+                  className="absolute bottom-2 left-0 w-full h-3 sm:h-4 -z-10 rounded opacity-80"
                   style={{ backgroundColor: '#B11469' }}
                 />
               </span>
@@ -179,7 +169,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
 
               <button
                 onClick={onExploreClick}
-                className="inline-flex items-center justify-center gap-2 px-7 py-4 text-base sm:text-lg font-bold text-white bg-white/10 backdrop-blur-md rounded-2xl border-2 border-white/20 brand-shadow transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 hover:bg-white/20 cursor-pointer"
+                className="inline-flex items-center justify-center gap-2 px-7 py-4 text-base sm:text-lg font-bold text-white bg-black/50 hover:bg-black/60 backdrop-blur-md rounded-2xl border-2 border-white/30 brand-shadow transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 cursor-pointer"
               >
                 <Compass className="w-5 h-5 stroke-[2.5]" style={{ color: '#FFF025' }} />
                 <span>Explore Creations</span>
@@ -187,17 +177,17 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
             </div>
 
             {/* Community Highlights Bar */}
-            <div className="pt-6 border-t border-white/20 flex flex-wrap items-center gap-6 text-sm text-white/90 font-semibold">
+            <div className="bg-black/45 backdrop-blur-md rounded-2xl border border-white/20 px-5 py-3.5 flex flex-wrap items-center gap-6 text-sm text-white font-bold w-fit shadow-lg">
               <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
+                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#FFF025' }} />
                 <span>Games & Simulations</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#B11469' }} />
+                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#B11469' }} />
                 <span>Websites & Utilities</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#C15D00' }} />
+                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#C15D00' }} />
                 <span>Friendly Peer Discussions</span>
               </div>
             </div>
