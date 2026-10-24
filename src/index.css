@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  --color-lemon: #FFF025;
+  --color-berry: #B11469;
+  --color-burnt: #C15D00;
+  
+  --color-brand-yellow: #FFF025;
+  --color-brand-pink: #B11469;
+  --color-brand-orange: #C15D00;
+  --color-brand-white: #FFFFFF;
+  --color-brand-black: #000000;
+
+  --font-chewy: 'Chewy', cursive, sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+:root {
+  --brand-yellow: #FFF025;
+  --brand-pink: #B11469;
+  --brand-orange: #C15D00;
+  --brand-white: #FFFFFF;
+  --brand-black: #000000;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #FFFFFF;
+  color: #000000;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+.font-chewy {
+  font-family: 'Chewy', cursive, sans-serif;
+}
+
+/* Custom shadow utilities matching the playful brand direction with crisp black offset */
+.brand-shadow-sm {
+  box-shadow: 2px 2px 0px #000000;
+}
+
+.brand-shadow {
+  box-shadow: 4px 4px 0px #000000;
+}
+
+.brand-shadow-lg {
+  box-shadow: 6px 6px 0px #000000;
+}
+
+.brand-shadow-pink {
+  box-shadow: 4px 4px 0px #B11469;
+}
+
+.brand-shadow-orange {
+  box-shadow: 4px 4px 0px #C15D00;
+}
+
+.brand-shadow-yellow {
+  box-shadow: 4px 4px 0px #000000;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+

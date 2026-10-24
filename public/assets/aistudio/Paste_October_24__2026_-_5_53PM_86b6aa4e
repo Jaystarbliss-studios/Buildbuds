@@ -1,0 +1,1013 @@
+# BUILD BUDS — COMPLETE HOMEPAGE DESIGN AND DEVELOPMENT BRIEF
+
+## 1. PROJECT OVERVIEW
+
+Build a complete, polished, responsive and visually distinctive homepage for **Build Buds**, a digital creator community created by the Smart Techies Group from JW Studios.
+
+Build Buds is a network for young builders from different schools to share what they create, learn from one another, solve problems, collaborate on ideas and grow together through technology and creativity.
+
+The platform brings together students who create games, build websites, experiment with digital tools, develop creative projects and enjoy learning by making things.
+
+Build Buds is not simply a school website, a coding tutorial site or a static portfolio gallery. It is intended to become a connected community where creating, sharing, discussing, discovering and collaborating all happen in one place.
+
+The long-term platform vision combines elements of a project showcase, a discussion community, a social network and a private messaging platform.
+
+The homepage must communicate this vision immediately, make the platform feel exciting and welcoming, showcase what members can do, and encourage visitors to join the community.
+
+**Your task is to DESIGN AND BUILD THE ACTUAL HOMEPAGE, not merely describe a design, return a wireframe, or produce a list of suggestions.**
+
+Create a functional frontend implementation with realistic content, thoughtful interactions, a strong visual hierarchy, high-quality animations and a complete responsive experience.
+
+Do not stop after producing the hero section. Build the entire homepage from the navigation through the footer.
+
+---
+
+## 2. BRAND IDENTITY
+
+### Official brand name
+
+Build Buds
+
+Always spell the name exactly as “Build Buds” in visible branding and page copy. Do not rename the platform, invent an alternative spelling or create unrelated sub-brands.
+
+### Brand meaning
+
+Build Buds represents a community of young builders who make things, share knowledge, exchange ideas and help one another improve.
+
+The word “Build” represents creation, experimentation, programming, design and problem-solving.
+
+The word “Buds” represents friendship, collaboration, belonging and the idea that no creator has to build alone.
+
+The personality of the brand should feel:
+
+- Playful, optimistic and energetic.
+- Creative, curious and imaginative.
+- Welcoming to beginners and experienced student creators.
+- Community-oriented rather than corporate.
+- Modern and technologically capable without looking cold or overly futuristic.
+- Youthful without looking like a website designed only for very young children.
+- Professional enough for schools, teachers and parents to take seriously.
+
+The website should feel like a place students would genuinely enjoy visiting, not like another school portal full of boxes, tables, formal headings and administrative menus.
+
+### Typography
+
+Use **Chewy**, the font selected for the Build Buds brand, as the primary expressive display typeface.
+
+Load Chewy through Google Fonts if available in the implementation environment. Ensure the typeface actually loads in the rendered website.
+
+Use Chewy for:
+
+- The Build Buds wordmark when the official image logo is not yet available.
+- The main hero heading.
+- Important section headings.
+- Selected playful labels and short decorative text.
+- Major visual moments where expressive typography adds personality.
+
+Use a clean, highly readable sans-serif typeface such as Inter for paragraph text, navigation, buttons, forms, technical labels and interface details.
+
+Do not use Chewy for long paragraphs. Maintain excellent readability.
+
+Use a deliberate type scale with strong contrast between the hero headline, section headings, card titles, supporting copy and captions.
+
+Avoid excessive capitalization, overly tight text, unnecessary font styles and oversized paragraphs.
+
+---
+
+## 3. STRICT BRAND COLOUR SYSTEM
+
+The supplied reference image establishes the official colour direction.
+
+Use these exact brand colours:
+
+- Lemon yellow: #FFF025
+- Berry pink / magenta: #B11469
+- Burnt orange: #C15D00
+- White: #FFFFFF
+- Black: #000000
+
+These values must be used as provided. Do not substitute them with generic yellow, hot pink, bright orange or other visually similar colours.
+
+The three accent colours are equally important. Give them a coordinated visual presence without making the entire page look like a collection of unrelated coloured blocks.
+
+Use white as the primary background for much of the page and black for readable text, outlines and visual definition. Introduce yellow, pink and orange in carefully composed sections, cards, illustrations, buttons, navigation highlights and decorative shapes.
+
+Use yellow buttons with black text. Use pink buttons with white text where contrast permits. Use orange with a sufficiently contrasting text colour.
+
+Create separation through spacing, typography, borders, layout, shadows derived from black, and the controlled use of the approved colours.
+
+### Absolutely forbidden colour choices
+
+Do not introduce purple, blue, green, teal, red, grey, beige, cream, pastel palettes or any other independent colour.
+
+Do not create a blue-and-purple technology aesthetic.
+
+Do not use generic multicoloured gradients.
+
+Do not introduce different colours for individual categories, icons, badges, avatars or status indicators.
+
+For subtle effects, use transparency or opacity variations of the approved colours rather than introducing new hues.
+
+Keep the visual identity recognisable and consistent from the first screen to the footer.
+
+The finished page should clearly look like it belongs to the yellow, berry-pink and burnt-orange Build Buds brand.
+
+---
+
+## 4. LOGO HANDLING
+
+An official Build Buds logo will be supplied separately after the initial implementation.
+
+For now, create a clean, replaceable logo component.
+
+Until the official logo image is provided, use the text “Build Buds” styled with Chewy. Keep it simple and visually balanced.
+
+Do not generate a replacement logo, invent an unrelated icon, or permanently hardcode a temporary logo into every page section.
+
+Build a reusable brand component that can accept the official logo image later.
+
+When the official image is supplied, use it as the actual logo. Preserve its aspect ratio and original appearance. Do not redraw it, distort it, recolour it or add effects that damage the original design.
+
+The supplied reference image containing the three colours is a branding reference, not permission to use the entire reference image as the website logo.
+
+Keep the logo component easy to update without rebuilding the layout.
+
+Provide suitable logo sizing and spacing for desktop, tablet, mobile navigation and footer use.
+
+---
+
+## 5. OVERALL DESIGN DIRECTION
+
+Create a beautiful, playful, high-quality website with the visual polish of a modern creative community platform.
+
+The design should communicate creativity through composition, motion, expressive typography and authentic project imagery instead of relying on excessive cards, random icons or decorative clutter.
+
+Use a combination of:
+
+- Generous whitespace.
+- Expressive display typography.
+- Rounded corners where appropriate.
+- Strong, intentional coloured sections.
+- Carefully composed project previews.
+- Layered visual elements.
+- Subtle depth and elevation.
+- Smooth scrolling and transitions.
+- Custom CSS shapes and visual details.
+- High-quality stock photography.
+- Consistent alignment and spacing.
+- Clear, professional buttons with distinct interaction states.
+
+Use a mixture of full-width editorial sections, split layouts, project showcases and selected card grids. Do not turn every piece of content into an identical rounded rectangle.
+
+Avoid the generic AI-generated landing page look, in which every section contains the same three cards, every card has a floating icon, and every element has the same border radius.
+
+Make the layout feel deliberately art-directed.
+
+The homepage should be lively and animated without becoming visually noisy, difficult to navigate or distracting.
+
+Prioritise the actual content and community. Decoration must support the message rather than compete with it.
+
+---
+
+## 6. NAVIGATION HEADER
+
+Build a refined, responsive navigation system.
+
+### Desktop navigation
+
+Include:
+
+- Build Buds branding on the left.
+- Discover.
+- Community.
+- Challenges.
+- How It Works.
+- Sign In.
+- A prominent “Join Build Buds” button.
+
+Use restrained spacing and clear visual hierarchy. The main joining button must stand out without overwhelming the brand.
+
+Make the header sticky if it improves usability. If the header becomes sticky, use a subtle transition and ensure it does not consume excessive screen space.
+
+Use a white header with black typography and selective accents from the official palette.
+
+Give the active navigation item a clear visual state. Implement hover, focus and pressed states for all interactive elements.
+
+### Mobile navigation
+
+Create a proper mobile navigation experience with a functional menu button, accessible expanded state, readable links and an obvious joining action.
+
+Ensure the menu opens and closes smoothly and is not clipped by the viewport.
+
+It must not cover essential content without allowing the visitor to dismiss it.
+
+Provide generous touch targets and support keyboard navigation.
+
+Never shrink the desktop navigation until it becomes unreadable. Adapt the layout intelligently for smaller screens.
+
+### Navigation behaviour
+
+Every navigation item must have a meaningful destination.
+
+For sections on the homepage, use smooth anchor navigation where appropriate.
+
+For routes not yet implemented, create clear, consistent integration points. Do not invent completed application features or direct visitors to broken links.
+
+---
+
+## 7. HERO SECTION — THE MOST IMPORTANT VISUAL MOMENT
+
+Create an outstanding hero section that immediately explains what Build Buds is and gives visitors a reason to explore.
+
+The hero should look memorable within the first few seconds of arrival.
+
+Use this recommended headline:
+
+**“Big ideas. Little builds. A world of possibilities.”**
+
+You may adjust line breaks for visual impact, but preserve the meaning and friendly personality.
+
+Supporting headline:
+
+“Build Buds is where young creators share their projects, exchange ideas, solve problems and build amazing things together.”
+
+Primary CTA:
+
+“Join Build Buds”
+
+Secondary CTA:
+
+“Explore Creations”
+
+Optional small supporting line:
+
+“Made for curious minds and builders across schools.”
+
+Keep the messaging authentic. Do not invent a launch date, membership count, school count, growth statistic or claim that the platform already has an active user base.
+
+### Hero composition
+
+Create an asymmetrical, creative composition rather than centring all content in a narrow column with generic decorative blobs.
+
+On desktop, use a balanced text-and-visual layout.
+
+The text side should contain the heading, concise explanation and two clear calls to action.
+
+The visual side should show an attractive composition of digital projects: a small game preview, a website preview, a creative project thumbnail and a conversation snippet.
+
+Present them as elements of a single creative world, using deliberate layering, subtle rotation and a controlled combination of the official brand colours.
+
+The visual composition should suggest that different people are making different kinds of things and sharing them with one another.
+
+Possible floating captions:
+
+- “Made by a builder.”
+- “A new idea taking shape.”
+- “Built. Shared. Improved.”
+- “Your next project starts here.”
+
+These should be ordinary decorative captions or contextual labels, never AI badges.
+
+Do not create fake browser windows full of gibberish, pretend dashboards or illegible miniature content.
+
+Use legible, carefully designed project previews.
+
+### Hero animation
+
+When the page loads, animate the text and visual elements into place with a smooth, controlled entrance.
+
+Use staggered reveals, gentle movement and subtle depth.
+
+Project previews may float very slightly or respond to pointer movement on desktop, but movement must remain restrained.
+
+Create a satisfying hover interaction on the CTAs.
+
+The animation should reinforce the idea of creativity coming to life.
+
+Do not use an excessive preloader. Do not make visitors wait for an animation before they can use the site.
+
+On mobile, simplify the composition so it does not overflow the screen, obstruct text or push the main call to action too far below the fold.
+
+---
+
+## 8. PROJECT SHOWCASE — SHOW WHAT BUILDERS CAN MAKE
+
+Create a major homepage section dedicated to student creations.
+
+Recommended heading:
+
+**“Look what we’re building.”**
+
+Supporting text:
+
+“Every project starts with an idea. Discover what other builders are making, get inspired and share something of your own.”
+
+This section should visually demonstrate what the Build Buds community is about.
+
+### Project categories
+
+Show a clear range of creative work:
+
+1. Games.
+2. Websites.
+3. Digital experiments.
+4. Creative tools and interactive projects.
+
+Use attractive project thumbnails that make each category immediately understandable.
+
+Use a small number of well-designed project previews rather than a giant grid of identical cards.
+
+Each project preview may include:
+
+- Project title.
+- Short description.
+- Creator display name or fictional demo attribution.
+- Project category.
+- A representative image or thumbnail.
+- A visible “View Project” action.
+- Optional repository or live-demo links when they genuinely exist.
+
+Include the ability to filter the showcase by project category if implemented on the homepage.
+
+Possible filter labels:
+
+“All Creations,” “Games,” “Websites” and “Experiments.”
+
+The selected filter must visibly update the displayed projects.
+
+### Project content requirements
+
+Use believable sample content to demonstrate the experience.
+
+Examples include a small space-themed game, an interactive quiz, a personal portfolio website, a simple digital drawing tool or a school revision game.
+
+Make the examples attractive, understandable and relevant to student creators.
+
+Do not claim these examples were actually created by real students unless that information is supplied.
+
+Clearly treat invented showcase entries as sample content while developing the prototype. Do not fabricate real usernames, testimonials, view counts, download counts, likes or popularity statistics.
+
+### Project card interactions
+
+On hover, use a subtle lift, image movement or border treatment derived from the brand palette.
+
+Make the whole relevant card or its explicit action accessible and clickable.
+
+Buttons must have clear labels. Do not make users guess which part of the card is interactive.
+
+Include a final CTA:
+
+“Explore All Creations”
+
+The showcase should communicate that Build Buds is a place where students publish real work, not merely talk about what they might build.
+
+---
+
+## 9. EXPLAIN THE COMMUNITY EXPERIENCE
+
+Introduce the collaborative side of Build Buds.
+
+Recommended heading:
+
+**“Making things is better together.”**
+
+Supporting text:
+
+“Have a question, a challenge or an idea you can’t stop thinking about? Find other builders who are ready to think, experiment and figure things out with you.”
+
+Create a visual preview of a discussion community.
+
+Show examples of the kinds of conversations members could have:
+
+- “How can I make my character move more smoothly?”
+- “What should I add to my first website?”
+- “I built a little quiz game. What do you think?”
+- “Does anyone have an idea for our next project?”
+
+These are illustrative sample posts, not claims of real member activity.
+
+The visual preview should demonstrate the following community concepts:
+
+- Posts and discussion threads.
+- Questions and answers.
+- Comments and replies.
+- Reactions.
+- Project sharing.
+- Constructive feedback.
+- Topic discovery.
+- Community participation.
+
+Show a small, visually coherent discussion preview with legible content and carefully designed reply and reaction controls.
+
+Do not overcrowd the homepage with a miniature copy of the entire future platform.
+
+The aim is to make visitors understand that Build Buds supports conversation as well as project publishing.
+
+Include a CTA such as “Discover the Community.”
+
+Use friendly language. Avoid making the experience look like a corporate knowledge-management system.
+
+---
+
+## 10. SECTION: SHARE MORE THAN A LINK
+
+Explain that student projects can contain more than a thumbnail or a web address.
+
+Recommended heading:
+
+**“Your work deserves a home.”**
+
+Supporting text:
+
+“Share what you built, explain how it works, show people what you learned and let other creators explore the details.”
+
+Introduce the planned project-publishing experience using a visually attractive project preview.
+
+Explain that members should be able to showcase:
+
+- Live websites and interactive demos.
+- Games they have built.
+- Project descriptions and screenshots.
+- GitHub repository links.
+- Source-code links and relevant development resources.
+- The tools used to make a project.
+- What the creator learned while building it.
+- Future improvements or features they are working on.
+
+Provide a preview of how a published project might look.
+
+The page should communicate a genuine creator portfolio experience while keeping the interface approachable to beginners.
+
+Use natural terms such as “Share your project,” “View the live demo” and “Explore the source code.”
+
+Do not invent repository URLs or link to unrelated live websites.
+
+Any sample source-code or live-demo buttons must lead to valid resources, clearly marked example routes, or an honest demo state.
+
+---
+
+## 11. SECTION: FROM FIRST IDEA TO FINISHED PROJECT
+
+Create an engaging, visual explanation of the Build Buds journey.
+
+Recommended heading:
+
+**“Got an idea? Let’s build on it.”**
+
+Show four simple steps:
+
+### Step 1 — Make Something
+
+Start with a game, a website, a creative experiment or any idea you are excited to bring to life.
+
+### Step 2 — Share Your Work
+
+Publish a project description, add screenshots, link to a live demo and share relevant source-code resources.
+
+### Step 3 — Meet Other Builders
+
+Join discussions, ask questions, discover other projects and get constructive feedback.
+
+### Step 4 — Keep Getting Better
+
+Improve your ideas, learn new techniques, collaborate on future projects and celebrate the things you accomplish.
+
+Use a playful visual flow connecting the four steps.
+
+The steps can animate into view as the visitor scrolls.
+
+Use simple diagrams, shapes, project illustrations and the brand palette instead of giving every step a large generic icon inside a coloured circle.
+
+Make the flow easy to understand on desktop and mobile.
+
+---
+
+## 12. SECTION: BUILD TOGETHER, NOT ALONE
+
+Introduce the collaborative culture of Build Buds.
+
+Recommended heading:
+
+**“Your people are building here.”**
+
+Explain that Build Buds connects creators across schools and helps them discover others who share their interests.
+
+Show a few possible community interests:
+
+- Game builders.
+- Website makers.
+- Problem solvers.
+- Creative explorers.
+- Curious beginners.
+- Students helping other students learn.
+
+Do not suggest that members must already be expert programmers.
+
+The platform should welcome people at different skill levels.
+
+Use a playful visual layout with a mixture of text, authentic stock images and small community illustrations.
+
+Avoid invented school names, partner logos or official endorsements.
+
+Do not suggest that a particular school has joined unless that information has been supplied.
+
+### School communities
+
+Introduce the long-term idea of connecting students from different schools through community groups, shared interests and collaborative activities.
+
+Use copy such as:
+
+“Different schools. Different ideas. One community of builders.”
+
+This section must reinforce that Build Buds is a network, not just a website belonging to one classroom.
+
+---
+
+## 13. SECTION: CHALLENGES AND CREATIVE MISSIONS
+
+Create a visually exciting section introducing the concept of community challenges.
+
+Recommended heading:
+
+**“What will you build next?”**
+
+Explain that Build Buds can host creative prompts, project challenges and collaborative building activities.
+
+Possible challenge themes include:
+
+- Build a tiny game.
+- Create a useful website.
+- Design a tool that solves an everyday problem.
+- Improve an existing project.
+- Collaborate on a shared idea.
+
+Design one featured challenge visual and two smaller challenge previews.
+
+Make the experience feel playful and motivating, not overly competitive.
+
+Use only supplied dates, real prizes and verified deadlines. If this is a prototype, label examples appropriately and do not fabricate active competitions.
+
+Provide a CTA such as “Explore Challenges.”
+
+The homepage should suggest that the community has room to grow through activities and events, without promising features that have not been implemented.
+
+---
+
+## 14. STOCK PHOTOGRAPHY AND VISUAL ASSETS
+
+Use authentic, high-quality stock photography when photography strengthens the story.
+
+Suitable subjects include:
+
+- Students working together on laptops.
+- Young creators collaborating on a project.
+- Hands working at a keyboard.
+- A student demonstrating a finished creation.
+- Small groups sharing ideas and learning together.
+
+Choose images that feel natural, welcoming, age-appropriate and relevant to a modern educational technology community.
+
+Use reputable stock image providers such as Unsplash or Pexels.
+
+### Strict image requirements
+
+Use actual image URLs that load in the browser.
+
+Prefer direct, stable image CDN links instead of unreliable image-search redirects or temporary links.
+
+Do not rely on the retired or unreliable pattern of requesting random stock images from a generic image endpoint.
+
+Do not use fabricated local image paths for assets that do not exist.
+
+Do not render broken-image icons, empty grey placeholders, inaccessible remote images or screenshots of stock photography websites.
+
+Do not use the Google AI Studio interface, Gemini logos, generic AI-generated robot imagery or irrelevant technology stock photos as visual assets.
+
+Do not generate replacement brand artwork when an image is supposed to represent the supplied logo.
+
+If an external image fails, provide a deliberate fallback using approved brand-coloured shapes or a properly designed CSS illustration. Keep the layout intact.
+
+Add appropriate alternative text and lazy-load below-the-fold photography.
+
+Maintain consistent image cropping and aspect ratios.
+
+Use object-fit appropriately rather than stretching images.
+
+If a stock image is not necessary, use designed CSS compositions, original interface previews or attractive geometric illustrations in the official palette.
+
+Do not fill every section with photographs. Mix photography with product previews and visual design elements so the page remains distinctive.
+
+---
+
+## 15. MOTION DESIGN AND ANIMATION SYSTEM
+
+Animation is an important part of the Build Buds identity.
+
+Build a consistent motion system rather than adding random animations to individual components.
+
+The motion should feel responsive, playful, smooth and purposeful.
+
+### Entrance animations
+
+Use staggered reveals for important text and visuals.
+
+Introduce sections with subtle opacity and transform transitions when they enter the viewport.
+
+Animate project previews in a coordinated sequence.
+
+Keep content readable and usable before, during and after animation.
+
+### Hover interactions
+
+Give buttons, links, project cards, navigation items and interactive previews thoughtful hover feedback.
+
+Possible effects include:
+
+- A small vertical lift.
+- A gentle scale change.
+- A border or background change using the approved palette.
+- A subtle image zoom.
+- A small, controlled rotation for decorative project previews.
+- A clear pressed state when clicked.
+
+Avoid large jumps, aggressive scaling and animations that move content out of position.
+
+### Decorative motion
+
+Use a few tasteful animated shapes around the hero and selected sections.
+
+These may drift, bounce slightly or respond to interaction.
+
+Use only the official brand colours.
+
+Avoid random floating symbols, excessive particles, artificial circuit-board effects and unrelated technology decoration.
+
+### Scroll experience
+
+Use smooth anchor navigation and restrained scroll-triggered reveals.
+
+The website should not hijack the browser's scrolling behaviour or lock the visitor into forced animation sequences.
+
+Do not build an elaborate scroll experience that makes the page sluggish or prevents mobile users from navigating normally.
+
+### Performance and accessibility
+
+Respect the user's reduced-motion preference.
+
+Use CSS animations and lightweight JavaScript wherever practical.
+
+Avoid heavy animation libraries unless they provide clear value.
+
+Do not animate every word, icon, card and background simultaneously.
+
+Ensure focus states and navigation remain visible throughout animations.
+
+Motion must enhance the experience rather than become the experience.
+
+---
+
+## 16. BUTTON DESIGN AND INTERACTION QUALITY
+
+Every button must be designed professionally.
+
+Use a consistent button system with primary, secondary, outlined and text-link variants.
+
+Buttons should have:
+
+- Clear text labels.
+- Predictable sizing.
+- Consistent padding.
+- Appropriate corner radii.
+- Strong readable contrast.
+- Visible hover states.
+- Visible keyboard-focus states.
+- Distinct pressed states.
+- Proper disabled states when needed.
+- Loading feedback for genuinely asynchronous actions.
+
+Do not use tiny buttons, unclear icon-only controls, mismatched rounded corners or arbitrary button styles.
+
+Make important calls to action visually prominent without using all three brand colours on a single button.
+
+Use a minimum practical touch target of approximately 44 by 44 CSS pixels whenever possible.
+
+Never implement a button that looks functional but does absolutely nothing.
+
+For actions not yet implemented, provide a clearly explained demo state or connect the button to an appropriate existing route.
+
+Do not show a success message for an operation that has not succeeded.
+
+---
+
+## 17. PRIVACY, TRUST AND A WELCOMING STUDENT COMMUNITY
+
+Build Buds is intended for young creators across schools, so the design should communicate a respectful and responsible community culture.
+
+Include a section that introduces the values of the community.
+
+Suggested heading:
+
+**“Build boldly. Be kind. Help each other grow.”**
+
+Suggested principles:
+
+- Respect other creators and their work.
+- Give constructive feedback.
+- Credit people whose work or ideas you use.
+- Share responsibly.
+- Ask questions without fear of embarrassment.
+- Celebrate progress as well as finished projects.
+
+Use clear and friendly language suitable for students, teachers and parents.
+
+The visual design should feel welcoming and safe without making unsupported claims about security or moderation.
+
+Where relevant, include a brief link or reference to community guidelines and privacy information.
+
+Do not promise that every account, message or project is already moderated or protected unless the corresponding functionality is actually implemented.
+
+Do not encourage students to publish private information.
+
+Plan the interface so appropriate safety controls can be added as the platform develops, including reporting, blocking, moderation, account privacy and responsible direct messaging.
+
+If login and community features are integrated, handle authentication and permissions appropriately. Never expose credentials, secret keys or private configuration in client-side code.
+
+---
+
+## 18. HOMEPAGE FAQ
+
+Include a compact, accessible FAQ section that answers common visitor questions.
+
+Suggested questions:
+
+**What is Build Buds?**
+
+Build Buds is a community for young creators to share projects, exchange ideas, solve problems and learn from one another.
+
+**Who can join Build Buds?**
+
+The community is intended for young builders and creators participating in the Build Buds network across schools. Display the actual eligibility rules once they have been established.
+
+**What can I share?**
+
+Members can showcase games, websites, creative experiments, project descriptions, screenshots, live demos and relevant source-code links, subject to the platform's publishing rules.
+
+**Can I ask questions and get help?**
+
+The planned community experience includes discussions, questions, comments and peer feedback.
+
+**Can I connect with other builders?**
+
+Build Buds is designed to connect students through shared interests, community discussions and collaboration. Private messaging can be introduced through the platform's account system.
+
+**How do I get started?**
+
+Use the Join Build Buds action to begin the registration process when account registration is available.
+
+Implement the FAQ with a polished accordion or another compact, keyboard-accessible interaction.
+
+Make sure the expanded answers remain readable on small screens.
+
+Do not claim that unfinished features are already live. Use precise wording to distinguish between available features and the wider platform vision.
+
+---
+
+## 19. FINAL CALL TO ACTION
+
+Near the end of the page, create a strong and memorable final section.
+
+Suggested heading:
+
+**“You bring the idea. We'll build the community.”**
+
+Supporting text:
+
+“Your next project could be the thing that inspires someone else. Come share what you make, find your people and keep building.”
+
+Primary CTA:
+
+“Join Build Buds”
+
+Secondary CTA:
+
+“Explore Creations”
+
+Use a striking composition with the approved colours, expressive typography and a small amount of coordinated animation.
+
+This section should feel like a natural conclusion to the homepage rather than another generic promotional banner.
+
+Make the final call to action accessible and clearly connected to the registration or discovery experience.
+
+---
+
+## 20. FOOTER AND OWNERSHIP
+
+Create a polished footer that completes the visual experience.
+
+Include:
+
+- Build Buds branding.
+- A short description of the community.
+- Discover.
+- Community.
+- Challenges.
+- About.
+- Contact, when a valid contact destination has been provided.
+- Privacy.
+- Community Guidelines.
+- Terms.
+
+Do not invent email addresses, telephone numbers, social accounts or legal policy URLs.
+
+For unavailable pages, use well-defined placeholders or omit the link until a legitimate destination is configured.
+
+The footer must explicitly include the platform's ownership and origin:
+
+**“Build Buds is created by the Smart Techies Group from JW Studios.”**
+
+Keep this acknowledgement visible but subordinate to the main brand.
+
+The website should lead with Build Buds, not make the entire homepage look like a corporate JW Studios website.
+
+Use a clean footer layout, appropriate spacing and the official brand colours.
+
+Make the footer responsive and ensure that its links remain usable on mobile devices.
+
+If adding a copyright line, do not invent a founding year or claim legal ownership arrangements that have not been supplied.
+
+---
+
+## 21. RESPONSIVE DESIGN REQUIREMENTS
+
+The website must be designed for desktop, laptop, tablet and mobile devices from the beginning.
+
+Do not simply scale down a desktop design.
+
+Use responsive layouts, flexible typography, fluid spacing, suitable image dimensions and breakpoints that match the content.
+
+Test the design conceptually and, where possible, in the browser at widths around:
+
+- 1440 px desktop.
+- 1024 px laptop or small desktop.
+- 768 px tablet.
+- 390 px mobile.
+- 320 px small mobile.
+
+These are practical testing targets, not the only supported sizes.
+
+### Mobile requirements
+
+- No horizontal overflow.
+- No clipped headings or project cards.
+- No oversized desktop navigation.
+- No buttons extending outside their containers.
+- No text that becomes too small to read.
+- No floating decoration obstructing important content.
+- No fixed-height hero section that cuts off content.
+- No hover-only functionality.
+- No inaccessible mobile menu.
+- No excessive spacing that forces visitors to scroll through unnecessary blank areas.
+
+Stack split layouts logically.
+
+Make button placement intuitive and touch-friendly.
+
+Keep important calls to action easy to locate.
+
+Use horizontal scrolling only where it genuinely improves a component, and provide clear visual cues when used.
+
+Do not hide essential information merely to make the mobile page look shorter.
+
+---
+
+## 22. TECHNICAL IMPLEMENTATION
+
+Build the homepage using the existing application stack if one has already been established.
+
+If starting from scratch, use a modern React and TypeScript implementation with clean, reusable components and maintainable CSS.
+
+Use the project's existing styling system when present. If Tailwind CSS is used, configure the official brand palette explicitly rather than relying on generic defaults.
+
+Suggested reusable components include:
+
+- SiteHeader.
+- MobileNavigation.
+- BrandLogo.
+- HeroSection.
+- ProjectShowcase.
+- ProjectCard.
+- ProjectFilters.
+- CommunityPreview.
+- ProjectPublishingSection.
+- HowItWorks.
+- BuilderCommunity.
+- ChallengeSection.
+- CommunityValues.
+- FAQSection.
+- FinalCTA.
+- SiteFooter.
+
+Keep data for showcase items separate from their presentation.
+
+Create consistent CSS variables or theme tokens for the official colour palette, typography, spacing, border radii, shadows and motion timings.
+
+Keep the official logo replaceable through one reusable component.
+
+Use semantic HTML, accessible interactive controls and appropriate heading hierarchy.
+
+Use descriptive document titles and metadata.
+
+Ensure there are no console errors, missing imports, broken image references or invalid component props.
+
+Do not install a large number of unnecessary packages merely to create simple visual effects.
+
+If an animation dependency is unavailable, implement the necessary motion using lightweight CSS and JavaScript.
+
+### Backend and authentication boundaries
+
+The initial task is to build the homepage and its presentation.
+
+Prepare clear integration points for the wider Build Buds platform, including account creation, Google sign-in, project publishing and community browsing.
+
+If Firebase or another backend has already been configured in the project, preserve the existing configuration and use the established patterns where appropriate.
+
+Do not overwrite existing working authentication or backend code just to make the homepage look complete.
+
+Do not invent API keys, Firebase configuration, OAuth credentials, repository URLs or backend endpoints.
+
+Do not simulate a successful Google login, project upload or message delivery if the operation has not actually occurred.
+
+If an authentication destination is available, link to it appropriately. Otherwise, make the registration and login integration points clear and easy to connect later.
+
+Use real links where available and sensible demo behaviour for prototype-only interactions.
+
+The website must remain a usable frontend even when the backend is not configured.
+
+---
+
+## 23. STRICT NO-AI-BADGE REQUIREMENT
+
+Do not display AI-related badges, AI-generation labels, Gemini branding, AI-provider marks, “Made with AI” labels, “AI Powered” stickers, artificial-intelligence ribbons or similar decorative markers anywhere on the homepage.
+
+Do not insert AI badges into the navigation, hero, project cards, stock photographs, buttons, floating labels, footer or community previews.
+
+Do not include a Google AI Studio badge or watermark as part of the website design.
+
+The fact that an AI tool is being used to produce the site must not appear in the public-facing brand identity.
+
+Build Buds should present itself as a community of young creators, not as an AI product.
+
+Do not introduce AI-related artwork or logos as shortcuts for communicating innovation.
+
+---
+
+## 24. CONTENT AND VISUAL QUALITY CONTROL
+
+Before considering the homepage complete, review the entire rendered page.
+
+Check that:
+
+1. The exact brand colours are used consistently.
+2. Chewy loads and is used appropriately.
+3. The temporary wordmark can be replaced by the supplied logo.
+4. The hero communicates what Build Buds is.
+5. Visitors can understand the project-sharing and community vision.
+6. Every section contributes something distinct.
+7. The page is visually polished without excessive cards or repetitive layouts.
+8. Every CTA has a meaningful destination or honest prototype behaviour.
+9. Animations are smooth, restrained and accessible.
+10. Stock photos load correctly and display appropriate content.
+11. The page works across the required screen sizes.
+12. Navigation and interactive components are usable with a keyboard.
+13. No AI badges or unrelated branding appear.
+14. No unapproved colours have been introduced.
+15. No invented user statistics, endorsements, prizes or live community claims are displayed.
+16. The footer credits the Smart Techies Group from JW Studios.
+17. No links, images or imports are broken.
+18. No new console errors are introduced.
+
+Do not consider the implementation finished merely because the source code has been generated.
+
+Inspect and refine the actual visual result, correcting layout problems, overflowing elements, broken images, inconsistent spacing, weak contrast, nonfunctional controls and poor mobile behaviour.
+
+---
+
+## 25. FINAL CREATIVE DIRECTION
+
+Make the website feel as if creativity has a home.
+
+A visitor should arrive and immediately think:
+
+“This looks fun. These are people who make things. I could share my own project here. I could learn from somebody else. I want to be part of this.”
+
+The website must be playful without being childish, colourful without being chaotic, professional without being boring, and technologically capable without looking like a generic software dashboard.
+
+Use the three signature colours boldly but intelligently.
+
+Let the typography carry personality, the projects carry the story, and the animations make the experience feel alive.
+
+Do not add unnecessary features simply to make the homepage look complicated.
+
+Do not replace the brief with a generic template.
+
+**Build the complete Build Buds homepage now. Prioritise visual quality, working interactions, responsive behaviour, maintainable implementation and a cohesive brand experience from top to bottom.**
