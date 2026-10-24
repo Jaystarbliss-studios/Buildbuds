@@ -1,137 +1,134 @@
 import React, { useState } from 'react';
-import { BUILDER_PERSONAS } from '../data/mockData.ts';
-import { Gamepad2, Globe, Wrench, Sparkles, Lightbulb, Users, School } from 'lucide-react';
+import { Gamepad2, Globe, Wrench, Sparkles, Lightbulb, Users, ArrowRight } from 'lucide-react';
+import { useTheme } from '../utils/themeContext.tsx';
 
 interface BuilderCommunityProps {
   onJoinClick: () => void;
 }
 
 export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick }) => {
-  const [selectedPersona, setSelectedPersona] = useState<number | null>(null);
+  const { isDark } = useTheme();
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
-  const getIcon = (type: string) => {
-    switch (type) {
-      case 'gamepad':
-        return <Gamepad2 className="w-5 h-5" />;
-      case 'globe':
-        return <Globe className="w-5 h-5" />;
-      case 'tool':
-        return <Wrench className="w-5 h-5" />;
-      case 'sparkles':
-        return <Sparkles className="w-5 h-5" />;
-      case 'lightbulb':
-        return <Lightbulb className="w-5 h-5" />;
-      case 'users':
-      default:
-        return <Users className="w-5 h-5" />;
-    }
-  };
+  const tags = [
+    { label: 'Game builders', icon: <Gamepad2 className="w-4 h-4 text-[#FFF025]" /> },
+    { label: 'Website makers', icon: <Globe className="w-4 h-4 text-[#B11469]" /> },
+    { label: 'Problem solvers', icon: <Wrench className="w-4 h-4 text-[#C15D00]" /> },
+    { label: 'Creative explorers', icon: <Sparkles className="w-4 h-4 text-[#FFF025]" /> },
+    { label: 'Curious beginners', icon: <Lightbulb className="w-4 h-4 text-[#B11469]" /> },
+    { label: 'Students helping students', icon: <Users className="w-4 h-4 text-[#C15D00]" /> },
+  ];
 
   return (
-    <section className="py-20 bg-[#0a0a14]/80 backdrop-blur-md border-b border-white/15 text-white">
+    <section
+      className={`py-20 border-b transition-colors duration-300 ${
+        isDark
+          ? 'bg-[#0a0a14]/80 backdrop-blur-md border-white/15 text-white'
+          : 'bg-white/95 backdrop-blur-md border-black/10 text-slate-900'
+      }`}
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
-        {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto mb-14">
-          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#C15D00' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-white">
-              Collaborative Culture
-            </span>
-          </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-3">
-            Your people are building here.
-          </h2>
-          <p className="font-chewy text-xl sm:text-2xl text-[#FFF025] mb-4">
-            Different schools. Different ideas. One community of builders.
-          </p>
-          <p className="text-base text-white/80 font-medium leading-relaxed max-w-2xl mx-auto">
-            Build Buds connects creators across schools. You do not need to be an expert coder to belong—curiosity and the excitement of making things are all you need.
-          </p>
-        </div>
-
-        {/* Builder Interests & Personas Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {BUILDER_PERSONAS.map((persona, idx) => {
-            const isSelected = selectedPersona === idx;
-            return (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+          
+          {/* Left Column: Photo Banner */}
+          <div className="lg:col-span-3 flex justify-center">
+            <div className="relative w-full max-w-xs">
               <div
-                key={idx}
-                onClick={() => setSelectedPersona(isSelected ? null : idx)}
-                className={`p-6 rounded-3xl border-2 transition-all duration-200 cursor-pointer ${
-                  isSelected
-                    ? 'border-[#FFF025] brand-shadow -translate-y-1.5'
-                    : 'bg-[#10101c]/95 border-white/20 hover:-translate-y-1 brand-shadow text-white'
+                className="absolute -top-3 -left-3 w-20 h-20 rounded-full blur-xl opacity-40 -z-10"
+                style={{ backgroundColor: '#B11469' }}
+              />
+              <div
+                className={`rounded-3xl overflow-hidden border-2 brand-shadow ${
+                  isDark ? 'border-white/20 bg-[#121222]' : 'border-black bg-white'
                 }`}
-                style={{
-                  backgroundColor: isSelected ? persona.accentColor : undefined,
-                  color: isSelected && persona.accentColor === '#FFF025' ? '#000000' : '#FFFFFF',
-                }}
               >
-                <div className="flex items-center justify-between mb-4">
-                  <div
-                    className="w-11 h-11 rounded-2xl border-2 border-black flex items-center justify-center bg-white text-black"
-                  >
-                    {getIcon(persona.iconType)}
-                  </div>
-                  <span
-                    className="text-[11px] font-black uppercase px-2.5 py-0.5 rounded-md border border-white/20 bg-white/15 text-white"
-                  >
-                    Active Group
-                  </span>
-                </div>
-
-                <h3
-                  className={`font-chewy text-2xl sm:text-3xl mb-2 ${
-                    isSelected && persona.accentColor === '#FFF025' ? 'text-black' : 'text-white'
-                  }`}
-                >
-                  {persona.role}
-                </h3>
-
-                <p
-                  className={`text-xs font-medium leading-relaxed mb-4 ${
-                    isSelected && persona.accentColor === '#FFF025' ? 'text-black/85' : 'text-white/80'
-                  }`}
-                >
-                  {persona.tagline}
-                </p>
-
-                <div
-                  className={`pt-3 border-t text-xs font-bold ${
-                    isSelected && persona.accentColor === '#FFF025'
-                      ? 'border-black/20 text-black/80'
-                      : 'border-white/15 text-white/70'
-                  }`}
-                >
-                  Examples: {persona.exampleProject}
-                </div>
+                <img
+                  src="/assets/aistudio/extracted/builder-group.png"
+                  alt="Young student creators collaborating"
+                  className="w-full h-auto object-cover block"
+                />
               </div>
-            );
-          })}
-        </div>
-
-        {/* Cross-School Network Visual Banner */}
-        <div className="mt-12 p-6 rounded-2xl border-2 border-white/20 bg-[#10101c]/95 backdrop-blur-md flex flex-col md:flex-row items-center justify-between gap-4 text-white">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl border-2 border-black bg-[#FFF025] flex items-center justify-center text-black shrink-0">
-              <School className="w-5 h-5 stroke-[2.5]" />
-            </div>
-            <div>
-              <div className="text-sm font-black text-white">
-                Connecting Student Builders Across Classrooms & Campuses
-              </div>
-              <p className="text-xs text-white/70">
-                Build Buds is a cross-school creator network, not a closed school portal. Everyone learns faster together.
-              </p>
             </div>
           </div>
-          <button
-            onClick={onJoinClick}
-            className="px-5 py-2.5 text-xs font-black text-black rounded-xl border-2 border-black bg-[#FFF025] brand-shadow hover:-translate-y-0.5 transition-transform cursor-pointer shrink-0"
-          >
-            Find Fellow Builders
-          </button>
+
+          {/* Center Column: Description & Builder Interest Badges */}
+          <div className="lg:col-span-5 flex flex-col justify-center text-left">
+            <div
+              className={`inline-flex items-center gap-2 mb-3 px-3 py-1 rounded-full border w-fit ${
+                isDark ? 'bg-white/10 border-white/15' : 'bg-amber-100/70 border-black/15'
+              }`}
+            >
+              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
+              <span className="text-xs font-bold uppercase tracking-wider">
+                Welcoming Community
+              </span>
+            </div>
+
+            <h2
+              className={`font-chewy text-3xl sm:text-4xl lg:text-5xl tracking-normal mb-3 ${
+                isDark ? 'text-white' : 'text-slate-900'
+              }`}
+            >
+              Your people are building here.
+            </h2>
+
+            <p
+              className={`text-sm sm:text-base font-medium leading-relaxed mb-6 ${
+                isDark ? 'text-white/80' : 'text-slate-600'
+              }`}
+            >
+              Build Buds connects creators across schools and helps you discover others who share your interests.
+            </p>
+
+            {/* Interest Badges */}
+            <div className="flex flex-wrap gap-2.5">
+              {tags.map((tag, idx) => {
+                const isSelected = selectedTag === tag.label;
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => setSelectedTag(isSelected ? null : tag.label)}
+                    className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                        : isDark
+                          ? 'bg-white/5 border-white/15 text-white/90 hover:bg-white/10'
+                          : 'bg-gray-50 border-black/15 text-slate-800 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span>{tag.icon}</span>
+                    <span>{tag.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right Column: Pink Tilted Highlight Badge */}
+          <div className="lg:col-span-4 flex justify-center">
+            <div
+              className="relative p-8 rounded-3xl border-2 border-black brand-shadow-lg rotate-1 max-w-sm w-full text-center"
+              style={{ backgroundColor: '#B11469' }}
+            >
+              <div className="absolute -top-3 -right-3 text-2xl animate-bounce">
+                ✨
+              </div>
+              <h3 className="font-chewy text-2xl sm:text-3xl text-white leading-snug mb-4">
+                Different schools.<br />
+                Different ideas.<br />
+                <span className="text-[#FFF025]">One community of builders.</span>
+              </h3>
+              <button
+                onClick={onJoinClick}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-black text-black bg-[#FFF025] hover:bg-[#ffe600] border border-black brand-shadow-sm transition-transform active:scale-95 cursor-pointer"
+              >
+                <span>Find Your Crew</span>
+                <ArrowRight className="w-3.5 h-3.5 stroke-[3]" />
+              </button>
+            </div>
+          </div>
+
         </div>
 
       </div>

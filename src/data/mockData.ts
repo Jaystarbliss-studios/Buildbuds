@@ -2,125 +2,121 @@ import { ProjectItem, DiscussionPost, ChallengeItem, FAQItem, BuilderPersona } f
 
 export const SAMPLE_PROJECTS: ProjectItem[] = [
   {
-    id: 'orbital-jump',
-    title: 'Orbital Jump',
-    tagline: 'Retro physics space platformer with low-gravity mechanics',
-    description: 'A 2D space explorer game where players jump between rotating planetoids using custom velocity vector physics and canvas rendering.',
+    id: 'galaxy-explorer',
+    title: 'Galaxy Explorer',
+    tagline: 'A small space adventure game with cool challenges and hidden treasures.',
+    description: 'A small space adventure game with cool challenges and hidden treasures.',
     category: 'games',
+    imageUrl: '/assets/aistudio/extracted/galaxy-explorer.png',
     creator: {
-      name: 'Maya K.',
+      name: 'Creator Alex',
       grade: 'Grade 8',
-      school: 'Westfield Middle School',
+      school: 'Lincoln Middle School',
       avatarBg: '#FFF025',
     },
     tools: ['HTML5 Canvas', 'TypeScript', 'Web Audio API'],
     whatLearned: [
-      'How to calculate gravitational pull between objects using the Pythagorean theorem.',
-      'Smooth 60FPS delta-time game loops without stuttering.',
-      'Synthesizing 8-bit jump sound effects using Web Audio oscillators.',
+      'How to calculate gravitational pull between objects using physics vectors.',
+      'Smooth 60FPS delta-time game loops with particle starfields.',
+      'Synthesizing space adventure sound effects using Web Audio oscillators.',
     ],
-    sourceCodeSnippet: `// Orbital Gravity Vector Calculation
-function applyGravity(player, planet) {
-  const dx = planet.x - player.x;
-  const dy = planet.y - player.y;
-  const distance = Math.hypot(dx, dy);
-  if (distance > planet.radius + 10) {
-    const force = 120 / (distance * distance);
-    player.vx += (dx / distance) * force;
-    player.vy += (dy / distance) * force;
-  }
+    sourceCodeSnippet: `// Galaxy Explorer Space Flight Loop
+function updateFlight(ship, stars) {
+  ship.x += ship.vx;
+  ship.y += ship.vy;
+  ship.vx *= 0.98; // Cosmic friction
+  ship.vy *= 0.98;
 }`,
     demoType: 'playable-game',
-    previewAccent: '#B11469',
-  },
-  {
-    id: 'ecotracker-garden',
-    title: 'EcoTracker School Garden',
-    tagline: 'Sensor dashboard and watering planner for school greenhouses',
-    description: 'An interactive website logging moisture levels, sunlight hours, and harvest schedules for our school organic biology patch.',
-    category: 'websites',
-    creator: {
-      name: 'Samir L.',
-      grade: 'Grade 9',
-      school: 'Riverdale STEM Academy',
-      avatarBg: '#C15D00',
-    },
-    tools: ['React', 'CSS Grid', 'LocalStorage API', 'Chart SVG'],
-    whatLearned: [
-      'Designing clean responsive tables that look great on student tablets.',
-      'Persisting custom garden notes across browser sessions with LocalStorage.',
-      'Calculated water reminder notifications based on daily weather inputs.',
-    ],
-    sourceCodeSnippet: `// Watering Reminder Logic
-export function getPlantStatus(soilMoisturePercent) {
-  if (soilMoisturePercent < 25) return { status: 'Needs Water', urgency: 'High' };
-  if (soilMoisturePercent < 55) return { status: 'Moist & Happy', urgency: 'Normal' };
-  return { status: 'Sufficiently Hydrated', urgency: 'Low' };
-}`,
-    demoType: 'interactive-web',
     previewAccent: '#FFF025',
   },
   {
-    id: 'pixel-palette-studio',
-    title: 'PixelPalette Studio',
-    tagline: 'Browser-based 16x16 pixel art creator & animation exporter',
-    description: 'A cheerful creative tool where students can draw retro sprites, preview frame-by-frame walk cycles, and export PNG sprite sheets.',
-    category: 'tools',
+    id: 'my-portfolio',
+    title: 'My Portfolio',
+    tagline: 'A personal website to showcase my skills and projects.',
+    description: 'A personal website to showcase my skills and projects.',
+    category: 'websites',
+    imageUrl: '/assets/aistudio/extracted/my-portfolio.png',
     creator: {
-      name: 'Chloe T.',
-      grade: 'Grade 7',
-      school: 'Beacon Crest School',
+      name: 'Creator Maya',
+      grade: 'Grade 9',
+      school: 'Westfield High School',
       avatarBg: '#B11469',
     },
-    tools: ['JavaScript', 'Canvas 2D Context', 'Blob API'],
+    tools: ['React', 'CSS Grid', 'LocalStorage API', 'Tailwind'],
     whatLearned: [
-      'Matrix indexing for 16x16 pixel grids.',
-      'Undo/redo state stack implementation.',
-      'Exporting raw canvas pixel buffers to downloadable PNG image files.',
+      'Designing clean responsive project cards for desktop and tablet.',
+      'Interactive dark/light theme switching with smooth transitions.',
+      'Showcasing live demos and source code links cleanly.',
     ],
-    sourceCodeSnippet: `// Frame Render Loop
-function renderPixelGrid(ctx, gridMatrix, pixelSize = 16) {
-  for (let r = 0; r < 16; r++) {
-    for (let c = 0; c < 16; c++) {
-      ctx.fillStyle = gridMatrix[r][c] || '#FFFFFF';
-      ctx.fillRect(c * pixelSize, r * pixelSize, pixelSize, pixelSize);
-    }
+    sourceCodeSnippet: `// Theme State Switcher
+export function useThemeToggle() {
+  const [theme, setTheme] = useState('light');
+  return { theme, toggle: () => setTheme(t => t === 'light' ? 'dark' : 'light') };
+}`,
+    demoType: 'interactive-web',
+    previewAccent: '#B11469',
+  },
+  {
+    id: 'sound-shapes',
+    title: 'Sound Shapes',
+    tagline: 'An interactive experiment with sound and motion.',
+    description: 'An interactive experiment with sound and motion.',
+    category: 'experiments',
+    imageUrl: '/assets/aistudio/extracted/sound-shapes.png',
+    creator: {
+      name: 'Creator Daniel',
+      grade: 'Grade 8',
+      school: 'Westfield STEM',
+      avatarBg: '#C15D00',
+    },
+    tools: ['Web Audio API', 'Canvas 2D', 'Frequency Analyser'],
+    whatLearned: [
+      'Transforming sound frequencies into pulsating geometric shapes.',
+      'Connecting micro-oscillators to interactive canvas coordinates.',
+      'Harmonics and acoustic waves visualization.',
+    ],
+    sourceCodeSnippet: `// Audio Harmonic Visualizer
+function drawPulseWave(ctx, freqData, radius) {
+  ctx.beginPath();
+  for (let i = 0; i < freqData.length; i++) {
+    const angle = (i / freqData.length) * Math.PI * 2;
+    const r = radius + freqData[i] * 0.4;
+    ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
   }
+  ctx.stroke();
 }`,
     demoType: 'simulation',
     previewAccent: '#C15D00',
   },
   {
-    id: 'wavesynth-lab',
-    title: 'SoundWave Frequency Lab',
-    tagline: 'Interactive audio oscillator and harmonic curve explorer',
-    description: 'A physics experiment turning mathematical sine, square, and sawtooth waves into real acoustic tones with visual oscilloscope feedback.',
-    category: 'experiments',
+    id: 'doodle-studio',
+    title: 'Doodle Studio',
+    tagline: 'A simple drawing tool with fun brushes and colours.',
+    description: 'A simple drawing tool with fun brushes and colours.',
+    category: 'tools',
+    imageUrl: '/assets/aistudio/extracted/doodle-studio.png',
     creator: {
-      name: 'Devon M.',
-      grade: 'Grade 8',
-      school: 'Summit Park Middle',
+      name: 'Creator Sophia',
+      grade: 'Grade 7',
+      school: 'Beacon Crest School',
       avatarBg: '#FFF025',
     },
-    tools: ['Web Audio API', 'AnalyserNode', 'SVG Waveforms'],
+    tools: ['JavaScript', 'Canvas 2D Context', 'Blob API'],
     whatLearned: [
-      'Connecting AudioContext oscillators to AnalyserNodes for real-time waveform inspection.',
-      'How musical pitch directly relates to frequency in Hertz (Hz).',
-      'Implementing smooth volume ramps to avoid speaker clicking noises.',
+      'Building responsive pencil, rainbow brush and eraser tools.',
+      'Undo/redo canvas snapshot history stack.',
+      'Exporting student artwork directly to PNG downloads.',
     ],
-    sourceCodeSnippet: `// Frequency Tone Player
-function playHarmonicTone(freq, waveType = 'sine') {
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = waveType;
-  osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.8);
-  osc.connect(gain).connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + 0.8);
+    sourceCodeSnippet: `// Brush Stroke Tracker
+function onDraw(ctx, x, y, color, size) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, size, 0, Math.PI * 2);
+  ctx.fill();
 }`,
     demoType: 'simulation',
-    previewAccent: '#B11469',
+    previewAccent: '#FFF025',
   },
   {
     id: 'mathquest-dungeon',

@@ -17,6 +17,7 @@ export interface ProjectItem {
   sourceCodeSnippet: string;
   demoType: 'playable-game' | 'interactive-web' | 'simulation';
   previewAccent: string; // Brand color: #FFF025, #B11469, or #C15D00
+  imageUrl?: string;
 }
 
 export interface DiscussionPost {

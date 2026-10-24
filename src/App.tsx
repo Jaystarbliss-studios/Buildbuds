@@ -4,6 +4,7 @@
  */
 
 import React, { useState } from 'react';
+import { ThemeProvider, useTheme } from './utils/themeContext.tsx';
 import { SpaceBackdrop } from './components/SpaceBackdrop.tsx';
 import { SparkleCursor } from './components/SparkleCursor.tsx';
 import { SiteHeader } from './components/SiteHeader.tsx';
@@ -31,7 +32,8 @@ import { ShareProjectModal } from './components/ShareProjectModal.tsx';
 import { SAMPLE_PROJECTS, SAMPLE_DISCUSSIONS } from './data/mockData.ts';
 import { ProjectItem, DiscussionPost, ChallengeItem } from './types/index.ts';
 
-export default function App() {
+function BuildBudsApp() {
+  const { isDark } = useTheme();
   const [projects, setProjects] = useState<ProjectItem[]>(SAMPLE_PROJECTS);
   const [discussions, setDiscussions] = useState<DiscussionPost[]>(SAMPLE_DISCUSSIONS);
   
@@ -68,14 +70,18 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#06060c] text-white flex flex-col font-sans selection:bg-[#FFF025] selection:text-black relative">
-      {/* Sticky/Fixed Space Backdrop with stars and cosmic brand nebula */}
+    <div
+      className={`min-h-screen flex flex-col font-sans selection:bg-[#FFF025] selection:text-black relative transition-colors duration-300 ${
+        isDark ? 'bg-[#06060c] text-white' : 'bg-white text-slate-900'
+      }`}
+    >
+      {/* Sticky/Fixed Space Backdrop with stars and cosmic brand nebula in dark mode, soft crisp backdrop in light mode */}
       <SpaceBackdrop />
 
       {/* Fairy dust / cosmic sparkle mouse trail */}
       <SparkleCursor />
 
-      {/* 1. Refined Responsive Navigation Header */}
+      {/* 1. Header with Day/Night Mode Switcher & Responsive Navigation */}
       <SiteHeader
         onJoinClick={() => {
           setJoinModalMode('join');
@@ -89,43 +95,43 @@ export default function App() {
 
       {/* Main Page Body */}
       <main className="flex-1">
-        {/* 2. Hero Section: Asymmetrical, Chewy Headline, Playable Canvas Mini-Sandbox */}
+        {/* 2. Hero Section: Young creator lady with laptop mockup visual, beautiful build buds backdrop */}
         <HeroSection
           onJoinClick={() => setIsJoinModalOpen(true)}
           onExploreClick={scrollToExplore}
           onOpenProject={handleOpenProjectById}
         />
 
-        {/* 3. Project Showcase: "Look what we’re building." with category filters & view actions */}
+        {/* 3. Project Showcase: "Look what we’re building." with mockup cards & extracted screenshots */}
         <ProjectShowcase
           projects={projects}
           onSelectProject={(project) => setActiveProjectModal(project)}
           onSubmitProjectClick={() => setIsShareProjectOpen(true)}
         />
 
-        {/* 4. Community Preview: "Making things is better together." with discussions, reactions, and reply flow */}
+        {/* 4. Community Preview: "Making things is better together." with collaboration photo banner */}
         <CommunityPreview
           initialDiscussions={discussions}
           onNewDiscussionClick={() => setIsNewDiscussionOpen(true)}
           onJoinClick={() => setIsJoinModalOpen(true)}
         />
 
-        {/* 5. Project Publishing Section: "Your work deserves a home." */}
+        {/* 5. Project Publishing Section: "Your work deserves a home." with Forest Quest card */}
         <ProjectPublishingSection
           onPublishClick={() => setIsShareProjectOpen(true)}
         />
 
-        {/* 6. How It Works: "Got an idea? Let’s build on it." (4-step visual flow) */}
+        {/* 6. How It Works: "Got an idea? Let’s build on it." (4 numbered circular steps) */}
         <HowItWorks
           onJoinClick={() => setIsJoinModalOpen(true)}
         />
 
-        {/* 7. Builder Community: "Your people are building here." */}
+        {/* 7. Builder Community: "Your people are building here." with group banner & interest pills */}
         <BuilderCommunity
           onJoinClick={() => setIsJoinModalOpen(true)}
         />
 
-        {/* 8. Challenges & Creative Missions: "What will you build next?" */}
+        {/* 8. Challenges & Creative Missions: "What will you build next?" with 3 challenge cards */}
         <ChallengeSection
           onJoinChallengeClick={(challenge) => setActiveChallengeModal(challenge)}
         />
@@ -133,7 +139,7 @@ export default function App() {
         {/* 9. Community Values & Trust: "Build boldly. Be kind. Help each other grow." */}
         <CommunityValues />
 
-        {/* 10. Homepage FAQ: 6 Questions Accordion */}
+        {/* 10. Homepage FAQ: Questions Accordion */}
         <FAQSection
           onJoinClick={() => setIsJoinModalOpen(true)}
         />
@@ -145,7 +151,7 @@ export default function App() {
         />
       </main>
 
-      {/* 12. Site Footer with JW Studios / Jaystarbliss Studios ownership credit */}
+      {/* 12. Site Footer with Jaystarbliss Studios ownership credit */}
       <SiteFooter
         onJoinClick={() => setIsJoinModalOpen(true)}
         onOpenGuidelines={() => setIsGuidelinesOpen(true)}
@@ -187,5 +193,13 @@ export default function App() {
         onAddProject={handleAddNewProject}
       />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <BuildBudsApp />
+    </ThemeProvider>
   );
 }

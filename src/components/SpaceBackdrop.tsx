@@ -1,11 +1,15 @@
 import React, { useMemo } from 'react';
+import { useTheme } from '../utils/themeContext.tsx';
 
 /**
- * Sticky/fixed cosmic space backdrop for the entire page.
- * Features subtle twinkling stars, cosmic dust, and celestial nebulae
- * strictly using the approved brand color palette (Lemon Yellow, Berry Pink, Burnt Orange, White, Black).
+ * Adaptive backdrop:
+ * - Night / Cosmic Space Mode: Deep #06060c night sky with twinkling brand stars,
+ *   floating dust particles, and celestial glows in Lemon Yellow, Berry Pink, and Burnt Orange.
+ * - Day / Afternoon Mode: Clean crisp white with cheerful faint brand warmth and soft grid.
  */
 export const SpaceBackdrop: React.FC = () => {
+  const { isDark } = useTheme();
+
   // Deterministic starfield array
   const stars = useMemo(() => {
     return Array.from({ length: 90 }, (_, i) => {
@@ -22,49 +26,63 @@ export const SpaceBackdrop: React.FC = () => {
   return (
     <div
       aria-hidden="true"
-      className="fixed inset-0 pointer-events-none -z-20 overflow-hidden bg-[#06060c]"
+      className={`fixed inset-0 pointer-events-none -z-20 overflow-hidden transition-colors duration-500 ${
+        isDark ? 'bg-[#06060c]' : 'bg-[#FAFAFA]'
+      }`}
     >
-      {/* Cosmic Nebula Glows in Brand Palette */}
+      {/* Glow Orbs */}
       <div
-        className="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full blur-[140px] opacity-25"
+        className={`absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full blur-[140px] transition-opacity duration-500 ${
+          isDark ? 'opacity-25' : 'opacity-10'
+        }`}
         style={{ backgroundColor: '#B11469' }}
       />
       <div
-        className="absolute top-1/3 -right-32 w-[550px] h-[550px] rounded-full blur-[160px] opacity-20"
+        className={`absolute top-1/3 -right-32 w-[550px] h-[550px] rounded-full blur-[160px] transition-opacity duration-500 ${
+          isDark ? 'opacity-20' : 'opacity-10'
+        }`}
         style={{ backgroundColor: '#C15D00' }}
       />
       <div
-        className="absolute bottom-10 left-1/4 w-[700px] h-[700px] rounded-full blur-[180px] opacity-15"
+        className={`absolute bottom-10 left-1/4 w-[700px] h-[700px] rounded-full blur-[180px] transition-opacity duration-500 ${
+          isDark ? 'opacity-15' : 'opacity-10'
+        }`}
         style={{ backgroundColor: '#FFF025' }}
       />
 
-      {/* Subtle Space Grid Mesh */}
+      {/* Grid Pattern */}
       <div
-        className="absolute inset-0 opacity-[0.03]"
+        className={`absolute inset-0 transition-opacity duration-500 ${
+          isDark ? 'opacity-[0.03]' : 'opacity-[0.04]'
+        }`}
         style={{
-          backgroundImage: `linear-gradient(to right, #FFFFFF 1px, transparent 1px), linear-gradient(to bottom, #FFFFFF 1px, transparent 1px)`,
+          backgroundImage: `linear-gradient(to right, ${isDark ? '#FFFFFF' : '#000000'} 1px, transparent 1px), linear-gradient(to bottom, ${isDark ? '#FFFFFF' : '#000000'} 1px, transparent 1px)`,
           backgroundSize: '80px 80px',
         }}
       />
 
-      {/* Twinkling Starfield */}
-      {stars.map((star, idx) => (
-        <span
-          key={idx}
-          className="absolute rounded-full animate-pulse"
-          style={{
-            top: `${star.top}%`,
-            left: `${star.left}%`,
-            width: `${star.size}px`,
-            height: `${star.size}px`,
-            backgroundColor: star.color,
-            boxShadow: star.size > 2 ? `0 0 6px ${star.color}` : 'none',
-            animationDuration: `${star.duration}s`,
-            animationDelay: `${star.delay}s`,
-            opacity: star.size > 2 ? 0.9 : 0.65,
-          }}
-        />
-      ))}
+      {/* Stars only visible in Dark Space Mode */}
+      {isDark && (
+        <div className="absolute inset-0 transition-opacity duration-500">
+          {stars.map((star, idx) => (
+            <span
+              key={idx}
+              className="absolute rounded-full animate-pulse"
+              style={{
+                top: `${star.top}%`,
+                left: `${star.left}%`,
+                width: `${star.size}px`,
+                height: `${star.size}px`,
+                backgroundColor: star.color,
+                boxShadow: star.size > 2 ? `0 0 6px ${star.color}` : 'none',
+                animationDuration: `${star.duration}s`,
+                animationDelay: `${star.delay}s`,
+                opacity: star.size > 2 ? 0.9 : 0.65,
+              }}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

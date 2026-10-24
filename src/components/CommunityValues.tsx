@@ -1,7 +1,10 @@
 import React from 'react';
 import { HeartHandshake, ShieldCheck, MessageCircleHeart, Award, HelpCircle, Sparkles } from 'lucide-react';
+import { useTheme } from '../utils/themeContext.tsx';
 
 export const CommunityValues: React.FC = () => {
+  const { isDark } = useTheme();
+
   const principles = [
     {
       title: 'Respect Other Creators',
@@ -42,69 +45,77 @@ export const CommunityValues: React.FC = () => {
   ];
 
   return (
-    <section className="py-20 bg-[#0a0a14]/80 backdrop-blur-md border-b border-white/15 text-white">
+    <section
+      className={`py-20 border-b transition-colors duration-300 ${
+        isDark
+          ? 'bg-[#0a0a14]/80 backdrop-blur-md border-white/15 text-white'
+          : 'bg-white/95 backdrop-blur-md border-black/10 text-slate-900'
+      }`}
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
         {/* Section Header */}
         <div className="text-center max-w-3xl mx-auto mb-16">
-          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
+          <div
+            className={`inline-flex items-center gap-2 mb-3 px-3 py-1 rounded-full border ${
+              isDark ? 'bg-white/10 border-white/15' : 'bg-amber-100/70 border-black/15'
+            }`}
+          >
             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#B11469' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-white">
+            <span className="text-xs font-bold uppercase tracking-wider">
               Community Culture & Trust
             </span>
           </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
+
+          <h2
+            className={`font-chewy text-4xl sm:text-5xl lg:text-6xl tracking-normal mb-4 ${
+              isDark ? 'text-white' : 'text-slate-900'
+            }`}
+          >
             Build boldly. Be kind. Help each other grow.
           </h2>
-          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
+
+          <p
+            className={`text-base sm:text-lg font-medium leading-relaxed ${
+              isDark ? 'text-white/85' : 'text-slate-600'
+            }`}
+          >
             Build Buds is built on mutual respect and shared curiosity. We want every creator—from elementary beginner to high school veteran—to feel supported.
           </p>
         </div>
 
-        {/* 6 Principles Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* 6 Core Principles Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {principles.map((item, idx) => (
             <div
               key={idx}
-              className="p-6 rounded-3xl border-2 border-white/20 brand-shadow bg-[#10101c]/95 backdrop-blur-md hover:-translate-y-1 transition-transform flex flex-col justify-between text-white"
+              className={`p-6 rounded-3xl border-2 brand-shadow transition-all hover:-translate-y-1 ${
+                isDark
+                  ? 'bg-[#10101d] border-white/20 hover:border-[#FFF025] text-white'
+                  : 'bg-white border-black/15 hover:border-black text-slate-900'
+              }`}
             >
-              <div>
-                <div
-                  className="w-11 h-11 rounded-2xl border-2 border-black flex items-center justify-center mb-4 text-black"
-                  style={{ backgroundColor: item.accent }}
-                >
-                  {item.icon}
-                </div>
-
-                <h3 className="font-chewy text-2xl text-white mb-2">
-                  {item.title}
-                </h3>
-
-                <p className="text-xs text-white/80 leading-relaxed">
-                  {item.desc}
-                </p>
+              <div
+                className="w-12 h-12 rounded-2xl flex items-center justify-center border-2 border-black mb-4 shadow-sm"
+                style={{
+                  backgroundColor: item.accent,
+                  color: item.accent === '#FFF025' ? '#000000' : '#FFFFFF',
+                }}
+              >
+                {item.icon}
               </div>
 
-              <div className="mt-4 pt-3 border-t border-white/15 text-[11px] font-bold text-white/60">
-                Core Value #{idx + 1}
-              </div>
+              <h3 className="font-chewy text-2xl mb-2">{item.title}</h3>
+
+              <p
+                className={`text-xs sm:text-sm font-medium leading-relaxed ${
+                  isDark ? 'text-white/80' : 'text-slate-600'
+                }`}
+              >
+                {item.desc}
+              </p>
             </div>
           ))}
-        </div>
-
-        {/* Safety & Parent/Teacher note */}
-        <div className="mt-12 p-6 rounded-2xl border-2 border-white/20 bg-[#10101c]/95 backdrop-blur-md brand-shadow flex flex-col sm:flex-row items-center gap-4 text-center sm:text-left text-white">
-          <div className="w-12 h-12 rounded-2xl border-2 border-black bg-[#FFF025] flex items-center justify-center shrink-0">
-            <ShieldCheck className="w-6 h-6 text-black stroke-[2.5]" />
-          </div>
-          <div>
-            <h4 className="text-sm font-bold text-white">
-              For Parents, Educators and Mentors
-            </h4>
-            <p className="text-xs text-white/75 mt-0.5">
-              Build Buds focuses strictly on creative coding, peer constructive review, and positive digital citizenship across participating schools.
-            </p>
-          </div>
         </div>
 
       </div>

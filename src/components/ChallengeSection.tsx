@@ -1,143 +1,129 @@
-import React, { useState } from 'react';
-import { SAMPLE_CHALLENGES } from '../data/mockData.ts';
+import React from 'react';
+import { Gamepad2, Globe, Lightbulb, ArrowRight } from 'lucide-react';
 import { ChallengeItem } from '../types/index.ts';
-import { Flame, Clock, Users, CheckSquare, Sparkles, ArrowRight, X } from 'lucide-react';
+import { useTheme } from '../utils/themeContext.tsx';
 
 interface ChallengeSectionProps {
   onJoinChallengeClick: (challenge: ChallengeItem) => void;
 }
 
 export const ChallengeSection: React.FC<ChallengeSectionProps> = ({ onJoinChallengeClick }) => {
-  const [selectedChallengeModal, setSelectedChallengeModal] = useState<ChallengeItem | null>(null);
+  const { isDark } = useTheme();
 
-  const featuredChallenge = SAMPLE_CHALLENGES.find((c) => c.featured) || SAMPLE_CHALLENGES[0];
-  const sideChallenges = SAMPLE_CHALLENGES.filter((c) => !c.featured);
+  const challenges = [
+    {
+      id: 'chal-tiny-game',
+      title: 'Build a Tiny Game',
+      description: 'Create a simple game using your favourite tools.',
+      bg: '#FFF025',
+      textColor: '#000000',
+      icon: <Gamepad2 className="w-6 h-6 stroke-[2.5]" />,
+      pillColor: '#000000',
+      pillTextColor: '#FFFFFF',
+    },
+    {
+      id: 'chal-useful-website',
+      title: 'Create a Useful Website',
+      description: 'Build something that solves a real problem.',
+      bg: isDark ? '#141424' : '#FFFFFF',
+      textColor: isDark ? '#FFFFFF' : '#000000',
+      icon: <Globe className="w-6 h-6 stroke-[2.5] text-[#B11469]" />,
+      pillColor: '#B11469',
+      pillTextColor: '#FFFFFF',
+    },
+    {
+      id: 'chal-helpful-tool',
+      title: 'Design a Helpful Tool',
+      description: 'Create a tool for everyday life.',
+      bg: isDark ? '#141424' : '#FFFFFF',
+      textColor: isDark ? '#FFFFFF' : '#000000',
+      icon: <Lightbulb className="w-6 h-6 stroke-[2.5] text-[#C15D00]" />,
+      pillColor: '#B11469',
+      pillTextColor: '#FFFFFF',
+    },
+  ];
 
   return (
-    <section id="challenges" className="py-20 bg-[#080812]/80 backdrop-blur-md border-b border-white/15 text-white">
+    <section
+      id="challenges"
+      className={`py-16 border-b transition-colors duration-300 ${
+        isDark
+          ? 'bg-[#080814] text-white border-white/15'
+          : 'bg-[#0F172A] text-white border-black/20'
+      }`}
+    >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         
-        {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto mb-14">
-          <div className="inline-flex items-center gap-2 mb-3 bg-white/10 px-3 py-1 rounded-full border border-white/15">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#FFF025' }} />
-            <span className="text-xs font-bold uppercase tracking-wider text-white">
-              Community Missions & Prompts
-            </span>
-          </div>
-          <h2 className="font-chewy text-4xl sm:text-5xl lg:text-6xl text-white tracking-normal mb-4">
-            What will you build next?
-          </h2>
-          <p className="text-base sm:text-lg text-white/85 font-medium leading-relaxed">
-            Need an idea or a spark of inspiration? Jump into creative prompts and friendly building challenges designed to exercise your maker muscles.
-          </p>
-        </div>
-
-        {/* Challenges Grid: 1 Featured (7 cols) + 2 Smaller (5 cols) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           
-          {/* Featured Challenge Card */}
-          <div className="lg:col-span-7 flex flex-col justify-between p-8 rounded-3xl border-2 border-white/20 brand-shadow-lg bg-[#10101c]/95 text-white relative overflow-hidden">
-            {/* Background geometric accents */}
-            <div
-              className="absolute -top-12 -right-12 w-48 h-48 rounded-full opacity-30 pointer-events-none"
-              style={{ backgroundColor: '#FFF025' }}
-            />
+          {/* Left Column: Heading, description, CTA */}
+          <div className="lg:col-span-5 flex flex-col justify-center text-left">
+            <h2 className="font-chewy text-3xl sm:text-4xl lg:text-5xl text-white tracking-normal mb-3">
+              What will you build next?
+            </h2>
 
-            <div className="relative z-10">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-                <span
-                  className="px-3.5 py-1 text-xs font-black uppercase tracking-wider rounded-lg border-2 border-black text-black"
-                  style={{ backgroundColor: '#FFF025' }}
-                >
-                  {featuredChallenge.badgeText}
-                </span>
-                <span className="text-xs font-bold text-white/80 flex items-center gap-1.5">
-                  <Clock className="w-4 h-4 text-[#FFF025]" />
-                  {featuredChallenge.timeframe}
-                </span>
-              </div>
+            <p className="text-sm sm:text-base text-white/80 font-medium leading-relaxed mb-6">
+              Take on creative prompts, join project challenges and build something amazing with the community.
+            </p>
 
-              <h3 className="font-chewy text-3xl sm:text-4xl lg:text-5xl text-white mb-3 leading-tight">
-                {featuredChallenge.title}
-              </h3>
-
-              <p className="text-sm sm:text-base text-white/90 font-medium mb-6 leading-relaxed">
-                {featuredChallenge.description}
-              </p>
-
-              {/* Prompt Checklist */}
-              <div className="space-y-3 mb-8 bg-white/10 p-5 rounded-2xl border border-white/20">
-                <div className="text-xs font-bold uppercase text-[#FFF025] tracking-wider">
-                  Challenge Guidelines:
-                </div>
-                {featuredChallenge.prompts.map((prompt, idx) => (
-                  <div key={idx} className="flex items-start gap-2.5 text-xs text-white/90">
-                    <CheckSquare className="w-4 h-4 text-[#FFF025] shrink-0 mt-0.5" />
-                    <span>{prompt}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="relative z-10 pt-4 border-t border-white/20 flex flex-col sm:flex-row items-center justify-between gap-4">
-              <div className="text-xs text-white/70">
-                Playful, friendly prompt • No pressure or strict ranking
-              </div>
+            <div>
               <button
-                onClick={() => onJoinChallengeClick(featuredChallenge)}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 text-xs sm:text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer"
+                onClick={() =>
+                  onJoinChallengeClick({
+                    id: 'chal-tiny-game',
+                    title: 'Build a Tiny Game',
+                    theme: 'Creative game jam',
+                    description: 'Create a simple game using your favourite tools.',
+                    badgeText: 'Open Challenge',
+                    accentColor: '#FFF025',
+                    timeframe: 'Ongoing Jam',
+                    participantCount: 38,
+                    prompts: ['1-button runner', 'Maze escape', 'Tile puzzle'],
+                  })
+                }
+                className="inline-flex items-center gap-2 px-6 py-3.5 text-sm font-black text-black rounded-2xl border-2 border-black brand-shadow transition-transform hover:-translate-y-1 active:translate-y-0.5 cursor-pointer"
                 style={{ backgroundColor: '#FFF025' }}
               >
-                <span>Take on this Challenge</span>
+                <span>Explore Challenges</span>
                 <ArrowRight className="w-4 h-4 stroke-[3]" />
               </button>
             </div>
           </div>
 
-          {/* 2 Smaller Challenges (5 cols) */}
-          <div className="lg:col-span-5 flex flex-col gap-6 justify-between">
-            {sideChallenges.map((challenge) => (
+          {/* Right Column: 3 Challenge Cards */}
+          <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {challenges.map((chal) => (
               <div
-                key={challenge.id}
-                className="flex-1 p-6 rounded-3xl border-2 border-white/20 brand-shadow bg-[#10101c]/95 flex flex-col justify-between hover:-translate-y-1 transition-transform text-white"
-                style={{ borderLeft: `8px solid ${challenge.accentColor}` }}
+                key={chal.id}
+                onClick={() =>
+                  onJoinChallengeClick({
+                    id: chal.id,
+                    title: chal.title,
+                    theme: 'Creative Jam',
+                    description: chal.description,
+                    badgeText: 'Open Challenge',
+                    accentColor: chal.bg === '#FFF025' ? '#FFF025' : '#B11469',
+                    timeframe: 'Open Mission',
+                    participantCount: 24,
+                    prompts: ['Brainstorm prompt', 'Draft layout', 'Publish demo'],
+                  })
+                }
+                className="p-5 rounded-2xl border-2 border-black brand-shadow flex flex-col justify-between transition-transform hover:-translate-y-1 cursor-pointer"
+                style={{ backgroundColor: chal.bg, color: chal.textColor }}
               >
                 <div>
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <span
-                      className="px-2.5 py-0.5 text-[11px] font-black uppercase rounded border border-black"
-                      style={{
-                        backgroundColor: challenge.accentColor,
-                        color: challenge.accentColor === '#FFF025' ? '#000000' : '#FFFFFF',
-                      }}
-                    >
-                      {challenge.badgeText}
-                    </span>
-                    <span className="text-xs font-semibold text-white/60">
-                      {challenge.timeframe}
-                    </span>
-                  </div>
-
-                  <h4 className="font-chewy text-2xl text-white mb-2">
-                    {challenge.title}
-                  </h4>
-
-                  <p className="text-xs text-white/80 leading-relaxed mb-4">
-                    {challenge.description}
-                  </p>
+                  <div className="mb-3">{chal.icon}</div>
+                  <h3 className="font-chewy text-xl leading-snug mb-1">{chal.title}</h3>
+                  <p className="text-xs leading-relaxed opacity-85 mb-4">{chal.description}</p>
                 </div>
 
-                <div className="pt-3 border-t border-white/15 flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-white/60">
-                    Open to all grades
-                  </span>
-                  <button
-                    onClick={() => onJoinChallengeClick(challenge)}
-                    className="text-xs font-bold text-white underline hover:text-[#FFF025] cursor-pointer"
+                <div className="pt-2">
+                  <span
+                    className="inline-block px-3 py-1 rounded-full text-[11px] font-black border border-black"
+                    style={{ backgroundColor: chal.pillColor, color: chal.pillTextColor }}
                   >
-                    View prompt details →
-                  </button>
+                    Open Challenge
+                  </span>
                 </div>
               </div>
             ))}
