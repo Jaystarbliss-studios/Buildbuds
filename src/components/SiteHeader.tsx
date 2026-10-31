@@ -3,16 +3,19 @@ import { BrandLogo } from './BrandLogo.tsx';
 import { Menu, X, ArrowRight, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 import { BuilderProfile } from '../firebase.ts';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 interface SiteHeaderProps {
   onJoinClick: () => void;
   onSignInClick: () => void;
+  onLaunchAppMode?: () => void;
   builderProfile?: BuilderProfile | null;
 }
 
 export const SiteHeader: React.FC<SiteHeaderProps> = ({
   onJoinClick,
   onSignInClick,
+  onLaunchAppMode,
   builderProfile,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -105,9 +108,10 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
             })}
           </nav>
 
-          {/* Action Zone: Day/Night Theme Toggle + Sign In + Join Build Buds CTA */}
+          {/* Action Zone: Download App + Day/Night Theme Toggle + Sign In + Join Build Buds CTA */}
           <div className="hidden md:flex items-center gap-3">
-            
+            <PWAInstallButton variant="header" onLaunchAppMode={onLaunchAppMode} />
+
             {/* Day / Cosmic Night Theme Toggle */}
             <button
               onClick={toggleTheme}
@@ -153,6 +157,8 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
 
           {/* Mobile Actions */}
           <div className="flex items-center md:hidden gap-2">
+            <PWAInstallButton variant="header" onLaunchAppMode={onLaunchAppMode} />
+
             <button
               onClick={toggleTheme}
               className={`p-2 rounded-lg border transition-all ${
@@ -207,6 +213,13 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
           </nav>
 
           <div className="pt-3 border-t border-white/10 flex flex-col gap-2">
+            <PWAInstallButton
+              variant="mobile"
+              onLaunchAppMode={() => {
+                setMobileMenuOpen(false);
+                onLaunchAppMode?.();
+              }}
+            />
             <button
               onClick={() => {
                 setMobileMenuOpen(false);

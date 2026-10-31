@@ -39,17 +39,38 @@ import {
   User,
 } from './firebase.ts';
 
+import { OfflineIndicator } from './components/PWAInstallButton.tsx';
+import {
+  detectStandaloneAppLaunch,
+  setStandaloneAppSession,
+} from './utils/usePWAInstall.ts';
+
 // Data
 import { SAMPLE_PROJECTS, SAMPLE_DISCUSSIONS } from './data/mockData.ts';
 import { ProjectItem, DiscussionPost, ChallengeItem } from './types/index.ts';
+
+const HUB_OPEN_STORAGE_KEY = 'buildbuds_hub_open';
 
 function BuildBudsApp() {
   const { isDark } = useTheme();
   const [projects, setProjects] = useState<ProjectItem[]>(SAMPLE_PROJECTS);
   const [discussions, setDiscussions] = useState<DiscussionPost[]>(SAMPLE_DISCUSSIONS);
 
+  // Detect whether the app was launched as a downloaded/installed Web App (PWA standalone mode)
+  const [isStandaloneAppMode, setIsStandaloneAppMode] = useState<boolean>(() =>
+    detectStandaloneAppLaunch()
+  );
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+
   // Full-screen Discord-style Community Hub state
-  const [isCommunityHubOpen, setIsCommunityHubOpen] = useState(false);
+  const [isCommunityHubOpen, setIsCommunityHubOpen] = useState<boolean>(() => {
+    if (detectStandaloneAppLaunch()) return true;
+    try {
+      return localStorage.getItem(HUB_OPEN_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [hubChannelId, setHubChannelId] = useState<string>('general-chat');
 
   // Firebase Auth user & Builder Profile (only set if user is registered in the database)
@@ -66,7 +87,34 @@ function BuildBudsApp() {
   const [isGuidelinesOpen, setIsGuidelinesOpen] = useState(false);
   const [isShareProjectOpen, setIsShareProjectOpen] = useState(false);
 
-  // Listen to Firebase Auth state — only recognize users who have signed up in the database
+  // Listen for PWA installation or display-mode changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(display-mode: standalone)');
+    const handleStandaloneChange = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        setIsStandaloneAppMode(true);
+        setIsCommunityHubOpen(true);
+      }
+    };
+    const handleAppInstalled = () => {
+      setIsStandaloneAppMode(true);
+      setIsCommunityHubOpen(true);
+    };
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handleStandaloneChange);
+    }
+    window.addEventListener('appinstalled', handleAppInstalled);
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener('change', handleStandaloneChange);
+      }
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  // Listen to Firebase Auth state — only recognize users who have signed up in the database.
+  // When signed in already, automatically sign the user directly into their account!
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (isAuthModalBusyRef.current) {
@@ -79,6 +127,13 @@ function BuildBudsApp() {
           if (existingProfile) {
             setCurrentUser(user);
             setBuilderProfile(existingProfile);
+            // If running as the downloaded web app OR user previously had the hub open, sign in directly to hub
+            if (
+              detectStandaloneAppLaunch() ||
+              localStorage.getItem(HUB_OPEN_STORAGE_KEY) !== '0'
+            ) {
+              setIsCommunityHubOpen(true);
+            }
           } else {
             // Unregistered Gmail / Auth user — sign out immediately so they are not recognized
             await signOut(auth);
@@ -91,11 +146,14 @@ function BuildBudsApp() {
           setCurrentUser(null);
           setBuilderProfile(null);
           setIsCommunityHubOpen(false);
+        } finally {
+          setIsAuthChecking(false);
         }
       } else {
         setCurrentUser(null);
         setBuilderProfile(null);
         setIsCommunityHubOpen(false);
+        setIsAuthChecking(false);
       }
     });
     return () => unsubscribe();
@@ -105,10 +163,31 @@ function BuildBudsApp() {
   const handleEnterCommunity = (mode: 'join' | 'signin' = 'join', channelId = 'general-chat') => {
     setHubChannelId(channelId);
     if (currentUser && builderProfile) {
+      try {
+        localStorage.setItem(HUB_OPEN_STORAGE_KEY, '1');
+      } catch {
+        // Ignore
+      }
       setIsCommunityHubOpen(true);
     } else {
       setJoinModalMode(mode);
       setIsJoinModalOpen(true);
+    }
+  };
+
+  // Switch into standalone Web App mode (starts from dedicated Sign-In/Sign-Up or goes straight to Hub if signed in)
+  const handleLaunchStandaloneApp = () => {
+    setStandaloneAppSession(true);
+    setIsStandaloneAppMode(true);
+    if (currentUser && builderProfile) {
+      try {
+        localStorage.setItem(HUB_OPEN_STORAGE_KEY, '1');
+      } catch {
+        // Ignore
+      }
+      setIsCommunityHubOpen(true);
+    } else {
+      setJoinModalMode('signin');
     }
   };
 
@@ -135,6 +214,89 @@ function BuildBudsApp() {
     }
   };
 
+  // STANDALONE DOWNLOADED WEB APP FLOW:
+  // 1) Never starts from the main marketing website.
+  // 2) If already signed in -> opens CommunityHub directly into the user's account.
+  // 3) If first-time downloader / not signed in -> shows dedicated full-screen Sign-In / Sign-Up page.
+  if (isStandaloneAppMode) {
+    if (isAuthChecking) {
+      return (
+        <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
+          <img
+            src="/pwa-192x192.png"
+            alt="Build Buds App"
+            className="w-16 h-16 rounded-3xl border-2 border-[#FFF025] object-cover shadow-2xl mb-4 animate-pulse"
+          />
+          <div className="font-chewy text-2xl text-[#FFF025] tracking-wide">Build Buds</div>
+          <div className="text-xs font-mono text-white/60 mt-1">
+            Signing you in to your account...
+          </div>
+          <OfflineIndicator />
+        </div>
+      );
+    }
+
+    if (currentUser && builderProfile) {
+      return (
+        <>
+          <CommunityHub
+            currentUser={currentUser}
+            builderProfile={builderProfile}
+            initialChannelId={hubChannelId}
+            isStandaloneApp={true}
+            onBackToLanding={() => {
+              setStandaloneAppSession(false);
+              setIsStandaloneAppMode(false);
+              try {
+                localStorage.setItem(HUB_OPEN_STORAGE_KEY, '0');
+              } catch {
+                // Ignore
+              }
+              setIsCommunityHubOpen(false);
+            }}
+            onOpenAuthModal={(mode) => {
+              setJoinModalMode(mode);
+              setIsJoinModalOpen(true);
+            }}
+            onProfileUpdated={(profile) => setBuilderProfile(profile)}
+          />
+          <OfflineIndicator />
+        </>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-[#06060c] text-white relative">
+        <SpaceBackdrop />
+        <JoinModal
+          key={`standalone-${joinModalMode}`}
+          isOpen={true}
+          initialMode={joinModalMode}
+          isStandaloneAppScreen={true}
+          onBrowseWebsite={() => {
+            setStandaloneAppSession(false);
+            setIsStandaloneAppMode(false);
+          }}
+          onAuthBusyChange={(busy) => {
+            isAuthModalBusyRef.current = busy;
+          }}
+          onClose={() => {}}
+          onSuccess={(profile, user) => {
+            try {
+              localStorage.setItem(HUB_OPEN_STORAGE_KEY, '1');
+            } catch {
+              // Ignore
+            }
+            setCurrentUser(user);
+            setBuilderProfile(profile);
+            setIsCommunityHubOpen(true);
+          }}
+        />
+        <OfflineIndicator />
+      </div>
+    );
+  }
+
   return (
     <div
       className={`min-h-screen flex flex-col font-sans selection:bg-[#FFF025] selection:text-black relative transition-colors duration-300 ${
@@ -147,13 +309,24 @@ function BuildBudsApp() {
       {/* Fairy dust / cosmic sparkle mouse trail */}
       <SparkleCursor />
 
+      {/* Offline status toast for PWA */}
+      <OfflineIndicator />
+
       {/* Full-Screen Discord-Style Community Hub View — strictly gated to registered database users */}
       {isCommunityHubOpen && currentUser && builderProfile && (
         <CommunityHub
           currentUser={currentUser}
           builderProfile={builderProfile}
           initialChannelId={hubChannelId}
-          onBackToLanding={() => setIsCommunityHubOpen(false)}
+          isStandaloneApp={false}
+          onBackToLanding={() => {
+            try {
+              localStorage.setItem(HUB_OPEN_STORAGE_KEY, '0');
+            } catch {
+              // Ignore
+            }
+            setIsCommunityHubOpen(false);
+          }}
           onOpenAuthModal={(mode) => {
             setJoinModalMode(mode);
             setIsJoinModalOpen(true);
@@ -162,11 +335,12 @@ function BuildBudsApp() {
         />
       )}
 
-      {/* 1. Header with Day/Night Mode Switcher, Sign In & Join Build Buds CTA */}
+      {/* 1. Header with Download App, Day/Night Mode Switcher, Sign In & Join Build Buds CTA */}
       <SiteHeader
         builderProfile={builderProfile}
         onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         onSignInClick={() => handleEnterCommunity('signin', 'general-chat')}
+        onLaunchAppMode={handleLaunchStandaloneApp}
       />
 
       {/* Main Page Body */}
@@ -253,6 +427,11 @@ function BuildBudsApp() {
           }
         }}
         onSuccess={(profile, user) => {
+          try {
+            localStorage.setItem(HUB_OPEN_STORAGE_KEY, '1');
+          } catch {
+            // Ignore
+          }
           setCurrentUser(user);
           setBuilderProfile(profile);
           setIsJoinModalOpen(false);

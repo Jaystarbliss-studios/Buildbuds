@@ -24,6 +24,8 @@ interface JoinModalProps {
   onClose: () => void;
   onSuccess: (profile: BuilderProfile, user: User) => void;
   onAuthBusyChange?: (busy: boolean) => void;
+  isStandaloneAppScreen?: boolean;
+  onBrowseWebsite?: () => void;
 }
 
 function formatFriendlyError(err: unknown, fallback: string): string {
@@ -56,6 +58,8 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   onClose,
   onSuccess,
   onAuthBusyChange,
+  isStandaloneAppScreen = false,
+  onBrowseWebsite,
 }) => {
   const [mode, setMode] = useState<'join' | 'signin'>(initialMode);
   const [email, setEmail] = useState('');
@@ -385,17 +389,52 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="join-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
+      className={
+        isStandaloneAppScreen
+          ? 'fixed inset-0 z-50 flex flex-col items-center justify-center p-4 bg-[#06060c] overflow-y-auto'
+          : 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto'
+      }
     >
-      <div className="relative w-full max-w-lg bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-8 shadow-2xl">
-        {/* Close Button */}
-        <button
-          onClick={handleCloseModal}
-          aria-label="Close modal"
-          className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-white/20 bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
-        >
-          <X className="w-5 h-5 stroke-[2.5]" />
-        </button>
+      {isStandaloneAppScreen && (
+        <div className="w-full max-w-lg mb-4 flex items-center justify-between px-1">
+          <div className="flex items-center gap-3">
+            <img
+              src="/pwa-192x192.png"
+              alt="Build Buds App"
+              className="w-11 h-11 rounded-2xl border-2 border-[#FFF025] object-cover shadow-lg"
+            />
+            <div>
+              <h1 className="font-chewy text-2xl sm:text-3xl text-[#FFF025] tracking-wide leading-none">
+                Build Buds App
+              </h1>
+              <p className="text-xs text-white/65 mt-0.5">
+                Sign in or create your account — next time you open the app, you&apos;ll go straight into your chat!
+              </p>
+            </div>
+          </div>
+          {onBrowseWebsite && (
+            <button
+              type="button"
+              onClick={onBrowseWebsite}
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-bold text-white/80 hover:text-white cursor-pointer shrink-0"
+            >
+              Website
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="relative w-full max-w-lg bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-2 shadow-2xl">
+        {/* Close Button (only shown when used as an overlay modal on the website) */}
+        {!isStandaloneAppScreen && (
+          <button
+            onClick={handleCloseModal}
+            aria-label="Close modal"
+            className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-white/20 bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5 stroke-[2.5]" />
+          </button>
+        )}
 
         {/* Tab switcher: Sign Up vs Sign In */}
         {!createdProfile && (

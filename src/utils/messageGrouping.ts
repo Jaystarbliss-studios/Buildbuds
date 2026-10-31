@@ -70,19 +70,29 @@ export interface RawPresenceRecord {
 }
 
 /**
- * Deduplicates online presence records by `uid`, keeping the freshest record per user,
- * and merges the current active user and any recently active message authors so the online
- * member count is accurate, non-duplicated, and resilient to heartbeat race conditions.
+ * Deduplicates online presence records by `uid`, filters out any stale/deleted accounts
+ * not present in `validRegisteredUserIds` (when provided and non-empty), and merges the
+ * current active user and any recently active message authors so the online member count
+ * is fast, accurate, non-duplicated, and never exceeds the registered builder count.
  */
 export function computeAccurateOnlineMembers(
   presenceRecords: RawPresenceRecord[],
   currentUserRecord: RawPresenceRecord | null,
-  recentMessageAuthors: RawPresenceRecord[] = []
+  recentMessageAuthors: RawPresenceRecord[] = [],
+  validRegisteredUserIds?: ReadonlySet<string>
 ): RawPresenceRecord[] {
+  const hasRegistryFilter = Boolean(validRegisteredUserIds && validRegisteredUserIds.size > 0);
+  const isAllowedUid = (uid: string): boolean => {
+    if (!uid) return false;
+    if (currentUserRecord && uid === currentUserRecord.uid) return true;
+    if (!hasRegistryFilter) return true;
+    return validRegisteredUserIds!.has(uid);
+  };
+
   const byUid = new Map<string, RawPresenceRecord>();
 
   for (const rec of presenceRecords) {
-    if (!rec.uid) continue;
+    if (!isAllowedUid(rec.uid)) continue;
     const existing = byUid.get(rec.uid);
     if (!existing || rec.lastSeenMillis >= existing.lastSeenMillis) {
       byUid.set(rec.uid, rec);
@@ -90,7 +100,7 @@ export function computeAccurateOnlineMembers(
   }
 
   for (const author of recentMessageAuthors) {
-    if (!author.uid) continue;
+    if (!isAllowedUid(author.uid)) continue;
     if (!byUid.has(author.uid)) {
       byUid.set(author.uid, author);
     }
@@ -104,7 +114,31 @@ export function computeAccurateOnlineMembers(
     });
   }
 
-  return Array.from(byUid.values());
+  // Secondary guard: if a user recreated their account under the exact same displayName
+  // and an older duplicate record still exists, keep only the current user's UID or the newest record
+  const byNormalizedName = new Map<string, RawPresenceRecord>();
+  for (const member of byUid.values()) {
+    const normName = (member.displayName || '').trim().toLowerCase();
+    if (!normName) {
+      byNormalizedName.set(member.uid, member);
+      continue;
+    }
+    const existing = byNormalizedName.get(normName);
+    if (!existing) {
+      byNormalizedName.set(normName, member);
+      continue;
+    }
+    if (currentUserRecord && member.uid === currentUserRecord.uid) {
+      byNormalizedName.set(normName, member);
+    } else if (
+      (!currentUserRecord || existing.uid !== currentUserRecord.uid) &&
+      member.lastSeenMillis >= existing.lastSeenMillis
+    ) {
+      byNormalizedName.set(normName, member);
+    }
+  }
+
+  return Array.from(byNormalizedName.values());
 }
 
 /**

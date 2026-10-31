@@ -164,3 +164,56 @@ test('Mobile horizontal swipe gesture opens and closes left sidebar cleanly', ()
   assert.equal(evaluateHorizontalSwipeGesture(220, 300, 90, 305, true), 'close-sidebar');
 });
 
+test('computeAccurateOnlineMembers filters out deleted/unregistered accounts so online count never exceeds registered builders', () => {
+  const now = Date.now();
+  const registeredUserIds = new Set(['u1', 'u2', 'u3', 'u4']);
+  const presenceRecords = [
+    {
+      uid: 'u1',
+      displayName: 'John Rufai',
+      avatarColor: '#FFF025',
+      activeChannelId: 'general-chat',
+      isTyping: false,
+      lastSeenMillis: now - 2000,
+    },
+    {
+      uid: 'u2',
+      displayName: 'Jaystarbliss studios',
+      avatarColor: '#B11469',
+      activeChannelId: 'general-chat',
+      isTyping: false,
+      lastSeenMillis: now - 1000,
+    },
+    {
+      uid: 'deleted-jaystar-old-uid', // Orphaned presence doc from a deleted account
+      displayName: 'Jaystarbliss studios',
+      avatarColor: '#10B981',
+      activeChannelId: 'general-chat',
+      isTyping: false,
+      lastSeenMillis: now - 4000,
+    },
+    {
+      uid: 'u3',
+      displayName: 'FRANCOLIZZY',
+      avatarColor: '#C15D00',
+      activeChannelId: 'general-chat',
+      isTyping: false,
+      lastSeenMillis: now - 3000,
+    },
+    {
+      uid: 'u4',
+      displayName: 'MUNACHIMSO OSUALA',
+      avatarColor: '#A855F7',
+      activeChannelId: 'general-chat',
+      isTyping: false,
+      lastSeenMillis: now - 2500,
+    },
+  ];
+
+  const result = computeAccurateOnlineMembers(presenceRecords, null, [], registeredUserIds);
+  assert.equal(result.length, 4);
+  assert.equal(result.filter((m) => m.displayName === 'Jaystarbliss studios').length, 1);
+  assert.equal(result.some((m) => m.uid === 'deleted-jaystar-old-uid'), false);
+});
+
+

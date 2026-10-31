@@ -108,6 +108,7 @@ import {
   registerBuildBudsServiceWorker,
   dispatchMessageBrowserNotification,
 } from '../utils/notifications.ts';
+import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 export interface ChannelItem {
   id: string;
@@ -318,6 +319,7 @@ interface CommunityHubProps {
   onOpenAuthModal: (mode: 'join' | 'signin') => void;
   onProfileUpdated: (profile: BuilderProfile) => void;
   initialChannelId?: string;
+  isStandaloneApp?: boolean;
 }
 
 export const CommunityHub: React.FC<CommunityHubProps> = ({
@@ -327,6 +329,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   onOpenAuthModal,
   onProfileUpdated,
   initialChannelId = 'general-chat',
+  isStandaloneApp = false,
 }) => {
   const [activeChannelId, setActiveChannelId] = useState<string>(initialChannelId);
   const [activeSubGroupId, setActiveSubGroupId] = useState<string | null>(null);
@@ -434,6 +437,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const isCurrentlyTypingRef = useRef<boolean>(false);
   const lastTypingWriteMillisRef = useRef<number>(0);
   const initialMessagesSnapshotSeenRef = useRef<boolean>(false);
+  const initialPresenceSnapshotSeenRef = useRef<boolean>(false);
   const knownMessageIdsRef = useRef<Set<string>>(new Set());
   const activeStreamIdRef = useRef<string>(initialChannelId);
   const notificationPrefsRef = useRef<NotificationPreferences>(notificationPrefs);
@@ -912,7 +916,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [currentUser?.uid]);
 
-  // Helper to recompute active online members & typing state without clock-skew false negatives
+  // Helper to recompute active online members & typing state quickly (25s window, 10s heartbeat)
+  // without inflating initial load with stale historical documents
   const syncOnlineMembersFromMeta = () => {
     const localNow = Date.now();
     let maxServerMillis = 0;
@@ -921,24 +926,28 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         maxServerMillis = entry.serverLastSeenMillis;
       }
     });
-    const referenceServerNow = maxServerMillis > 0 ? maxServerMillis : localNow;
+    const referenceServerNow = Math.max(localNow, maxServerMillis);
 
     const items: PresenceItem[] = [];
     presenceLocalMetaRef.current.forEach((entry) => {
       const serverAge = Math.max(0, referenceServerNow - entry.serverLastSeenMillis);
-      const localAge = Math.max(0, localNow - entry.localReceivedMillis);
+      const directClockAge = Math.abs(localNow - entry.serverLastSeenMillis);
+      const hasLiveLocalUpdate =
+        entry.localReceivedMillis > 0 && localNow - entry.localReceivedMillis < 25000;
 
-      // Consider a user online if either their server timestamp is within 2 minutes of reference server time
-      // OR we received a live presence update from them within the last 2 minutes locally
-      const isOnline = serverAge < 120000 || localAge < 120000;
+      // Consider a user online ONLY if their server heartbeat is within the last 25 seconds
+      // OR we received a live real-time heartbeat update from them within the last 25 seconds
+      const isOnline = serverAge < 25000 || directClockAge < 25000 || hasLiveLocalUpdate;
       if (!isOnline) return;
 
       // Consider a user actively typing if rawIsTyping is true AND either:
-      // - we received the typing update within the last 8 seconds on our local clock, OR
-      // - their server timestamp is within 12 seconds of referenceServerNow
+      // - we received the typing update within the last 7 seconds on our local clock, OR
+      // - their server timestamp is within 10 seconds of referenceServerNow
       const isTypingActive =
         entry.rawIsTyping &&
-        (localNow - entry.localTypingReceivedMillis < 8000 || serverAge < 12000);
+        ((entry.localTypingReceivedMillis > 0 &&
+          localNow - entry.localTypingReceivedMillis < 7000) ||
+          serverAge < 10000);
 
       items.push({
         uid: entry.uid,
@@ -954,21 +963,23 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setOnlineMembers(items);
   };
 
-  // Real-time listener for Online Presence (`/presence`) + periodic local expiry ticker
+  // Real-time listener for Online Presence (`/presence`) + fast 1-second local expiry ticker
   useEffect(() => {
+    initialPresenceSnapshotSeenRef.current = false;
     const q = query(collection(db, 'presence'), limit(100));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
         const localNow = Date.now();
+        const isInitialLoad = !initialPresenceSnapshotSeenRef.current;
         const currentDocIds = new Set<string>();
 
-        // Track docChanges so newly added/modified updates get a fresh localReceivedMillis
+        // Track docChanges so ONLY live real-time updates (after initial load) get a fresh localReceivedMillis
         const changedIds = new Set<string>();
         snapshot.docChanges().forEach((change) => {
           if (change.type === 'removed') {
             presenceLocalMetaRef.current.delete(change.doc.id);
-          } else {
+          } else if (!isInitialLoad) {
             changedIds.add(change.doc.id);
           }
         });
@@ -979,9 +990,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           currentDocIds.add(docSnap.id);
 
           const prev = presenceLocalMetaRef.current.get(docSnap.id);
-          const serverLastSeenMillis = d.lastSeen?.toMillis ? d.lastSeen.toMillis() : localNow;
+          const serverLastSeenMillis = d.lastSeen?.toMillis ? d.lastSeen.toMillis() : 0;
           const rawIsTyping = Boolean(d.isTyping);
-          const wasModified = changedIds.has(docSnap.id);
+          const wasLiveModified = changedIds.has(docSnap.id);
 
           presenceLocalMetaRef.current.set(docSnap.id, {
             uid,
@@ -991,15 +1002,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             activeChannelId: d.activeChannelId || 'general-chat',
             rawIsTyping,
             serverLastSeenMillis,
-            localReceivedMillis: wasModified ? localNow : prev?.localReceivedMillis ?? localNow,
+            localReceivedMillis: wasLiveModified ? localNow : prev?.localReceivedMillis ?? 0,
             localTypingReceivedMillis:
-              rawIsTyping && wasModified
+              rawIsTyping && wasLiveModified
                 ? localNow
                 : rawIsTyping
-                  ? prev?.localTypingReceivedMillis ?? localNow
+                  ? prev?.localTypingReceivedMillis ?? 0
                   : 0,
           });
         });
+
+        initialPresenceSnapshotSeenRef.current = true;
 
         // Clean up any docs no longer in snapshot
         Array.from(presenceLocalMetaRef.current.keys()).forEach((id) => {
@@ -1013,7 +1026,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       () => {}
     );
 
-    const expiryTicker = window.setInterval(syncOnlineMembersFromMeta, 2000);
+    const expiryTicker = window.setInterval(syncOnlineMembersFromMeta, 1000);
     return () => {
       unsubscribe();
       window.clearInterval(expiryTicker);
@@ -1082,7 +1095,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
 
     updateHeartbeat();
-    const interval = window.setInterval(() => updateHeartbeat(), 20000);
+    const fastWarmupTimer = window.setTimeout(() => updateHeartbeat(), 1500);
+    const interval = window.setInterval(() => updateHeartbeat(), 10000);
 
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -1093,6 +1107,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
+      window.clearTimeout(fastWarmupTimer);
       window.clearInterval(interval);
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
@@ -2117,14 +2132,22 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   };
 
   // Deduplicate and merge active online members:
-  // 1) All active `/presence` documents (within 2 min window)
-  // 2) Any user who sent a message in the last 2 minutes (protects against any heartbeat lag)
+  // 1) All active `/presence` documents (within 25s window)
+  // 2) Any user who sent a message in the last 25 seconds (protects against any heartbeat lag)
   // 3) Current signed-in user
+  // 4) Strict filter against `registeredUserMap` so deleted/unregistered accounts NEVER inflate the online count
   const effectiveOnlineMembers: PresenceItem[] = React.useMemo(() => {
     const now = Date.now();
+    const validRegisteredIds = new Set<string>();
+    registeredUserMap.forEach((profile, uid) => {
+      if (profile.status !== 'banned') {
+        validRegisteredIds.add(uid);
+      }
+    });
+
     const recentMessageAuthors: RawPresenceRecord[] = [];
     firestoreMessages.forEach((m) => {
-      if (now - m.createdAtMillis < 120000 && m.authorId !== currentUser?.uid) {
+      if (now - m.createdAtMillis < 25000 && m.authorId !== currentUser?.uid) {
         recentMessageAuthors.push({
           uid: m.authorId,
           displayName: getLiveUserDisplayName(m.authorId, m.authorName),
@@ -2150,7 +2173,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           }
         : null;
 
-    return computeAccurateOnlineMembers(onlineMembers, selfRecord, recentMessageAuthors);
+    return computeAccurateOnlineMembers(
+      onlineMembers,
+      selfRecord,
+      recentMessageAuthors,
+      validRegisteredIds
+    );
   }, [
     onlineMembers,
     firestoreMessages,
@@ -2263,6 +2291,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     await signOut(auth);
   };
 
+  // Leaving the Hub to return to the public website also removes active chat presence immediately
+  const handleBackToWebsiteFromHub = () => {
+    if (currentUser) {
+      isCurrentlyTypingRef.current = false;
+      presenceLocalMetaRef.current.delete(currentUser.uid);
+      deleteDoc(doc(db, 'presence', currentUser.uid)).catch(() => {});
+    }
+    onBackToLanding();
+  };
+
   // Selected channel config inside the Admin/Mod Drawer
   const adminTargetChannel =
     allChannels.find((c) => c.id === selectedAdminChannelId) || activeChannel;
@@ -2323,16 +2361,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             <Menu className="w-4 h-4" />
           </button>
 
-          <button
-            type="button"
-            onClick={onBackToLanding}
-            title="Back to Build Buds Website"
-            aria-label="Back to Website"
-            className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1 shrink-0"
-          >
-            <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="hidden md:inline text-xs font-bold text-white/80">Website</span>
-          </button>
+          {!isStandaloneApp && (
+            <button
+              type="button"
+              onClick={handleBackToWebsiteFromHub}
+              title="Back to Build Buds Website"
+              aria-label="Back to Website"
+              className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1 shrink-0"
+            >
+              <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
+              <span className="hidden md:inline text-xs font-bold text-white/80">Website</span>
+            </button>
+          )}
 
           <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
             <span className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-white/10 flex items-center justify-center text-white/70 font-bold text-xs sm:text-sm shrink-0">
@@ -5263,16 +5303,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   </div>
                 </div>
 
-                {/* Save, Sign Out & Cancel Footer */}
+                {/* Save, Download App, Sign Out & Cancel Footer */}
                 <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSignOutFromHub}
-                    className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold cursor-pointer flex items-center gap-1.5"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Sign Out</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleSignOutFromHub}
+                      className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold cursor-pointer flex items-center gap-1.5"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Sign Out</span>
+                    </button>
+                    <div className="w-auto">
+                      <PWAInstallButton variant="hub" />
+                    </div>
+                  </div>
 
                   <div className="flex items-center gap-2">
                     <button
