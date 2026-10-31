@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Sparkles, ArrowRight, ShieldCheck, AlertCircle, LogIn } from 'lucide-react';
+import { X, AlertCircle } from 'lucide-react';
 import { validateJoinForm, JoinFormData } from '../utils/communityLogic.ts';
 import {
   auth,
@@ -8,15 +8,46 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
-  ensureBuilderProfile,
+  signOut,
+  checkExistingBuilderProfile,
+  registerBuilderProfile,
   BuilderProfile,
+  User,
 } from '../firebase.ts';
 
 interface JoinModalProps {
   isOpen: boolean;
   initialMode?: 'join' | 'signin';
   onClose: () => void;
-  onSuccess: (profile: BuilderProfile) => void;
+  onSuccess: (profile: BuilderProfile, user: User) => void;
+  onAuthBusyChange?: (busy: boolean) => void;
+}
+
+function formatFriendlyError(err: unknown, fallback: string): string {
+  const code = (err as { code?: string })?.code || '';
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Google window was closed before completing.';
+  }
+  if (code === 'auth/operation-not-allowed') {
+    return 'Email/Password authentication is not enabled in Firebase Console yet. Please use Google above.';
+  }
+  if (code === 'auth/email-already-in-use') {
+    return 'This email is already registered. Switch to the Sign In tab to sign in.';
+  }
+  if (
+    code === 'auth/user-not-found' ||
+    code === 'auth/invalid-credential' ||
+    code === 'auth/wrong-password'
+  ) {
+    return 'User not signed up or invalid password. Please sign up first if you do not have an account.';
+  }
+  if (err instanceof Error) {
+    if (err.message.trim().startsWith('{')) {
+      return fallback;
+    }
+    return err.message;
+  }
+  return fallback;
 }
 
 export const JoinModal: React.FC<JoinModalProps> = ({
@@ -24,11 +55,13 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   initialMode = 'join',
   onClose,
   onSuccess,
+  onAuthBusyChange,
 }) => {
   const [mode, setMode] = useState<'join' | 'signin'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [redirectNotice, setRedirectNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const [formData, setFormData] = useState<JoinFormData>({
@@ -45,34 +78,103 @@ export const JoinModal: React.FC<JoinModalProps> = ({
 
   if (!isOpen) return null;
 
-  // One-click Google Sign-In (works automatically on return visits)
+  // SIGN IN with Google: ONLY allows users whose account is ALREADY signed up in the database
   const handleGoogleSignIn = async () => {
     setAuthError(null);
+    setRedirectNotice(null);
     setIsLoading(true);
+    onAuthBusyChange?.(true);
+
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const profile = await ensureBuilderProfile(result.user, {
-        ...(formData.fullName.trim() ? { displayName: formData.fullName.trim() } : {}),
-        ...(formData.schoolName.trim() ? { schoolName: formData.schoolName.trim() } : {}),
-        gradeLevel: formData.gradeLevel,
-        primaryInterest: formData.primaryInterest,
-        avatarColor: selectedAvatarBg,
-        acceptedGuidelines: true,
-      });
-      setCreatedProfile(profile);
-      onSuccess(profile);
+      const existingProfile = await checkExistingBuilderProfile(result.user);
+
+      if (!existingProfile) {
+        // User has NOT signed up in the database yet!
+        const googleName = result.user.displayName || '';
+        const googleEmail = result.user.email || '';
+
+        // Immediately sign out so the unregistered Gmail cannot access the website
+        await signOut(auth);
+
+        if (googleName && !formData.fullName.trim()) {
+          setFormData((prev) => ({ ...prev, fullName: googleName }));
+        }
+        if (googleEmail && !email.trim()) {
+          setEmail(googleEmail);
+        }
+
+        // Redirect user to the Sign Up section
+        setMode('join');
+        setRedirectNotice(
+          'User not signed up! Your Gmail is not in the database yet. We have redirected you to Sign Up — please sign up below first to access Build Buds.'
+        );
+        return;
+      }
+
+      setCreatedProfile(existingProfile);
+      onSuccess(existingProfile, result.user);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
-      setAuthError(msg);
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore signOut error
+      }
+      setAuthError(formatFriendlyError(err, 'Could not sign in. Please make sure you have signed up first.'));
     } finally {
+      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
 
-  // Email & Password Registration
+  // SIGN UP with Google: Creates the user's Builder account in the database
+  const handleGoogleSignUp = async () => {
+    setAuthError(null);
+    setRedirectNotice(null);
+
+    if (!formData.agreedToValues) {
+      setErrors({ agreedToValues: 'Please agree to the community guidelines to sign up.' });
+      return;
+    }
+
+    setErrors({});
+    setIsLoading(true);
+    onAuthBusyChange?.(true);
+
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const profile = await registerBuilderProfile(result.user, {
+        displayName:
+          formData.fullName.trim() ||
+          result.user.displayName ||
+          (result.user.email ? result.user.email.split('@')[0] : 'Builder'),
+        schoolName: formData.schoolName.trim() || 'Build Buds Creator Club',
+        gradeLevel: formData.gradeLevel || 'Grade 8',
+        primaryInterest: formData.primaryInterest || 'Games & Simulations',
+        avatarColor: selectedAvatarBg,
+        acceptedGuidelines: formData.agreedToValues,
+      });
+
+      setCreatedProfile(profile);
+      onSuccess(profile, result.user);
+    } catch (err: unknown) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore signOut error
+      }
+      setAuthError(formatFriendlyError(err, 'Could not complete Google Sign Up. Please try again.'));
+    } finally {
+      onAuthBusyChange?.(false);
+      setIsLoading(false);
+    }
+  };
+
+  // SIGN UP with Email & Password: Creates the user's Builder account in the database
   const handleEmailRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setRedirectNotice(null);
 
     const result = validateJoinForm(formData);
     if (!result.valid) {
@@ -92,12 +194,13 @@ export const JoinModal: React.FC<JoinModalProps> = ({
 
     setErrors({});
     setIsLoading(true);
+    onAuthBusyChange?.(true);
 
     try {
       const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
       await updateProfile(cred.user, { displayName: formData.fullName.trim() });
 
-      const profile = await ensureBuilderProfile(cred.user, {
+      const profile = await registerBuilderProfile(cred.user, {
         displayName: formData.fullName.trim(),
         schoolName: formData.schoolName.trim(),
         gradeLevel: formData.gradeLevel,
@@ -107,49 +210,61 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       });
 
       setCreatedProfile(profile);
-      onSuccess(profile);
+      onSuccess(profile, cred.user);
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Email/Password sign-up is not yet enabled in your Firebase Console. Click "Continue with Google" above for instant 1-click sign-in, or enable Email/Password in Firebase Console > Authentication > Sign-in method.'
-        );
-      } else if (code === 'auth/email-already-in-use') {
-        setAuthError('This email is already registered. Switch to the Sign In tab or use Continue with Google.');
-      } else {
-        setAuthError(err instanceof Error ? err.message : 'Could not complete registration.');
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore
       }
+      setAuthError(formatFriendlyError(err, 'Could not complete registration.'));
     } finally {
+      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
 
-  // Email & Password Sign In
+  // SIGN IN with Email & Password: ONLY allows users whose account is ALREADY in the database
   const handleEmailSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setRedirectNotice(null);
 
     if (!email.trim() || !password) {
-      setAuthError('Please enter your email address and password, or click Continue with Google.');
+      setAuthError('Please enter your email address and password, or click Sign In with Google.');
       return;
     }
 
     setIsLoading(true);
+    onAuthBusyChange?.(true);
+
     try {
       const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-      const profile = await ensureBuilderProfile(cred.user);
-      setCreatedProfile(profile);
-      onSuccess(profile);
+      const existingProfile = await checkExistingBuilderProfile(cred.user);
+
+      if (!existingProfile) {
+        await signOut(auth);
+        setMode('join');
+        setRedirectNotice(
+          'User not signed up! Your account is not in the database yet. We have redirected you to Sign Up — please sign up below first.'
+        );
+        return;
+      }
+
+      setCreatedProfile(existingProfile);
+      onSuccess(existingProfile, cred.user);
     } catch (err: unknown) {
       const code = (err as { code?: string })?.code || '';
-      if (code === 'auth/operation-not-allowed') {
-        setAuthError(
-          'Email/Password sign-in is not enabled in Firebase Console yet. Please use "Continue with Google" above for instant automatic sign-in.'
+      if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
+        setMode('join');
+        setRedirectNotice(
+          'User not signed up! We could not find that account in the database. Please sign up below first.'
         );
       } else {
-        setAuthError('Invalid email or password. You can also sign in automatically with Google above.');
+        setAuthError(formatFriendlyError(err, 'Invalid email or password.'));
       }
     } finally {
+      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
@@ -171,7 +286,7 @@ export const JoinModal: React.FC<JoinModalProps> = ({
           <X className="w-5 h-5 stroke-[2.5]" />
         </button>
 
-        {/* Tab switcher: Join vs Sign In */}
+        {/* Tab switcher: Sign Up vs Sign In */}
         {!createdProfile && (
           <div className="flex gap-2 mb-5 border-b-2 border-white/15 pb-3">
             <button
@@ -186,13 +301,14 @@ export const JoinModal: React.FC<JoinModalProps> = ({
                   : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
-              Create Builder Account
+              Sign Up (Create Account)
             </button>
             <button
               type="button"
               onClick={() => {
                 setMode('signin');
                 setAuthError(null);
+                setRedirectNotice(null);
               }}
               className={`px-4 py-1.5 rounded-xl text-xs font-black border-2 cursor-pointer transition-all ${
                 mode === 'signin'
@@ -232,14 +348,14 @@ export const JoinModal: React.FC<JoinModalProps> = ({
                 <div>
                   <div className="text-sm font-bold text-white">{createdProfile.displayName}</div>
                   <div className="text-xs text-white/70">
-                    {createdProfile.schoolName || 'Build Buds Network'} •{' '}
+                    {createdProfile.schoolName || 'Build Buds Creator Club'} •{' '}
                     {createdProfile.gradeLevel || 'Builder'}
                   </div>
                 </div>
               </div>
               <div className="pt-2 border-t border-white/20 flex justify-between text-xs font-mono">
                 <span className="text-[#FFF025]">
-                  {createdProfile.primaryInterest || 'All Creations'}
+                  {createdProfile.primaryInterest || 'Games & Simulations'}
                 </span>
                 <span className="text-emerald-400">● Online</span>
               </div>
@@ -257,12 +373,26 @@ export const JoinModal: React.FC<JoinModalProps> = ({
           </div>
         ) : (
           <div>
-            {/* Instant Google Sign-In Button (Recommended for automatic future sign-in) */}
+            {redirectNotice && (
+              <div className="mb-4 p-3.5 rounded-xl bg-amber-500/20 border-2 border-[#FFF025] text-xs text-[#FFF025] font-bold flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-[#FFF025] shrink-0 mt-0.5" />
+                <span>{redirectNotice}</span>
+              </div>
+            )}
+
+            {authError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-200 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            {/* Google Action Button: Explicitly separated between Sign In (checks DB) and Sign Up (registers in DB) */}
             <div className="mb-5">
               <button
                 type="button"
                 disabled={isLoading}
-                onClick={handleGoogleSignIn}
+                onClick={mode === 'signin' ? handleGoogleSignIn : handleGoogleSignUp}
                 className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-gray-100 text-slate-900 font-black text-sm border-2 border-black brand-shadow flex items-center justify-center gap-3 cursor-pointer transition-transform hover:-translate-y-0.5 active:translate-y-0.5"
               >
                 <svg className="w-5 h-5" viewBox="0 0 24 24">
@@ -283,7 +413,11 @@ export const JoinModal: React.FC<JoinModalProps> = ({
                     d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                   />
                 </svg>
-                <span>Continue with Google (1-Click Auto Sign-In)</span>
+                <span>
+                  {mode === 'signin'
+                    ? 'Sign In with Google (Existing Users Only)'
+                    : 'Sign Up with Google (Create New Account)'}
+                </span>
               </button>
 
               <div className="relative flex py-3 items-center">
@@ -294,13 +428,6 @@ export const JoinModal: React.FC<JoinModalProps> = ({
                 <div className="flex-grow border-t border-white/15" />
               </div>
             </div>
-
-            {authError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-200 flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <span>{authError}</span>
-              </div>
-            )}
 
             {mode === 'signin' ? (
               <form onSubmit={handleEmailSignIn} className="space-y-4">

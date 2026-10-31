@@ -63,6 +63,7 @@ import {
   UserAccountStatus,
   ADMIN_EMAIL,
   AVATAR_COLORS,
+  checkExistingBuilderProfile,
   ensureBuilderProfile,
   handleFirestoreError,
   OperationType,
@@ -1132,11 +1133,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Quick Google Sign-In directly inside the Hub
+  // Quick Google Sign-In directly inside the Hub (only allows already-registered database users)
   const handleQuickGoogleSignIn = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      const profile = await ensureBuilderProfile(result.user);
+      const profile = await checkExistingBuilderProfile(result.user);
+      if (!profile) {
+        await signOut(auth);
+        onOpenAuthModal('join');
+        return;
+      }
       onProfileUpdated(profile);
     } catch (err) {
       console.error('Google Sign-In error:', err);
@@ -1289,23 +1295,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   ) => {
     if (!currentUser || !isSuperAdmin) return;
     try {
-      await setDoc(
-        doc(db, 'users', targetUser.uid),
-        {
-          uid: targetUser.uid,
-          displayName: targetUser.displayName.slice(0, 60),
-          schoolName: (targetUser.schoolName || 'Build Buds Network').slice(0, 100),
-          gradeLevel: (targetUser.gradeLevel || 'Student Builder').slice(0, 40),
-          primaryInterest: (targetUser.primaryInterest || 'All Creations').slice(0, 60),
-          avatarUrl: (targetUser.avatarUrl || '').slice(0, 2000),
-          avatarColor: (targetUser.avatarColor || '#FFF025').slice(0, 30),
-          role: patch.role || targetUser.role || 'member',
-          status: patch.status || targetUser.status || 'active',
-          acceptedGuidelines: targetUser.acceptedGuidelines ?? true,
-          createdAt: targetUser.createdAt || serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }
-      );
+      await updateDoc(doc(db, 'users', targetUser.uid), {
+        ...(patch.role ? { role: patch.role } : {}),
+        ...(patch.status ? { status: patch.status } : {}),
+        updatedAt: serverTimestamp(),
+      });
       setComposerNotice(`Updated account for ${targetUser.displayName}.`);
       window.setTimeout(() => setComposerNotice(null), 3000);
     } catch (error) {

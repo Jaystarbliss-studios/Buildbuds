@@ -30,9 +30,28 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+// Resolve Firebase config from Vercel FIREBASE_* or VITE_FIREBASE_* env vars, or local firebase-applet-config.json
+const env = import.meta.env as Record<string, string | undefined>;
+
+const resolvedFirebaseConfig = {
+  apiKey: env.FIREBASE_API_KEY || env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: env.FIREBASE_AUTH_DOMAIN || env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  projectId: env.FIREBASE_PROJECT_ID || env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  storageBucket:
+    env.FIREBASE_STORAGE_BUCKET || env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId:
+    env.FIREBASE_MESSAGING_SENDER_ID ||
+    env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
+    firebaseConfig.messagingSenderId,
+  appId: env.FIREBASE_APP_ID || env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+};
+
+const resolvedDatabaseId =
+  env.FIREBASE_DATABASE_ID || env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+
 // Initialize Firebase SDK
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const app = initializeApp(resolvedFirebaseConfig);
+export const db = getFirestore(app, resolvedDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -177,7 +196,60 @@ export function pickAvatarColor(seed: string): string {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-export async function ensureBuilderProfile(
+/**
+ * Checks if a user has ALREADY signed up in the Firestore `users/{uid}` database.
+ * - For regular users, this NEVER creates a profile document. If the user is not in the database, it returns `null`.
+ * - If an incomplete/ghost record from a prior aborted sign-in exists (`schoolName === 'Build Buds Network'` and `gradeLevel === 'Student Builder'`),
+ *   it cleans up that record and returns `null` so the user must complete Sign Up first.
+ * - For the Super Admin (`ADMIN_EMAIL`), automatically ensures the admin profile exists so the admin can sign straight in.
+ */
+export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
+  const isAdminUser = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  if (isAdminUser) {
+    return registerBuilderProfile(user, {
+      displayName: user.displayName || 'Super Admin',
+      schoolName: 'Build Buds HQ',
+      gradeLevel: 'Super Admin',
+      primaryInterest: 'Community Administration',
+      acceptedGuidelines: true,
+    });
+  }
+
+  const userRef = doc(db, 'users', user.uid);
+  try {
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) {
+      return null;
+    }
+
+    const existing = snap.data() as BuilderProfile;
+
+    // Clean up any accidental auto-created ghost profile where the user never completed Sign Up
+    if (
+      existing.role !== 'admin' &&
+      existing.schoolName === 'Build Buds Network' &&
+      existing.gradeLevel === 'Student Builder' &&
+      existing.primaryInterest === 'All Creations'
+    ) {
+      try {
+        await deleteDoc(userRef);
+      } catch {
+        // Ignore cleanup errors
+      }
+      return null;
+    }
+
+    return existing;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+  }
+}
+
+/**
+ * Registers a user profile in Firestore (`users/{uid}`) when they explicitly complete Sign Up,
+ * or updates an existing profile when overrides are provided.
+ */
+export async function registerBuilderProfile(
   user: User,
   overrides?: {
     displayName?: string;
@@ -225,8 +297,8 @@ export async function ensureBuilderProfile(
     }
 
     const displayName = (
-      overrides?.displayName ||
-      user.displayName ||
+      overrides?.displayName?.trim() ||
+      user.displayName?.trim() ||
       (user.email ? user.email.split('@')[0] : 'Builder')
     ).slice(0, 60);
 
@@ -238,9 +310,9 @@ export async function ensureBuilderProfile(
     const newProfileData: Record<string, unknown> = {
       uid: user.uid,
       displayName,
-      schoolName: (overrides?.schoolName || 'Build Buds Network').slice(0, 100),
-      gradeLevel: (overrides?.gradeLevel || 'Student Builder').slice(0, 40),
-      primaryInterest: (overrides?.primaryInterest || 'All Creations').slice(0, 60),
+      schoolName: (overrides?.schoolName?.trim() || 'Build Buds Creator Club').slice(0, 100),
+      gradeLevel: (overrides?.gradeLevel?.trim() || 'Grade 8').slice(0, 40),
+      primaryInterest: (overrides?.primaryInterest?.trim() || 'Games & Simulations').slice(0, 60),
       avatarUrl: (user.photoURL || '').slice(0, 2000),
       avatarColor,
       role,
@@ -280,6 +352,8 @@ export async function ensureBuilderProfile(
     handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
   }
 }
+
+export const ensureBuilderProfile = registerBuilderProfile;
 
 export {
   signInWithPopup,

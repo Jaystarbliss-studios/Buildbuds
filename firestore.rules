@@ -256,7 +256,9 @@ service cloud.firestore {
                       isAdmin() ||
                       (isOwner(userId) &&
                        request.resource.data.role == resource.data.role &&
-                       (!('status' in request.resource.data) || request.resource.data.status == resource.data.get('status', 'active')) &&
+                       (!('status' in request.resource.data) ||
+                        ('status' in resource.data && request.resource.data.status == resource.data.status) ||
+                        (!('status' in resource.data) && request.resource.data.status == 'active')) &&
                        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                          'displayName', 'schoolName', 'gradeLevel', 'primaryInterest',
                          'avatarUrl', 'avatarColor', 'acceptedGuidelines', 'updatedAt'

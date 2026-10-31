@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ThemeProvider, useTheme } from './utils/themeContext.tsx';
 import { SpaceBackdrop } from './components/SpaceBackdrop.tsx';
 import { SparkleCursor } from './components/SparkleCursor.tsx';
@@ -33,7 +33,8 @@ import { ShareProjectModal } from './components/ShareProjectModal.tsx';
 import {
   auth,
   onAuthStateChanged,
-  ensureBuilderProfile,
+  signOut,
+  checkExistingBuilderProfile,
   BuilderProfile,
   User,
 } from './firebase.ts';
@@ -51,9 +52,10 @@ function BuildBudsApp() {
   const [isCommunityHubOpen, setIsCommunityHubOpen] = useState(false);
   const [hubChannelId, setHubChannelId] = useState<string>('general-chat');
 
-  // Firebase Auth user & Builder Profile
+  // Firebase Auth user & Builder Profile (only set if user is registered in the database)
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [builderProfile, setBuilderProfile] = useState<BuilderProfile | null>(null);
+  const isAuthModalBusyRef = useRef(false);
 
   // Modal states
   const [activeProjectModal, setActiveProjectModal] = useState<ProjectItem | null>(null);
@@ -64,28 +66,45 @@ function BuildBudsApp() {
   const [isGuidelinesOpen, setIsGuidelinesOpen] = useState(false);
   const [isShareProjectOpen, setIsShareProjectOpen] = useState(false);
 
-  // Listen to Firebase Auth state for automatic session persistence
+  // Listen to Firebase Auth state — only recognize users who have signed up in the database
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
+      if (isAuthModalBusyRef.current) {
+        return;
+      }
+
       if (user) {
         try {
-          const profile = await ensureBuilderProfile(user);
-          setBuilderProfile(profile);
+          const existingProfile = await checkExistingBuilderProfile(user);
+          if (existingProfile) {
+            setCurrentUser(user);
+            setBuilderProfile(existingProfile);
+          } else {
+            // Unregistered Gmail / Auth user — sign out immediately so they are not recognized
+            await signOut(auth);
+            setCurrentUser(null);
+            setBuilderProfile(null);
+            setIsCommunityHubOpen(false);
+          }
         } catch (err) {
-          console.error('Failed to load builder profile:', err);
+          console.error('Failed to verify builder profile:', err);
+          setCurrentUser(null);
+          setBuilderProfile(null);
+          setIsCommunityHubOpen(false);
         }
       } else {
+        setCurrentUser(null);
         setBuilderProfile(null);
+        setIsCommunityHubOpen(false);
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Unified handler: if signed in, go straight into Community Chat; otherwise prompt Sign In / Join and then go straight into Community Chat
+  // Unified handler: ONLY enter Community Hub if signed in AND signed up in the database
   const handleEnterCommunity = (mode: 'join' | 'signin' = 'join', channelId = 'general-chat') => {
     setHubChannelId(channelId);
-    if (currentUser) {
+    if (currentUser && builderProfile) {
       setIsCommunityHubOpen(true);
     } else {
       setJoinModalMode(mode);
@@ -128,8 +147,8 @@ function BuildBudsApp() {
       {/* Fairy dust / cosmic sparkle mouse trail */}
       <SparkleCursor />
 
-      {/* Full-Screen Discord-Style Community Hub View */}
-      {isCommunityHubOpen && (
+      {/* Full-Screen Discord-Style Community Hub View — strictly gated to registered database users */}
+      {isCommunityHubOpen && currentUser && builderProfile && (
         <CommunityHub
           currentUser={currentUser}
           builderProfile={builderProfile}
@@ -224,8 +243,17 @@ function BuildBudsApp() {
         key={joinModalMode}
         isOpen={isJoinModalOpen}
         initialMode={joinModalMode}
-        onClose={() => setIsJoinModalOpen(false)}
-        onSuccess={(profile) => {
+        onAuthBusyChange={(busy) => {
+          isAuthModalBusyRef.current = busy;
+        }}
+        onClose={() => {
+          setIsJoinModalOpen(false);
+          if (!builderProfile && auth.currentUser) {
+            signOut(auth).catch(() => {});
+          }
+        }}
+        onSuccess={(profile, user) => {
+          setCurrentUser(user);
           setBuilderProfile(profile);
           setIsJoinModalOpen(false);
           setIsCommunityHubOpen(true);
