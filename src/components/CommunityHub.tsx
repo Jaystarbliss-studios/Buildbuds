@@ -38,6 +38,14 @@ import {
   ShieldAlert,
   FolderPlus,
   Crown,
+  Bell,
+  BellOff,
+  Sparkle,
+  Camera,
+  Pencil,
+  Check,
+  Menu,
+  MoreHorizontal,
 } from 'lucide-react';
 import {
   db,
@@ -76,6 +84,30 @@ import {
   compressCoverImage,
   CreationCategory,
 } from '../utils/moderation.ts';
+import {
+  PRESET_AVATARS,
+  findPresetAvatar,
+  getDefaultPresetAvatar,
+  resolveBuilderAvatarUrl,
+} from '../utils/avatars.ts';
+import {
+  annotateMessageGrouping,
+  computeAccurateOnlineMembers,
+  computeNextThreadReplyCount,
+  computeEffectiveReplyCount,
+  evaluateHorizontalSwipeGesture,
+  RawPresenceRecord,
+} from '../utils/messageGrouping.ts';
+import {
+  NotificationPreferences,
+  BrowserPermissionStatus,
+  loadNotificationPreferences,
+  saveNotificationPreferences,
+  getBrowserNotificationPermission,
+  requestBrowserNotificationPermission,
+  registerBuildBudsServiceWorker,
+  dispatchMessageBrowserNotification,
+} from '../utils/notifications.ts';
 
 export interface ChannelItem {
   id: string;
@@ -198,6 +230,7 @@ export interface HubMessage {
   authorRole?: 'member' | 'moderator' | 'admin';
   text: string;
   hadProfanity?: boolean;
+  isEdited?: boolean;
   replyToId?: string;
   replyToAuthor?: string;
   replyToColor?: string;
@@ -221,6 +254,7 @@ interface ThreadReplyItem {
   authorName: string;
   authorColor: string;
   text: string;
+  isEdited?: boolean;
   createdAtMillis: number;
   timeLabel: string;
 }
@@ -229,6 +263,7 @@ interface PresenceItem {
   uid: string;
   displayName: string;
   avatarColor: string;
+  avatarUrl?: string;
   activeChannelId: string;
   isTyping: boolean;
   lastSeenMillis: number;
@@ -351,6 +386,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [composerError, setComposerError] = useState<string | null>(null);
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
 
+  // Inline Message Edit & Action Menu state
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState<string>('');
+  const [isSavingMessageEdit, setIsSavingMessageEdit] = useState<boolean>(false);
+  const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
+
+  // Inline Thread Reply Edit state
+  const [editingThreadReplyId, setEditingThreadReplyId] = useState<string | null>(null);
+  const [editingThreadReplyText, setEditingThreadReplyText] = useState<string>('');
+  const [liveThreadCountsByMessageId, setLiveThreadCountsByMessageId] = useState<Record<string, number>>({});
+
   // Slow-mode cooldown timer
   const [cooldownRemaining, setCooldownRemaining] = useState(0);
 
@@ -362,9 +408,51 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Guidelines modal
   const [showGuidelinesPrompt, setShowGuidelinesPrompt] = useState(false);
 
+  // Account & Profile Settings Modal state (Avatar, Nickname, School, Notifications)
+  const [showAvatarModal, setShowAvatarModal] = useState(false);
+  const [profileModalTab, setProfileModalTab] = useState<'profile' | 'notifications'>('profile');
+  const [selectedPresetAvatarId, setSelectedPresetAvatarId] = useState<string>('');
+  const [selectedAccentColor, setSelectedAccentColor] = useState<string>('#FFF025');
+  const [editProfileName, setEditProfileName] = useState<string>('');
+  const [editProfileSchool, setEditProfileSchool] = useState<string>('');
+  const [isSavingAvatar, setIsSavingAvatar] = useState(false);
+
+  // Browser Push Notification Preferences Modal state
+  const [showNotificationModal, setShowNotificationModal] = useState(false);
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences>(() =>
+    loadNotificationPreferences()
+  );
+  const [browserPermission, setBrowserPermission] = useState<BrowserPermissionStatus>(() =>
+    getBrowserNotificationPermission()
+  );
+  const [notificationStatusBanner, setNotificationStatusBanner] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const touchSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
+  const isCurrentlyTypingRef = useRef<boolean>(false);
+  const lastTypingWriteMillisRef = useRef<number>(0);
+  const initialMessagesSnapshotSeenRef = useRef<boolean>(false);
+  const knownMessageIdsRef = useRef<Set<string>>(new Set());
+  const activeStreamIdRef = useRef<string>(initialChannelId);
+  const notificationPrefsRef = useRef<NotificationPreferences>(notificationPrefs);
+  const presenceLocalMetaRef = useRef<
+    Map<
+      string,
+      {
+        uid: string;
+        displayName: string;
+        avatarColor: string;
+        avatarUrl?: string;
+        activeChannelId: string;
+        rawIsTyping: boolean;
+        serverLastSeenMillis: number;
+        localReceivedMillis: number;
+        localTypingReceivedMillis: number;
+      }
+    >
+  >(new Map());
 
   // Role & Permission Evaluation
   const isSuperAdmin =
@@ -459,6 +547,62 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     (activeChannelConfig.allowMemberInvites &&
       userStatus === 'active' &&
       !isKickedFromActiveChannel);
+
+  // Keep refs synced for notification callbacks & Service Worker messages
+  useEffect(() => {
+    activeStreamIdRef.current = activeStreamId;
+  }, [activeStreamId]);
+
+  useEffect(() => {
+    notificationPrefsRef.current = notificationPrefs;
+    saveNotificationPreferences(notificationPrefs);
+  }, [notificationPrefs]);
+
+  // Register Service Worker if notifications are already granted & listen for notification click events
+  useEffect(() => {
+    setBrowserPermission(getBrowserNotificationPermission());
+    if (getBrowserNotificationPermission() === 'granted') {
+      registerBuildBudsServiceWorker();
+    }
+
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'BUILDBUDS_NOTIFICATION_CLICK' && event.data.channelId) {
+        const targetId = String(event.data.channelId).split('__group__')[0];
+        setActiveChannelId(targetId);
+        setActiveSubGroupId(null);
+        setViewMode('chat');
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    }
+    return () => {
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      }
+    };
+  }, []);
+
+  // Sync initial avatar & profile fields when builderProfile loads or changes
+  useEffect(() => {
+    if (!builderProfile) return;
+    const matched = findPresetAvatar(builderProfile.avatarUrl);
+    if (matched) {
+      setSelectedPresetAvatarId(matched.id);
+    } else {
+      setSelectedPresetAvatarId(getDefaultPresetAvatar(builderProfile.uid).id);
+    }
+    setSelectedAccentColor(builderProfile.avatarColor || '#FFF025');
+    setEditProfileName(builderProfile.displayName || '');
+    setEditProfileSchool(builderProfile.schoolName || '');
+  }, [
+    builderProfile?.uid,
+    builderProfile?.avatarUrl,
+    builderProfile?.avatarColor,
+    builderProfile?.displayName,
+    builderProfile?.schoolName,
+  ]);
 
   // Reset active sub-group when changing channel
   useEffect(() => {
@@ -637,6 +781,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             authorRole: data.authorRole || 'member',
             text: data.text || '',
             hadProfanity: Boolean(data.hadProfanity),
+            isEdited: Boolean(data.isEdited),
             replyToId: data.replyToId,
             replyToAuthor: data.replyToAuthor,
             replyToColor: data.replyToColor,
@@ -709,33 +854,170 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [viewMode]);
 
-  // Real-time listener for Online Presence (`/presence`)
+  // Real-time listener for incoming messages across all channels to power Browser Push Notifications
+  useEffect(() => {
+    if (!currentUser) return;
+    initialMessagesSnapshotSeenRef.current = false;
+    knownMessageIdsRef.current.clear();
+
+    const q = query(collection(db, 'messages'), limit(100));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        if (!initialMessagesSnapshotSeenRef.current) {
+          snapshot.docs.forEach((docSnap) => {
+            knownMessageIdsRef.current.add(docSnap.id);
+          });
+          initialMessagesSnapshotSeenRef.current = true;
+          return;
+        }
+
+        snapshot.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const docId = change.doc.id;
+          if (knownMessageIdsRef.current.has(docId)) return;
+          knownMessageIdsRef.current.add(docId);
+
+          const data = change.doc.data();
+          const createdMillis = data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now();
+          // Only notify for genuinely recent messages (within last 60 seconds)
+          if (Date.now() - createdMillis > 60000) return;
+
+          const baseChannelId = String(data.channelId || 'general-chat').split('__group__')[0];
+          const chObj = DEFAULT_COMMUNITY_CHANNELS.find((c) => c.id === baseChannelId);
+          const channelName = chObj?.name || baseChannelId;
+
+          dispatchMessageBrowserNotification({
+            messageId: docId,
+            channelId: String(data.channelId || 'general-chat'),
+            channelName,
+            authorId: String(data.authorId || ''),
+            authorName: String(data.authorName || 'Builder'),
+            authorAvatarUrl: resolveBuilderAvatarUrl(data.authorAvatar, String(data.authorId || 'builder')),
+            text: String(data.text || ''),
+            currentUserId: currentUser.uid,
+            activeStreamId: activeStreamIdRef.current,
+            preferences: notificationPrefsRef.current,
+            onNavigateToChannel: (targetChannelId) => {
+              setActiveChannelId(targetChannelId);
+              setActiveSubGroupId(null);
+              setViewMode('chat');
+            },
+          });
+        });
+      },
+      () => {}
+    );
+
+    return () => unsubscribe();
+  }, [currentUser?.uid]);
+
+  // Helper to recompute active online members & typing state without clock-skew false negatives
+  const syncOnlineMembersFromMeta = () => {
+    const localNow = Date.now();
+    let maxServerMillis = 0;
+    presenceLocalMetaRef.current.forEach((entry) => {
+      if (entry.serverLastSeenMillis > maxServerMillis) {
+        maxServerMillis = entry.serverLastSeenMillis;
+      }
+    });
+    const referenceServerNow = maxServerMillis > 0 ? maxServerMillis : localNow;
+
+    const items: PresenceItem[] = [];
+    presenceLocalMetaRef.current.forEach((entry) => {
+      const serverAge = Math.max(0, referenceServerNow - entry.serverLastSeenMillis);
+      const localAge = Math.max(0, localNow - entry.localReceivedMillis);
+
+      // Consider a user online if either their server timestamp is within 2 minutes of reference server time
+      // OR we received a live presence update from them within the last 2 minutes locally
+      const isOnline = serverAge < 120000 || localAge < 120000;
+      if (!isOnline) return;
+
+      // Consider a user actively typing if rawIsTyping is true AND either:
+      // - we received the typing update within the last 8 seconds on our local clock, OR
+      // - their server timestamp is within 12 seconds of referenceServerNow
+      const isTypingActive =
+        entry.rawIsTyping &&
+        (localNow - entry.localTypingReceivedMillis < 8000 || serverAge < 12000);
+
+      items.push({
+        uid: entry.uid,
+        displayName: entry.displayName || 'Builder',
+        avatarColor: entry.avatarColor || '#FFF025',
+        avatarUrl: entry.avatarUrl,
+        activeChannelId: entry.activeChannelId || 'general-chat',
+        isTyping: isTypingActive,
+        lastSeenMillis: entry.serverLastSeenMillis,
+      });
+    });
+
+    setOnlineMembers(items);
+  };
+
+  // Real-time listener for Online Presence (`/presence`) + periodic local expiry ticker
   useEffect(() => {
     const q = query(collection(db, 'presence'), limit(100));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const now = Date.now();
-        const items: PresenceItem[] = [];
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data();
-          const lastSeenMillis = d.lastSeen?.toMillis ? d.lastSeen.toMillis() : now;
-          if (now - lastSeenMillis < 10 * 60 * 1000) {
-            items.push({
-              uid: d.uid,
-              displayName: d.displayName,
-              avatarColor: d.avatarColor || '#FFF025',
-              activeChannelId: d.activeChannelId || 'general-chat',
-              isTyping: Boolean(d.isTyping) && now - lastSeenMillis < 15000,
-              lastSeenMillis,
-            });
+        const localNow = Date.now();
+        const currentDocIds = new Set<string>();
+
+        // Track docChanges so newly added/modified updates get a fresh localReceivedMillis
+        const changedIds = new Set<string>();
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'removed') {
+            presenceLocalMetaRef.current.delete(change.doc.id);
+          } else {
+            changedIds.add(change.doc.id);
           }
         });
-        setOnlineMembers(items);
+
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          const uid = d.uid || docSnap.id;
+          currentDocIds.add(docSnap.id);
+
+          const prev = presenceLocalMetaRef.current.get(docSnap.id);
+          const serverLastSeenMillis = d.lastSeen?.toMillis ? d.lastSeen.toMillis() : localNow;
+          const rawIsTyping = Boolean(d.isTyping);
+          const wasModified = changedIds.has(docSnap.id);
+
+          presenceLocalMetaRef.current.set(docSnap.id, {
+            uid,
+            displayName: d.displayName || 'Builder',
+            avatarColor: d.avatarColor || '#FFF025',
+            avatarUrl: d.avatarUrl || '',
+            activeChannelId: d.activeChannelId || 'general-chat',
+            rawIsTyping,
+            serverLastSeenMillis,
+            localReceivedMillis: wasModified ? localNow : prev?.localReceivedMillis ?? localNow,
+            localTypingReceivedMillis:
+              rawIsTyping && wasModified
+                ? localNow
+                : rawIsTyping
+                  ? prev?.localTypingReceivedMillis ?? localNow
+                  : 0,
+          });
+        });
+
+        // Clean up any docs no longer in snapshot
+        Array.from(presenceLocalMetaRef.current.keys()).forEach((id) => {
+          if (!currentDocIds.has(id)) {
+            presenceLocalMetaRef.current.delete(id);
+          }
+        });
+
+        syncOnlineMembersFromMeta();
       },
       () => {}
     );
-    return () => unsubscribe();
+
+    const expiryTicker = window.setInterval(syncOnlineMembersFromMeta, 2000);
+    return () => {
+      unsubscribe();
+      window.clearInterval(expiryTicker);
+    };
   }, []);
 
   // Real-time listener for Moderation Reports (for Super Admin / Global Moderators)
@@ -765,40 +1047,124 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [isGlobalModerator]);
 
-  // Update current user's presence heartbeat when signed in
+  // Update current user's presence heartbeat when signed in.
+  // NOTE: Do NOT call deleteDoc(presenceRef) inside beforeunload because on page refresh or
+  // multi-tab navigation, the unloading tab's deleteDoc races with the newly loaded tab's setDoc
+  // and wipes out the user's online presence document! Only deleteDoc on explicit Sign Out.
   useEffect(() => {
     if (!currentUser || !builderProfile || userStatus === 'banned') return;
 
-    const presenceRef = doc(db, 'presence', currentUser.uid);
-    const updateHeartbeat = async (isTypingState = false) => {
+    const uid = currentUser.uid;
+    const displayName = (builderProfile.displayName || 'Builder').slice(0, 60);
+    const avatarColor = (builderProfile.avatarColor || '#FFF025').slice(0, 30);
+    const avatarUrl = (
+      builderProfile.avatarUrl || getDefaultPresetAvatar(uid).id
+    ).slice(0, 4000);
+    const channelId = (activeStreamId || 'general-chat').slice(0, 128);
+    const presenceRef = doc(db, 'presence', uid);
+
+    const updateHeartbeat = async (overrideTyping?: boolean) => {
+      const typingFlag =
+        typeof overrideTyping === 'boolean' ? overrideTyping : isCurrentlyTypingRef.current;
       try {
         await setDoc(presenceRef, {
-          uid: currentUser.uid,
-          displayName: builderProfile.displayName.slice(0, 60),
-          avatarColor: builderProfile.avatarColor.slice(0, 30),
-          activeChannelId: activeStreamId.slice(0, 128),
-          isTyping: isTypingState,
+          uid,
+          displayName,
+          avatarColor,
+          avatarUrl,
+          activeChannelId: channelId,
+          isTyping: typingFlag,
           lastSeen: serverTimestamp(),
         });
-      } catch {
-        // Ignore transient heartbeat errors
+      } catch (err) {
+        console.warn('Presence heartbeat write warning:', err);
       }
     };
 
-    updateHeartbeat(false);
-    const interval = window.setInterval(() => updateHeartbeat(false), 60000);
-    return () => window.clearInterval(interval);
-  }, [currentUser, builderProfile, activeStreamId, userStatus]);
+    updateHeartbeat();
+    const interval = window.setInterval(() => updateHeartbeat(), 20000);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        updateHeartbeat();
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [
+    currentUser?.uid,
+    builderProfile?.displayName,
+    builderProfile?.avatarColor,
+    builderProfile?.avatarUrl,
+    activeStreamId,
+    userStatus,
+  ]);
+
+  // Keep activeThreadMessage synced with live firestoreMessages updates
+  useEffect(() => {
+    if (!activeThreadMessage) return;
+    const latest = firestoreMessages.find((m) => m.id === activeThreadMessage.id);
+    if (latest && (latest.threadCount !== activeThreadMessage.threadCount || latest.text !== activeThreadMessage.text)) {
+      setActiveThreadMessage(latest);
+    }
+  }, [firestoreMessages, activeThreadMessage?.id]);
+
+  // Automatically sync & self-heal thread reply counts for messages in the active channel
+  // so any message where multiple replies were posted always shows the exact total reply count.
+  const threadedMessageIdsKey = firestoreMessages
+    .filter((m) => m.threadCount > 0)
+    .slice(-15)
+    .map((m) => `${m.id}:${m.threadCount}`)
+    .join(',');
+
+  useEffect(() => {
+    const threadedMessages = firestoreMessages.filter((m) => m.threadCount > 0).slice(-15);
+    if (threadedMessages.length === 0) return;
+
+    const unsubscribes = threadedMessages.map((msg) => {
+      const q = query(collection(db, 'messages', msg.id, 'threadReplies'), limit(100));
+      return onSnapshot(
+        q,
+        (snap) => {
+          const actualCount = snap.size;
+          setLiveThreadCountsByMessageId((prev) =>
+            prev[msg.id] === actualCount ? prev : { ...prev, [msg.id]: actualCount }
+          );
+
+          // Self-heal parent message document if stored threadCount got out of sync (e.g. stuck at 1 when 3 replies exist)
+          if (currentUser && userStatus === 'active' && actualCount > 0 && actualCount !== msg.threadCount) {
+            updateDoc(doc(db, 'messages', msg.id), {
+              threadCount: actualCount,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+        },
+        () => {}
+      );
+    });
+
+    return () => {
+      unsubscribes.forEach((u) => u());
+    };
+  }, [threadedMessageIdsKey, currentUser?.uid, userStatus]);
 
   // Subscribe to thread replies when a message thread is open
   useEffect(() => {
     if (!activeThreadMessage) {
       setThreadReplies([]);
+      setEditingThreadReplyId(null);
       return;
     }
 
+    const targetMessageId = activeThreadMessage.id;
     const q = query(
-      collection(db, 'messages', activeThreadMessage.id, 'threadReplies'),
+      collection(db, 'messages', targetMessageId, 'threadReplies'),
       limit(100)
     );
     const unsubscribe = onSnapshot(
@@ -818,23 +1184,168 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             authorName: d.authorName,
             authorColor: d.authorColor || '#FFF025',
             text: d.text,
+            isEdited: Boolean(d.isEdited),
             createdAtMillis: millis,
             timeLabel,
           };
         });
         replies.sort((a, b) => a.createdAtMillis - b.createdAtMillis);
         setThreadReplies(replies);
+        setLiveThreadCountsByMessageId((prev) => ({
+          ...prev,
+          [targetMessageId]: replies.length,
+        }));
+
+        // Ensure parent message threadCount matches actual subcollection count
+        if (
+          currentUser &&
+          userStatus === 'active' &&
+          replies.length !== activeThreadMessage.threadCount
+        ) {
+          updateDoc(doc(db, 'messages', targetMessageId), {
+            threadCount: replies.length,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
       },
       (err) => console.error('Thread listener error:', err)
     );
 
     return () => unsubscribe();
-  }, [activeThreadMessage]);
+  }, [activeThreadMessage?.id]);
 
   // Auto-scroll to bottom when messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [firestoreMessages.length, activeStreamId]);
+
+  // Helper to broadcast typing status cleanly
+  const writeTypingPresence = (isTypingNow: boolean) => {
+    if (!currentUser || !builderProfile || userStatus !== 'active') return;
+    isCurrentlyTypingRef.current = isTypingNow;
+    lastTypingWriteMillisRef.current = Date.now();
+    const presenceRef = doc(db, 'presence', currentUser.uid);
+    setDoc(presenceRef, {
+      uid: currentUser.uid,
+      displayName: (builderProfile.displayName || 'Builder').slice(0, 60),
+      avatarColor: (builderProfile.avatarColor || '#FFF025').slice(0, 30),
+      avatarUrl: (builderProfile.avatarUrl || getDefaultPresetAvatar(currentUser.uid).id).slice(0, 4000),
+      activeChannelId: activeStreamId.slice(0, 128),
+      isTyping: isTypingNow,
+      lastSeen: serverTimestamp(),
+    }).catch(() => {});
+  };
+
+  // Save user's Account & Profile Settings (character avatar, badge color, nickname, school)
+  const handleSaveSelectedAvatar = async () => {
+    if (!currentUser || !builderProfile || !selectedPresetAvatarId) return;
+    setIsSavingAvatar(true);
+    const cleanedName = filterProfanity(
+      editProfileName.trim() || builderProfile.displayName || 'Builder'
+    ).filteredText.slice(0, 60);
+    const cleanedSchool = filterProfanity(
+      editProfileSchool.trim() || builderProfile.schoolName || 'Build Buds Community'
+    ).filteredText.slice(0, 100);
+
+    try {
+      const updated = await ensureBuilderProfile(currentUser, {
+        displayName: cleanedName,
+        schoolName: cleanedSchool,
+        avatarUrl: selectedPresetAvatarId,
+        avatarColor: selectedAccentColor,
+      });
+      onProfileUpdated(updated);
+
+      // Immediately sync updated profile to live presence document
+      await setDoc(doc(db, 'presence', currentUser.uid), {
+        uid: currentUser.uid,
+        displayName: (updated.displayName || 'Builder').slice(0, 60),
+        avatarColor: (updated.avatarColor || '#FFF025').slice(0, 30),
+        avatarUrl: selectedPresetAvatarId.slice(0, 4000),
+        activeChannelId: activeStreamId.slice(0, 128),
+        isTyping: isCurrentlyTypingRef.current,
+        lastSeen: serverTimestamp(),
+      }).catch(() => {});
+
+      setShowAvatarModal(false);
+      setComposerNotice('Your profile settings and character avatar have been saved!');
+      window.setTimeout(() => setComposerNotice(null), 3500);
+    } catch (err) {
+      console.error('Failed to save profile settings:', err);
+      setComposerError('Could not save profile changes. Please try again.');
+    } finally {
+      setIsSavingAvatar(false);
+    }
+  };
+
+  // Toggle Browser Push Notifications
+  const handleToggleBrowserNotifications = async () => {
+    setNotificationStatusBanner(null);
+    const currentPerm = getBrowserNotificationPermission();
+    setBrowserPermission(currentPerm);
+
+    if (currentPerm === 'unsupported') {
+      setNotificationStatusBanner('Your current browser does not support Web Notifications.');
+      return;
+    }
+
+    if (!notificationPrefs.enabled) {
+      if (currentPerm !== 'granted') {
+        const requested = await requestBrowserNotificationPermission();
+        setBrowserPermission(requested);
+        if (requested !== 'granted') {
+          setNotificationStatusBanner(
+            requested === 'denied'
+              ? 'Browser notifications are blocked. Click the lock/tune icon next to the URL bar in your browser to allow notifications for this site.'
+              : 'Notification permission request was dismissed.'
+          );
+          return;
+        }
+      } else {
+        await registerBuildBudsServiceWorker();
+      }
+      setNotificationPrefs((prev) => ({ ...prev, enabled: true }));
+      setNotificationStatusBanner('Browser notifications enabled! You will be notified of new messages when in another tab or channel.');
+    } else {
+      setNotificationPrefs((prev) => ({ ...prev, enabled: false }));
+      setNotificationStatusBanner('Browser notifications paused.');
+    }
+  };
+
+  // Send a test browser notification so the user can verify it works immediately
+  const handleSendTestNotification = async () => {
+    const perm = await requestBrowserNotificationPermission();
+    setBrowserPermission(perm);
+    if (perm !== 'granted') {
+      setNotificationStatusBanner('Please allow browser notifications first to send a test alert.');
+      return;
+    }
+    const avatarUrl = resolveBuilderAvatarUrl(
+      builderProfile?.avatarUrl,
+      currentUser?.uid || 'builder'
+    );
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && 'showNotification' in reg) {
+          await reg.showNotification('Build Buds Community Hub', {
+            body: `Notifications are active for #${activeChannel.name}!`,
+            icon: avatarUrl,
+            tag: `buildbuds-test-${Date.now()}`,
+          });
+          setNotificationStatusBanner('Sent a test notification to your browser!');
+          return;
+        }
+      }
+      new Notification('Build Buds Community Hub', {
+        body: `Notifications are active for #${activeChannel.name}!`,
+        icon: avatarUrl,
+      });
+      setNotificationStatusBanner('Sent a test notification to your browser!');
+    } catch {
+      setNotificationStatusBanner('Could not display test notification in this browser context.');
+    }
+  };
 
   // Handle typing indicator broadcast
   const handleInputChange = (val: string) => {
@@ -851,29 +1362,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
 
     if (currentUser && builderProfile && userStatus === 'active') {
-      const presenceRef = doc(db, 'presence', currentUser.uid);
-      setDoc(presenceRef, {
-        uid: currentUser.uid,
-        displayName: builderProfile.displayName.slice(0, 60),
-        avatarColor: builderProfile.avatarColor.slice(0, 30),
-        activeChannelId: activeStreamId.slice(0, 128),
-        isTyping: val.trim().length > 0,
-        lastSeen: serverTimestamp(),
-      }).catch(() => {});
+      const hasText = val.trim().length > 0;
+      const now = Date.now();
 
-      if (typingTimeoutRef.current) {
-        window.clearTimeout(typingTimeoutRef.current);
+      if (hasText) {
+        // Broadcast immediately when starting to type, and refresh every 2s while continuing to type
+        if (!isCurrentlyTypingRef.current || now - lastTypingWriteMillisRef.current > 2000) {
+          writeTypingPresence(true);
+        }
+
+        if (typingTimeoutRef.current) {
+          window.clearTimeout(typingTimeoutRef.current);
+        }
+        typingTimeoutRef.current = window.setTimeout(() => {
+          writeTypingPresence(false);
+        }, 4500);
+      } else {
+        if (typingTimeoutRef.current) {
+          window.clearTimeout(typingTimeoutRef.current);
+          typingTimeoutRef.current = null;
+        }
+        if (isCurrentlyTypingRef.current) {
+          writeTypingPresence(false);
+        }
       }
-      typingTimeoutRef.current = window.setTimeout(() => {
-        setDoc(presenceRef, {
-          uid: currentUser.uid,
-          displayName: builderProfile.displayName.slice(0, 60),
-          avatarColor: builderProfile.avatarColor.slice(0, 30),
-          activeChannelId: activeStreamId.slice(0, 128),
-          isTyping: false,
-          lastSeen: serverTimestamp(),
-        }).catch(() => {});
-      }, 3000);
     }
   };
 
@@ -976,11 +1488,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         ? 'moderator'
         : builderProfile.role || 'member';
 
+    const chosenAvatarId =
+      builderProfile.avatarUrl || getDefaultPresetAvatar(currentUser.uid).id;
+
     const payload: Record<string, unknown> = {
       channelId: activeStreamId.slice(0, 128),
       authorId: currentUser.uid,
       authorName: builderProfile.displayName.slice(0, 60),
-      authorAvatar: (builderProfile.avatarUrl || '').slice(0, 2000),
+      authorAvatar: chosenAvatarId.slice(0, 4000),
       authorColor: builderProfile.avatarColor.slice(0, 30),
       authorRole: effectiveRole,
       text: filteredText.slice(0, 2000),
@@ -1013,6 +1528,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
 
     try {
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      if (isCurrentlyTypingRef.current) {
+        writeTypingPresence(false);
+      }
+
       await addDoc(collection(db, 'messages'), payload);
 
       setMessageText('');
@@ -1076,6 +1599,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
 
     const { filteredText } = filterProfanity(threadInput.trim());
+    const liveParent = firestoreMessages.find((m) => m.id === activeThreadMessage.id);
+    const nextThreadCount = computeNextThreadReplyCount(
+      liveParent?.threadCount ?? activeThreadMessage.threadCount,
+      threadReplies.length,
+      1
+    );
 
     try {
       await addDoc(collection(db, 'messages', activeThreadMessage.id, 'threadReplies'), {
@@ -1088,16 +1617,127 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       });
 
       await updateDoc(doc(db, 'messages', activeThreadMessage.id), {
-        threadCount: (activeThreadMessage.threadCount || 0) + 1,
+        threadCount: nextThreadCount,
         updatedAt: serverTimestamp(),
       });
 
+      setLiveThreadCountsByMessageId((prev) => ({
+        ...prev,
+        [activeThreadMessage.id]: nextThreadCount,
+      }));
+      setActiveThreadMessage((prev) =>
+        prev ? { ...prev, threadCount: nextThreadCount } : null
+      );
       setThreadInput('');
     } catch (error) {
       handleFirestoreError(
         error,
         OperationType.CREATE,
         `messages/${activeThreadMessage.id}/threadReplies`
+      );
+    }
+  };
+
+  // Start editing a channel message (Author only)
+  const handleStartEditMessage = (msg: HubMessage) => {
+    if (!currentUser || currentUser.uid !== msg.authorId) return;
+    setEditingMessageId(msg.id);
+    setEditingMessageText(msg.text);
+    setActiveActionMessageId(null);
+  };
+
+  // Save edited channel message
+  const handleSaveEditMessage = async (msg: HubMessage) => {
+    if (!currentUser || currentUser.uid !== msg.authorId) return;
+    const raw = editingMessageText.trim();
+    if (!raw) return;
+    if (raw === msg.text) {
+      setEditingMessageId(null);
+      return;
+    }
+
+    setIsSavingMessageEdit(true);
+    const { filteredText, hadProfanity } = filterProfanity(raw);
+    try {
+      await updateDoc(doc(db, 'messages', msg.id), {
+        text: filteredText.slice(0, 2000),
+        hadProfanity,
+        isEdited: true,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingMessageId(null);
+      setEditingMessageText('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
+    } finally {
+      setIsSavingMessageEdit(false);
+    }
+  };
+
+  // Start editing a thread reply (Author only)
+  const handleStartEditThreadReply = (reply: ThreadReplyItem) => {
+    if (!currentUser || currentUser.uid !== reply.authorId) return;
+    setEditingThreadReplyId(reply.id);
+    setEditingThreadReplyText(reply.text);
+  };
+
+  // Save edited thread reply
+  const handleSaveEditThreadReply = async (reply: ThreadReplyItem) => {
+    if (!activeThreadMessage || !currentUser || currentUser.uid !== reply.authorId) return;
+    const raw = editingThreadReplyText.trim();
+    if (!raw) return;
+    if (raw === reply.text) {
+      setEditingThreadReplyId(null);
+      return;
+    }
+
+    const { filteredText } = filterProfanity(raw);
+    try {
+      await updateDoc(doc(db, 'messages', activeThreadMessage.id, 'threadReplies', reply.id), {
+        text: filteredText.slice(0, 1500),
+        isEdited: true,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingThreadReplyId(null);
+      setEditingThreadReplyText('');
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
+        `messages/${activeThreadMessage.id}/threadReplies/${reply.id}`
+      );
+    }
+  };
+
+  // Delete a thread reply (Author, Super Admin, or Global Moderator)
+  const handleDeleteThreadReply = async (reply: ThreadReplyItem) => {
+    if (!activeThreadMessage || !currentUser) return;
+    const liveParent = firestoreMessages.find((m) => m.id === activeThreadMessage.id);
+    const nextThreadCount = computeNextThreadReplyCount(
+      liveParent?.threadCount ?? activeThreadMessage.threadCount,
+      threadReplies.length,
+      -1
+    );
+
+    try {
+      await deleteDoc(doc(db, 'messages', activeThreadMessage.id, 'threadReplies', reply.id));
+      await updateDoc(doc(db, 'messages', activeThreadMessage.id), {
+        threadCount: nextThreadCount,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+
+      setLiveThreadCountsByMessageId((prev) => ({
+        ...prev,
+        [activeThreadMessage.id]: nextThreadCount,
+      }));
+      setActiveThreadMessage((prev) =>
+        prev ? { ...prev, threadCount: nextThreadCount } : null
+      );
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.DELETE,
+        `messages/${activeThreadMessage.id}/threadReplies/${reply.id}`
       );
     }
   };
@@ -1117,6 +1757,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         status: 'open',
         createdAt: serverTimestamp(),
       });
+      setActiveActionMessageId(null);
       setComposerNotice(`Message by ${msg.authorName} has been flagged for moderator review.`);
       window.setTimeout(() => setComposerNotice(null), 4000);
     } catch (error) {
@@ -1128,6 +1769,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const handleDeleteMessage = async (msg: HubMessage) => {
     try {
       await deleteDoc(doc(db, 'messages', msg.id));
+      if (activeThreadMessage?.id === msg.id) {
+        setActiveThreadMessage(null);
+      }
+      if (replyingTo?.id === msg.id) {
+        setReplyingTo(null);
+      }
+      if (editingMessageId === msg.id) {
+        setEditingMessageId(null);
+      }
+      setActiveActionMessageId(null);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `messages/${msg.id}`);
     }
@@ -1439,13 +2090,178 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       ? allShowcaseMessages
       : allShowcaseMessages.filter((m) => m.linkCategory === showcaseFilter);
 
-  // Exact real online count (zero fake baseline)
-  const liveOnlineCount = onlineMembers.length;
+  // Dynamically resolve any user's latest graphical avatar URL from live `registeredUsers` first,
+  // falling back to stored message/presence avatar or deterministic preset portrait.
+  const registeredUserMap = React.useMemo(() => {
+    const map = new Map<string, BuilderProfile>();
+    registeredUsers.forEach((u) => map.set(u.uid, u));
+    if (currentUser && builderProfile) {
+      map.set(currentUser.uid, builderProfile);
+    }
+    return map;
+  }, [registeredUsers, currentUser, builderProfile]);
+
+  const getLiveUserAvatarUrl = (uid: string, fallbackAvatar?: string): string => {
+    const liveProfile = registeredUserMap.get(uid);
+    return resolveBuilderAvatarUrl(liveProfile?.avatarUrl || fallbackAvatar, uid);
+  };
+
+  const getLiveUserDisplayName = (uid: string, fallbackName: string): string => {
+    const liveProfile = registeredUserMap.get(uid);
+    return liveProfile?.displayName || fallbackName || 'Builder';
+  };
+
+  const getLiveUserColor = (uid: string, fallbackColor: string): string => {
+    const liveProfile = registeredUserMap.get(uid);
+    return liveProfile?.avatarColor || fallbackColor || '#FFF025';
+  };
+
+  // Deduplicate and merge active online members:
+  // 1) All active `/presence` documents (within 2 min window)
+  // 2) Any user who sent a message in the last 2 minutes (protects against any heartbeat lag)
+  // 3) Current signed-in user
+  const effectiveOnlineMembers: PresenceItem[] = React.useMemo(() => {
+    const now = Date.now();
+    const recentMessageAuthors: RawPresenceRecord[] = [];
+    firestoreMessages.forEach((m) => {
+      if (now - m.createdAtMillis < 120000 && m.authorId !== currentUser?.uid) {
+        recentMessageAuthors.push({
+          uid: m.authorId,
+          displayName: getLiveUserDisplayName(m.authorId, m.authorName),
+          avatarColor: getLiveUserColor(m.authorId, m.authorColor),
+          avatarUrl: getLiveUserAvatarUrl(m.authorId, m.authorAvatar),
+          activeChannelId: m.channelId,
+          isTyping: false,
+          lastSeenMillis: m.createdAtMillis,
+        });
+      }
+    });
+
+    const selfRecord: RawPresenceRecord | null =
+      currentUser && builderProfile && userStatus !== 'banned'
+        ? {
+            uid: currentUser.uid,
+            displayName: builderProfile.displayName || 'Builder',
+            avatarColor: builderProfile.avatarColor || '#FFF025',
+            avatarUrl: getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl),
+            activeChannelId: activeStreamId,
+            isTyping: isCurrentlyTypingRef.current,
+            lastSeenMillis: now,
+          }
+        : null;
+
+    return computeAccurateOnlineMembers(onlineMembers, selfRecord, recentMessageAuthors);
+  }, [
+    onlineMembers,
+    firestoreMessages,
+    currentUser,
+    builderProfile,
+    userStatus,
+    activeStreamId,
+    registeredUserMap,
+  ]);
+
+  // Exact real online count across the community + count in current channel
+  const liveOnlineCount = effectiveOnlineMembers.length;
+  const activeChannelOnlineCount = effectiveOnlineMembers.filter(
+    (m) => m.activeChannelId === activeStreamId || m.activeChannelId.startsWith(activeChannelId)
+  ).length;
+
+  // Annotate messages with Discord-style consecutive grouping metadata
+  const groupedMessages = React.useMemo(
+    () => annotateMessageGrouping(firestoreMessages),
+    [firestoreMessages]
+  );
 
   // Typing users in current stream (excluding self)
-  const typingUsersInChannel = onlineMembers.filter(
+  const typingUsersInChannel = effectiveOnlineMembers.filter(
     (p) => p.activeChannelId === activeStreamId && p.isTyping && p.uid !== currentUser?.uid
   );
+
+  // Map of inline channel replies (messages that used replyToId) per parent message ID
+  const inlineRepliesByParentId = React.useMemo(() => {
+    const map: Record<string, HubMessage[]> = {};
+    firestoreMessages.forEach((m) => {
+      if (m.replyToId) {
+        if (!map[m.replyToId]) {
+          map[m.replyToId] = [];
+        }
+        map[m.replyToId].push(m);
+      }
+    });
+    return map;
+  }, [firestoreMessages]);
+
+  const getMessageEffectiveReplyCount = (msg: HubMessage): number => {
+    const inlineCount = inlineRepliesByParentId[msg.id]?.length || 0;
+    const liveSubcollectionCount = liveThreadCountsByMessageId[msg.id];
+    return computeEffectiveReplyCount(msg.threadCount, liveSubcollectionCount, inlineCount);
+  };
+
+  // Open unified Account & Profile Settings modal
+  const handleOpenProfileSettings = (initialTab: 'profile' | 'notifications' = 'profile') => {
+    if (!currentUser || !builderProfile) {
+      onOpenAuthModal('signin');
+      return;
+    }
+    setEditProfileName(builderProfile.displayName || '');
+    setEditProfileSchool(builderProfile.schoolName || '');
+    setSelectedAccentColor(builderProfile.avatarColor || '#FFF025');
+    const matchedPreset = findPresetAvatar(builderProfile.avatarUrl);
+    setSelectedPresetAvatarId(
+      matchedPreset ? matchedPreset.id : getDefaultPresetAvatar(currentUser.uid).id
+    );
+    setBrowserPermission(getBrowserNotificationPermission());
+    setNotificationStatusBanner(null);
+    setProfileModalTab(initialTab);
+    setShowAvatarModal(true);
+  };
+
+  // Mobile horizontal touch swipe handlers (swipe right from left to open sidebar, swipe left to close)
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    touchSwipeRef.current = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!touchSwipeRef.current || e.changedTouches.length !== 1) return;
+    const touch = e.changedTouches[0];
+    const { startX, startY } = touchSwipeRef.current;
+    touchSwipeRef.current = null;
+
+    const action = evaluateHorizontalSwipeGesture(
+      startX,
+      startY,
+      touch.clientX,
+      touch.clientY,
+      mobileSidebarOpen
+    );
+
+    if (action === 'open-sidebar') {
+      setMobileSidebarOpen(true);
+    } else if (action === 'close-sidebar') {
+      setMobileSidebarOpen(false);
+    }
+  };
+
+  // Clean Sign Out helper that immediately removes presence document so online count updates instantaneously
+  const handleSignOutFromHub = async () => {
+    if (currentUser) {
+      isCurrentlyTypingRef.current = false;
+      presenceLocalMetaRef.current.delete(currentUser.uid);
+      try {
+        await deleteDoc(doc(db, 'presence', currentUser.uid));
+      } catch {
+        // Ignore
+      }
+    }
+    setShowAvatarModal(false);
+    await signOut(auth);
+  };
 
   // Selected channel config inside the Admin/Mod Drawer
   const adminTargetChannel =
@@ -1487,45 +2303,54 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#0e0f12] text-[#e3e5e8] font-sans select-none overflow-hidden">
-      {/* TOP BAR */}
-      <header className="h-14 shrink-0 bg-[#141519] border-b border-white/10 px-3 sm:px-5 flex items-center justify-between gap-3 z-20">
-        {/* Left: Back to Website + Channel Title */}
-        <div className="flex items-center gap-2.5 min-w-0">
+    <div
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      className="fixed inset-0 z-50 flex flex-col bg-[#0e0f12] text-[#e3e5e8] font-sans select-none overflow-hidden"
+    >
+      {/* CLEAN, UNCLUTTERED MOBILE-FIRST TOP BAR */}
+      <header className="h-14 shrink-0 bg-[#141519] border-b border-white/10 px-2.5 sm:px-4 flex items-center justify-between gap-2 z-20">
+        {/* Left: Mobile Channels Drawer Toggle + Back to Website + Active Channel Name */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-1">
+          {/* Mobile Left-Sidebar Drawer Button */}
           <button
+            type="button"
+            onClick={() => setMobileSidebarOpen((prev) => !prev)}
+            title="Open Channels Panel (or swipe right from left edge)"
+            aria-label="Toggle Channels Panel"
+            className="lg:hidden p-2 rounded-xl bg-white/8 hover:bg-white/15 text-white border border-white/10 transition-colors cursor-pointer shrink-0"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
             onClick={onBackToLanding}
             title="Back to Build Buds Website"
-            className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1"
+            aria-label="Back to Website"
+            className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1 shrink-0"
           >
-            <ChevronLeft className="w-5 h-5" />
+            <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
             <span className="hidden md:inline text-xs font-bold text-white/80">Website</span>
           </button>
 
-          {/* Mobile channel drawer button */}
-          <button
-            onClick={() => setMobileSidebarOpen(!mobileSidebarOpen)}
-            className="lg:hidden px-2.5 py-1 rounded-lg bg-white/10 text-xs font-bold text-white cursor-pointer"
-          >
-            Channels
-          </button>
-
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-white/70 font-bold text-sm shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+            <span className="w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-white/10 flex items-center justify-center text-white/70 font-bold text-xs sm:text-sm shrink-0">
               #
             </span>
-            <span className="text-base shrink-0">{activeChannel.emoji}</span>
+            <span className="text-sm sm:text-base shrink-0">{activeChannel.emoji}</span>
             <h1 className="font-bold text-white text-sm sm:text-base truncate">
-              {activeChannel.name}
+              {viewMode === 'showcase' ? 'Shared Creations' : activeChannel.name}
             </h1>
-            {activeSubGroup && (
-              <span className="px-2 py-0.5 rounded-md bg-[#FFF025]/20 border border-[#FFF025]/40 text-[#FFF025] text-xs font-bold truncate">
+            {activeSubGroup && viewMode === 'chat' && (
+              <span className="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-[#FFF025]/20 border border-[#FFF025]/40 text-[#FFF025] text-xs font-bold truncate max-w-[140px]">
                 / 👥 {activeSubGroup.name}
               </span>
             )}
             {effectiveChatLocked && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] font-bold">
-                <Lock className="w-3 h-3" />
-                Locked
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] font-bold shrink-0">
+                <Lock className="w-2.5 h-2.5" />
+                <span className="hidden sm:inline">Locked</span>
               </span>
             )}
             <span className="hidden xl:inline-block text-xs text-white/45 truncate max-w-md ml-2 pl-3 border-l border-white/10">
@@ -1534,104 +2359,106 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           </div>
         </div>
 
-        {/* Right: Mode Switcher, Admin/Mod Control Center, Guidelines, Members, Real Online Counter */}
-        <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-          {/* View Toggle: Chat Stream vs Creations Gallery */}
-          <div className="hidden sm:flex items-center bg-[#0b0c0e] p-0.5 rounded-lg border border-white/10">
-            <button
-              onClick={() => setViewMode('chat')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
-                viewMode === 'chat'
-                  ? 'bg-[#FFF025] text-black'
-                  : 'text-white/70 hover:text-white'
-              }`}
-            >
-              <List className="w-3.5 h-3.5" />
-              <span>Chat Feed</span>
-            </button>
-            <button
-              onClick={() => setViewMode('showcase')}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
-                viewMode === 'showcase'
-                  ? 'bg-[#FFF025] text-black'
-                  : 'text-white/70 hover:text-white'
-              }`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-              <span>Shared Links</span>
-            </button>
-          </div>
-
+        {/* Right: Only Essential Controls — Admin/Mod (if applicable), Live Online Pill, and User Account Icon */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           {/* Super Admin OR Channel Moderator Control Center Button */}
           {(isSuperAdmin || isCurrentChannelModerator) && (
             <button
+              type="button"
               onClick={() => {
                 setSelectedAdminChannelId(activeChannelId);
                 setAdminTab(isSuperAdmin ? 'global' : 'channels');
+                setActiveThreadMessage(null);
+                setShowMembersDrawer(false);
                 setShowAdminDrawer((prev) => !prev);
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black border cursor-pointer transition-all ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer transition-all ${
                 showAdminDrawer
                   ? 'bg-[#FFF025] text-black border-black'
                   : 'bg-amber-500/15 hover:bg-amber-500/25 text-[#FFF025] border-[#FFF025]/40'
               }`}
               title={isSuperAdmin ? 'Open Super Admin Control Center' : 'Open Channel Moderator Controls'}
+              aria-label={isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}
             >
               <Settings className="w-3.5 h-3.5" />
-              <span>{isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}</span>
+              <span className="hidden sm:inline">{isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}</span>
             </button>
           )}
 
-          {/* Share Project / Link Quick Button */}
-          {!effectiveBanLinks && (
-            <button
-              onClick={() => {
-                setViewMode('chat');
-                setShowAttachmentDrawer((prev) => !prev);
-              }}
-              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black bg-[#B11469] hover:bg-[#c91878] text-white border border-white/15 cursor-pointer transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-              <span>Upload Link / Cover</span>
-            </button>
-          )}
-
-          {/* Guidelines Shield Icon */}
+          {/* Real Online Counter Pill (Click to view Online & Registered Members) */}
           <button
-            onClick={() => setShowGuidelinesPrompt(true)}
-            title="Community Safety Guidelines"
-            className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            type="button"
+            onClick={() => {
+              setShowAdminDrawer(false);
+              setActiveThreadMessage(null);
+              setShowMembersDrawer((prev) => !prev);
+            }}
+            title={`${liveOnlineCount} total online in community • ${activeChannelOnlineCount} in #${activeChannel.name}`}
+            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full border text-xs font-bold tabular-nums cursor-pointer transition-colors ${
+              showMembersDrawer
+                ? 'bg-emerald-500 text-black border-emerald-300 font-black'
+                : 'bg-emerald-950/60 border-emerald-500/30 text-emerald-400 hover:bg-emerald-900/50'
+            }`}
           >
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-          </button>
-
-          {/* Members / Profile Icon */}
-          <button
-            onClick={() => setShowMembersDrawer((prev) => !prev)}
-            title="Toggle Community Members List"
-            className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-          >
-            <Users className="w-4 h-4" />
-          </button>
-
-          {/* Real Online Counter Pill */}
-          <button
-            onClick={() => setShowMembersDrawer((prev) => !prev)}
-            className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-emerald-400 text-xs font-bold tabular-nums cursor-pointer hover:bg-emerald-900/50 transition-colors"
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span
+              className={`w-2 h-2 rounded-full ${
+                showMembersDrawer ? 'bg-black' : 'bg-emerald-400 animate-pulse'
+              }`}
+            />
             <span>{liveOnlineCount} online</span>
           </button>
+
+          {/* Account Icon -> Opens User Profile Settings Modal */}
+          {currentUser && builderProfile ? (
+            <button
+              type="button"
+              onClick={() => handleOpenProfileSettings('profile')}
+              title="Account & Profile Settings"
+              aria-label="Account & Profile Settings"
+              className="relative rounded-full p-0.5 border-2 border-white/20 hover:border-[#FFF025] focus:outline-none focus:border-[#FFF025] transition-all cursor-pointer shrink-0 group"
+            >
+              <img
+                src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
+                alt={builderProfile.displayName}
+                className="w-8 h-8 rounded-full object-cover"
+              />
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#141519] ${
+                  userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
+                }`}
+              />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onOpenAuthModal('signin')}
+              className="px-3 py-1.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black cursor-pointer shrink-0"
+            >
+              Sign In
+            </button>
+          )}
         </div>
       </header>
 
       {/* MAIN WORKSPACE */}
-      <div className="flex-1 flex min-h-0 relative">
-        {/* LEFT SIDEBAR: Categorized Channels & Sub-Groups */}
+      <div className="flex-1 flex min-h-0 relative overflow-hidden">
+        {/* MOBILE SIDEBAR BACKDROP OVERLAY */}
+        {mobileSidebarOpen && (
+          <div
+            onClick={() => setMobileSidebarOpen(false)}
+            aria-hidden="true"
+            className="fixed inset-0 bg-black/65 backdrop-blur-[1px] z-30 lg:hidden animate-fade-in"
+          />
+        )}
+
+        {/* LEFT SIDEBAR: Categorized Channels & Sub-Groups (Slide-over on mobile, static on desktop) */}
         <aside
+          aria-label="Community Channels Sidebar"
           className={`${
-            mobileSidebarOpen ? 'fixed inset-y-14 left-0 z-30 w-64' : 'hidden lg:flex lg:w-64'
-          } flex-col bg-[#121317] border-r border-white/10 shrink-0 select-none`}
+            mobileSidebarOpen
+              ? 'fixed inset-y-0 left-0 z-40 w-72 max-w-[84vw] flex shadow-2xl'
+              : 'hidden lg:flex lg:w-64'
+          } flex-col bg-[#121317] border-r border-white/10 shrink-0 select-none transition-transform duration-200`}
         >
           {/* Brand Banner inside Sidebar */}
           <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
@@ -1651,8 +2478,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             </div>
             {mobileSidebarOpen && (
               <button
+                type="button"
                 onClick={() => setMobileSidebarOpen(false)}
-                className="lg:hidden p-1 text-white/60 hover:text-white"
+                aria-label="Close Channels Panel"
+                className="lg:hidden p-1.5 rounded-lg bg-white/5 text-white/70 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1660,7 +2489,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           </div>
 
           {/* Scrollable Channel Categories */}
-          <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-5">
+          <div className="flex-1 overflow-y-auto hub-scroll px-2.5 py-3 space-y-5">
             {(['INFORMATION', 'CREATOR SHOWCASES', 'SOCIAL'] as const).map((category) => {
               const categoryChannels = allChannels.filter((c) => c.category === category);
               return (
@@ -1684,6 +2513,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       return (
                         <div key={channel.id} className="space-y-0.5">
                           <button
+                            type="button"
                             onClick={() => {
                               setActiveChannelId(channel.id);
                               setActiveSubGroupId(null);
@@ -1729,7 +2559,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 return (
                                   <button
                                     key={grp.id}
-                                    onClick={() => setActiveSubGroupId(grp.id)}
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveSubGroupId(grp.id);
+                                      setMobileSidebarOpen(false);
+                                    }}
                                     className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-left text-[11px] transition-colors cursor-pointer ${
                                       isGrpSelected
                                         ? 'bg-[#FFF025]/20 text-[#FFF025] font-bold'
@@ -1751,6 +2585,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         </div>
                       );
                     })}
+
+                    {/* Shared Creations Directory link tucked neatly under CREATOR SHOWCASES */}
+                    {category === 'CREATOR SHOWCASES' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setViewMode('showcase');
+                          setMobileSidebarOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left text-xs font-medium transition-all cursor-pointer mt-1 ${
+                          viewMode === 'showcase'
+                            ? 'bg-[#FFF025]/15 text-[#FFF025] font-bold border border-[#FFF025]/30'
+                            : 'text-white/60 hover:bg-white/5 hover:text-white/90'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <LayoutGrid className="w-3.5 h-3.5 text-[#FFF025] shrink-0" />
+                          <span className="truncate">All Shared Links</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-white/45">
+                          {allShowcaseMessages.length}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -1761,30 +2619,25 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           <div className="p-3 bg-[#0b0c0f] border-t border-white/10">
             {currentUser && builderProfile ? (
               <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => handleOpenProfileSettings('profile')}
+                  title="Open Account & Profile Settings"
+                  className="flex items-center gap-2.5 min-w-0 flex-1 text-left p-1 -m-1 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group/pod"
+                >
                   <div className="relative shrink-0">
-                    {builderProfile.avatarUrl ? (
-                      <img
-                        src={builderProfile.avatarUrl}
-                        alt={builderProfile.displayName}
-                        referrerPolicy="no-referrer"
-                        className="w-8 h-8 rounded-full object-cover border border-white/20"
-                      />
-                    ) : (
-                      <div
-                        className="w-8 h-8 rounded-full flex items-center justify-center font-black text-xs text-black border border-black"
-                        style={{ backgroundColor: builderProfile.avatarColor || '#FFF025' }}
-                      >
-                        {builderProfile.displayName.charAt(0).toUpperCase()}
-                      </div>
-                    )}
+                    <img
+                      src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
+                      alt={builderProfile.displayName}
+                      className="w-9 h-9 rounded-full object-cover border-2 border-white/20 group-hover/pod:border-[#FFF025] transition-colors"
+                    />
                     <span
                       className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#0b0c0f] ${
                         userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
                       }`}
                     />
                   </div>
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="text-xs font-bold text-white truncate flex items-center gap-1">
                       <span className="truncate">{builderProfile.displayName}</span>
                       {isSuperAdmin ? (
@@ -1797,20 +2650,22 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         </span>
                       ) : null}
                     </div>
-                    <div className="text-[10px] truncate">
+                    <div className="text-[10px] text-white/50 truncate">
                       {userStatus === 'suspended' ? (
                         <span className="text-amber-400 font-bold">Suspended (Read-Only)</span>
                       ) : (
-                        <span className="text-emerald-400">Online • Active Member</span>
+                        <span>Tap to edit profile & avatar</span>
                       )}
                     </div>
                   </div>
-                </div>
+                </button>
 
                 <button
-                  onClick={() => signOut(auth)}
+                  type="button"
+                  onClick={handleSignOutFromHub}
                   title="Sign Out"
-                  className="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-white/10 transition-colors cursor-pointer"
+                  aria-label="Sign Out"
+                  className="p-2 rounded-lg text-white/50 hover:text-rose-400 hover:bg-white/10 transition-colors cursor-pointer shrink-0"
                 >
                   <LogOut className="w-4 h-4" />
                 </button>
@@ -1818,6 +2673,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             ) : (
               <div className="space-y-2">
                 <button
+                  type="button"
                   onClick={handleQuickGoogleSignIn}
                   className="w-full py-2 px-3 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-95"
                 >
@@ -1825,6 +2681,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   <span>Sign In with Google</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() => onOpenAuthModal('join')}
                   className="w-full py-1.5 px-3 rounded-lg bg-white/10 hover:bg-white/15 text-white/90 font-bold text-[11px] cursor-pointer transition-colors"
                 >
@@ -1839,7 +2696,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         <main className="flex-1 flex flex-col min-w-0 bg-[#16171b]">
           {viewMode === 'showcase' ? (
             /* SHARED LINKS & COVERS DIRECTORY VIEW */
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto hub-scroll p-4 sm:p-6 space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
                 <div>
                   <h2 className="font-chewy text-2xl sm:text-3xl text-white">
@@ -1851,6 +2708,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('chat')}
+                    className="px-3 py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-white cursor-pointer"
+                  >
+                    ← Back to Chat
+                  </button>
                   {(
                     [
                       { id: 'all', label: 'All Creations' },
@@ -1862,6 +2726,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   ).map((tab) => (
                     <button
                       key={tab.id}
+                      type="button"
                       onClick={() => setShowcaseFilter(tab.id)}
                       className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                         showcaseFilter === tab.id
@@ -1885,78 +2750,81 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {filteredCreations.map((item) => (
-                    <div
-                      key={item.id}
-                      className="rounded-2xl bg-[#101115] border border-white/15 overflow-hidden flex flex-col justify-between hover:border-[#FFF025]/60 transition-all group"
-                    >
-                      <div>
-                        <div className="relative h-44 bg-black/60 overflow-hidden border-b border-white/10">
-                          <img
-                            src={item.coverImageUrl || '/assets/aistudio/extracted/card-galaxy.png'}
-                            alt={item.linkTitle || 'Project Cover'}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          />
-                          <span className="absolute top-3 left-3 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-black/80 text-[#FFF025] border border-white/20">
-                            {item.linkCategory || 'project'}
-                          </span>
-                          <span className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] font-mono bg-black/75 text-white/80">
-                            #{item.channelId}
-                          </span>
-                        </div>
-
-                        <div className="p-4 space-y-2">
-                          <div className="text-[11px] font-mono text-white/50 truncate">
-                            {item.linkDomain || 'buildbuds.community'}
+                  {filteredCreations.map((item) => {
+                    const effectiveCount = getMessageEffectiveReplyCount(item);
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl bg-[#101115] border border-white/15 overflow-hidden flex flex-col justify-between hover:border-[#FFF025]/60 transition-all group"
+                      >
+                        <div>
+                          <div className="relative h-44 bg-black/60 overflow-hidden border-b border-white/10">
+                            <img
+                              src={item.coverImageUrl || '/assets/aistudio/extracted/card-galaxy.png'}
+                              alt={item.linkTitle || 'Project Cover'}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            />
+                            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-black/80 text-[#FFF025] border border-white/20">
+                              {item.linkCategory || 'project'}
+                            </span>
+                            <span className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] font-mono bg-black/75 text-white/80">
+                              #{item.channelId}
+                            </span>
                           </div>
-                          <h3 className="text-base font-bold text-white line-clamp-1">
-                            {item.linkTitle || 'Creator Build'}
-                          </h3>
-                          <p className="text-xs text-white/70 line-clamp-2 leading-relaxed">
-                            {item.linkDescription || item.text}
-                          </p>
-                        </div>
-                      </div>
 
-                      <div className="px-4 py-3 bg-white/[0.02] border-t border-white/10 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span
-                            className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-black text-black shrink-0"
-                            style={{ backgroundColor: item.authorColor }}
-                          >
-                            {item.authorName.charAt(0).toUpperCase()}
-                          </span>
-                          <span className="text-xs font-bold text-white/85 truncate">
-                            {item.authorName}
-                          </span>
+                          <div className="p-4 space-y-2">
+                            <div className="text-[11px] font-mono text-white/50 truncate">
+                              {item.linkDomain || 'buildbuds.community'}
+                            </div>
+                            <h3 className="text-base font-bold text-white line-clamp-1">
+                              {item.linkTitle || 'Creator Build'}
+                            </h3>
+                            <p className="text-xs text-white/70 line-clamp-2 leading-relaxed">
+                              {item.linkDescription || item.text}
+                            </p>
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              setActiveChannelId(item.channelId);
-                              setViewMode('chat');
-                              setActiveThreadMessage(item);
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
-                          >
-                            Discuss ({item.threadCount})
-                          </button>
-                          {item.linkUrl && (
-                            <a
-                              href={item.linkUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                        <div className="px-4 py-3 bg-white/[0.02] border-t border-white/10 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <img
+                              src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
+                              alt={item.authorName}
+                              className="w-6 h-6 rounded-full object-cover border border-white/20 shrink-0"
+                            />
+                            <span className="text-xs font-bold text-white/85 truncate">
+                              {getLiveUserDisplayName(item.authorId, item.authorName)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveChannelId(item.channelId);
+                                setViewMode('chat');
+                                setActiveThreadMessage(item);
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
                             >
-                              <span>Open</span>
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          )}
+                              Discuss ({effectiveCount})
+                            </button>
+                            {item.linkUrl && (
+                              <a
+                                href={item.linkUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                              >
+                                <span>Open</span>
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1964,11 +2832,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             /* DISCORD-STYLE REAL-TIME CHAT FEED */
             <>
               {/* SUB-GROUPS & CHANNEL ROOMS BAR */}
-              <div className="bg-[#121318] border-b border-white/10 px-4 py-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+              <div className="bg-[#121318] border-b border-white/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+                <div className="flex items-center gap-1.5 py-0.5 shrink-0">
                   <button
+                    type="button"
                     onClick={() => setActiveSubGroupId(null)}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                    className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                       !activeSubGroupId
                         ? 'bg-[#FFF025] text-black font-black'
                         : 'bg-white/5 text-white/70 hover:bg-white/10 hover:text-white'
@@ -1980,8 +2849,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   {visibleSubGroups.map((grp) => (
                     <button
                       key={grp.id}
+                      type="button"
                       onClick={() => setActiveSubGroupId(grp.id)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                      className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
                         activeSubGroupId === grp.id
                           ? 'bg-[#B11469] text-white font-black border border-white/20'
                           : 'bg-white/5 text-white/75 hover:bg-white/10'
@@ -1994,21 +2864,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   ))}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {activeSubGroup && (
                     <button
+                      type="button"
                       onClick={() => setShowManageGroupModal(true)}
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
                     >
                       <Users className="w-3.5 h-3.5 text-[#FFF025]" />
-                      <span>Group Members ({activeSubGroup.memberIds.length})</span>
+                      <span className="hidden sm:inline">Members</span>
+                      <span>({activeSubGroup.memberIds.length})</span>
                     </button>
                   )}
 
                   {currentUser && canUserCreateSubGroup && (
                     <button
+                      type="button"
                       onClick={() => setShowCreateGroupModal(true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-[#FFF025] cursor-pointer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-[#FFF025] cursor-pointer shrink-0"
                     >
                       <FolderPlus className="w-3.5 h-3.5" />
                       <span>+ Create Sub-Group</span>
@@ -2019,18 +2892,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
               {/* Showcase Channel Quick Prompt */}
               {activeChannel.defaultCreationCategory && !effectiveBanLinks && (
-                <div className="bg-gradient-to-r from-[#1e1f26] via-[#25182e] to-[#1e1f26] border-b border-white/10 px-4 py-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="bg-gradient-to-r from-[#1e1f26] via-[#25182e] to-[#1e1f26] border-b border-white/10 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs text-white/90">
                     <span className="px-2 py-0.5 rounded bg-[#FFF025] text-black font-black uppercase text-[10px]">
                       {activeChannel.name} Showcase
                     </span>
-                    <span>
+                    <span className="hidden sm:inline">
                       Share your {activeChannel.defaultCreationCategory} link and custom cover art with the community!
                     </span>
                   </div>
                   <button
+                    type="button"
                     onClick={() => setShowAttachmentDrawer(true)}
-                    className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-bold text-[#FFF025] cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-bold text-[#FFF025] cursor-pointer"
                   >
                     + Attach {activeChannel.name} Link & Cover
                   </button>
@@ -2051,9 +2925,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   </div>
                 </div>
               ) : (
-                /* Scrollable Real-Time Message Stream */
-                <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-5 select-text">
-                  {firestoreMessages.length === 0 ? (
+                /* Scrollable Real-Time Message Stream with Discord-Style Consecutive Grouping */
+                <div
+                  onClick={() => setActiveActionMessageId(null)}
+                  className="flex-1 overflow-y-auto hub-scroll px-3 sm:px-6 py-4 select-text"
+                >
+                  {groupedMessages.length === 0 ? (
                     <div className="h-full min-h-[260px] flex flex-col items-center justify-center text-center px-4">
                       <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-2xl mb-3">
                         {activeSubGroup ? '👥' : activeChannel.emoji}
@@ -2071,269 +2948,446 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       </p>
                     </div>
                   ) : (
-                    firestoreMessages.map((msg) => {
-                      const isOwnMessage = currentUser?.uid === msg.authorId;
-                      return (
-                        <div
-                          key={msg.id}
-                          className="group relative rounded-xl px-2.5 py-1.5 -mx-2.5 hover:bg-white/[0.03] transition-colors"
-                        >
-                          {/* Curved Inline Reply Connector */}
-                          {msg.replyToAuthor && (
-                            <div className="flex items-center gap-2 text-xs text-white/55 mb-1 pl-4 relative">
-                              <div className="w-6 h-3 border-l-2 border-t-2 border-white/25 rounded-tl-md -ml-2 mt-1.5 shrink-0" />
-                              <span
-                                className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-black shrink-0"
-                                style={{ backgroundColor: msg.replyToColor || '#a855f7' }}
-                              >
-                                {msg.replyToAuthor.charAt(0).toUpperCase()}
-                              </span>
-                              <span
-                                className="font-bold hover:underline cursor-pointer shrink-0"
-                                style={{ color: msg.replyToColor || '#c084fc' }}
-                              >
-                                {msg.replyToAuthor}
-                              </span>
-                              <span className="truncate text-white/50 max-w-md">
-                                {msg.replyToSnippet}
-                              </span>
-                            </div>
-                          )}
+                    <div className="space-y-0.5">
+                      {groupedMessages.map(({ message: msg, isFirstInGroup }) => {
+                        const isOwnMessage = currentUser?.uid === msg.authorId;
+                        const resolvedAvatarUrl = getLiveUserAvatarUrl(
+                          msg.authorId,
+                          msg.authorAvatar
+                        );
+                        const resolvedAuthorName = getLiveUserDisplayName(
+                          msg.authorId,
+                          msg.authorName
+                        );
+                        const resolvedAuthorColor = getLiveUserColor(
+                          msg.authorId,
+                          msg.authorColor
+                        );
+                        const effectiveReplyCount = getMessageEffectiveReplyCount(msg);
+                        const hasReactionsOrThreads =
+                          effectiveReplyCount > 0 ||
+                          Object.values(msg.reactions || {}).some((c) => c > 0);
+                        const isEditingThisMessage = editingMessageId === msg.id;
+                        const isActionOpen = activeActionMessageId === msg.id;
 
-                          <div className="flex items-start gap-3.5">
-                            {/* Author Avatar */}
-                            {msg.authorAvatar ? (
-                              <img
-                                src={msg.authorAvatar}
-                                alt={msg.authorName}
-                                referrerPolicy="no-referrer"
-                                className="w-10 h-10 rounded-full object-cover border border-white/15 shrink-0 mt-0.5"
-                              />
-                            ) : (
-                              <div
-                                className="w-10 h-10 rounded-full flex items-center justify-center font-black text-sm text-black border border-black/40 shrink-0 mt-0.5 shadow-md"
-                                style={{ backgroundColor: msg.authorColor || '#FFF025' }}
-                              >
-                                {msg.authorName.slice(0, 2).toUpperCase()}
+                        return (
+                          <div
+                            key={msg.id}
+                            data-grouped={isFirstInGroup ? 'false' : 'true'}
+                            className={`group relative rounded-xl px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 hover:bg-white/[0.035] transition-colors ${
+                              isFirstInGroup ? 'mt-4 first:mt-0 pt-1.5 pb-1' : 'mt-0.5 py-0.5'
+                            } ${isActionOpen ? 'bg-white/[0.04]' : ''}`}
+                          >
+                            {/* Curved Inline Reply Connector */}
+                            {msg.replyToAuthor && (
+                              <div className="flex items-center gap-2 text-xs text-white/55 mb-1 pl-4 relative">
+                                <div className="w-6 h-3 border-l-2 border-t-2 border-white/25 rounded-tl-md -ml-2 mt-1.5 shrink-0" />
+                                <span
+                                  className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-black shrink-0"
+                                  style={{ backgroundColor: msg.replyToColor || '#a855f7' }}
+                                >
+                                  {msg.replyToAuthor.charAt(0).toUpperCase()}
+                                </span>
+                                <span
+                                  className="font-bold hover:underline cursor-pointer shrink-0"
+                                  style={{ color: msg.replyToColor || '#c084fc' }}
+                                >
+                                  {msg.replyToAuthor}
+                                </span>
+                                <span className="truncate text-white/50 max-w-[200px] sm:max-w-md">
+                                  {msg.replyToSnippet}
+                                </span>
                               </div>
                             )}
 
-                            {/* Message Content Column */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-baseline gap-2 flex-wrap">
-                                <span
-                                  className="font-mono font-bold text-sm tracking-tight"
-                                  style={{ color: msg.authorColor || '#FFF025' }}
-                                >
-                                  {msg.authorName}
-                                </span>
-
-                                {msg.authorRole === 'admin' && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-[#FFF025] text-black">
-                                    ADMIN
+                            <div className="flex items-start gap-2.5 sm:gap-3.5">
+                              {/* Left Column: 40x40 Graphical Avatar on first message of group; subtle hover timestamp on grouped follow-ups */}
+                              {isFirstInGroup ? (
+                                <img
+                                  src={resolvedAvatarUrl}
+                                  alt={resolvedAuthorName}
+                                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover border border-white/15 shrink-0 mt-0.5 shadow-md"
+                                />
+                              ) : (
+                                <div className="w-9 sm:w-10 shrink-0 flex items-center justify-end pr-1 pt-1 select-none">
+                                  <span className="text-[10px] font-mono text-white/30 opacity-0 group-hover:opacity-100 transition-opacity tabular-nums">
+                                    {msg.timeLabel}
                                   </span>
-                                )}
-                                {msg.authorRole === 'moderator' && (
-                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-emerald-400 text-black">
-                                    MOD
-                                  </span>
-                                )}
+                                </div>
+                              )}
 
-                                <span className="text-[11px] font-mono text-white/35 tabular-nums">
-                                  {msg.timeLabel}
-                                </span>
+                              {/* Right Column: Message Content aligned consistently across the group */}
+                              <div className="flex-1 min-w-0">
+                                {isFirstInGroup && (
+                                  <div className="flex items-baseline justify-between gap-2 mb-0.5">
+                                    <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+                                      <span
+                                        className="font-mono font-bold text-sm tracking-tight truncate"
+                                        style={{ color: resolvedAuthorColor }}
+                                      >
+                                        {resolvedAuthorName}
+                                      </span>
 
-                                {msg.hadProfanity && (
-                                  <span
-                                    title="Automatic profanity filter masked restricted words"
-                                    className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/5 text-white/40"
-                                  >
-                                    filtered
-                                  </span>
-                                )}
-                              </div>
+                                      {msg.authorRole === 'admin' && (
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-[#FFF025] text-black">
+                                          ADMIN
+                                        </span>
+                                      )}
+                                      {msg.authorRole === 'moderator' && (
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-emerald-400 text-black">
+                                          MOD
+                                        </span>
+                                      )}
 
-                              <p className="font-mono text-sm sm:text-[15px] text-[#eef0f3] leading-relaxed break-words mt-0.5">
-                                {msg.text}
-                              </p>
+                                      <span className="text-[11px] font-mono text-white/35 tabular-nums">
+                                        {msg.timeLabel}
+                                      </span>
+                                    </div>
 
-                              {/* Rich Link Preview & Uploaded Cover Card (Rendered when Link Previews are enabled) */}
-                              {msg.linkUrl && effectiveEnableLinkPreviews && (
-                                <div className="mt-3 max-w-xl rounded-2xl bg-[#101115] border-l-4 border-l-[#FFF025] border border-white/15 overflow-hidden shadow-lg">
-                                  <div className="grid grid-cols-1 sm:grid-cols-12">
-                                    {msg.coverImageUrl && (
-                                      <div className="sm:col-span-5 h-36 sm:h-auto bg-black/50 overflow-hidden">
-                                        <img
-                                          src={msg.coverImageUrl}
-                                          alt={msg.linkTitle || 'Creation preview'}
-                                          className="w-full h-full object-cover"
-                                        />
-                                      </div>
-                                    )}
-                                    <div
-                                      className={`${
-                                        msg.coverImageUrl ? 'sm:col-span-7' : 'sm:col-span-12'
-                                      } p-3.5 flex flex-col justify-between gap-2`}
+                                    {/* Mobile / Touch Action Menu Trigger */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveActionMessageId((prev) =>
+                                          prev === msg.id ? null : msg.id
+                                        );
+                                      }}
+                                      aria-label="Message Actions"
+                                      title="Message Actions (Reply, Edit, Delete, React)"
+                                      className="p-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
                                     >
-                                      <div>
-                                        <div className="flex items-center justify-between gap-2 mb-1">
-                                          <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-white/10 text-[#FFF025] font-bold">
-                                            {msg.linkCategory || 'creation'}
-                                          </span>
-                                          <span className="text-[11px] font-mono text-white/45 truncate">
-                                            {msg.linkDomain}
-                                          </span>
-                                        </div>
-                                        <a
-                                          href={msg.linkUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-sm font-bold text-sky-400 hover:underline line-clamp-1 flex items-center gap-1"
-                                        >
-                                          <span>{msg.linkTitle || msg.linkUrl}</span>
-                                          <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                                        </a>
-                                        {msg.linkDescription && (
-                                          <p className="text-xs text-white/65 mt-1 line-clamp-2 leading-relaxed">
-                                            {msg.linkDescription}
-                                          </p>
-                                        )}
-                                      </div>
+                                      <MoreHorizontal className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                )}
 
-                                      <div className="pt-1 flex items-center gap-2">
-                                        <a
-                                          href={msg.linkUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                                {/* Inline Message Edit Input OR Message Text */}
+                                {isEditingThisMessage ? (
+                                  <form
+                                    onSubmit={(e) => {
+                                      e.preventDefault();
+                                      handleSaveEditMessage(msg);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="mt-1 space-y-2 max-w-xl"
+                                  >
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      value={editingMessageText}
+                                      onChange={(e) => setEditingMessageText(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Escape') {
+                                          setEditingMessageId(null);
+                                          setEditingMessageText('');
+                                        }
+                                      }}
+                                      className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-[#FFF025] text-sm font-mono text-white focus:outline-none"
+                                    />
+                                    <div className="flex items-center gap-2 text-[11px]">
+                                      <button
+                                        type="submit"
+                                        disabled={isSavingMessageEdit}
+                                        className="px-3 py-1 rounded-lg bg-[#FFF025] text-black font-black cursor-pointer flex items-center gap-1"
+                                      >
+                                        <Check className="w-3 h-3" />
+                                        <span>{isSavingMessageEdit ? 'Saving...' : 'Save'}</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEditingMessageId(null);
+                                          setEditingMessageText('');
+                                        }}
+                                        className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/80 font-bold cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </form>
+                                ) : (
+                                  <div className="flex items-baseline justify-between gap-2">
+                                    <div className="flex items-baseline gap-2 flex-wrap min-w-0">
+                                      <p className="font-mono text-sm sm:text-[15px] text-[#eef0f3] leading-relaxed break-words">
+                                        {msg.text}
+                                      </p>
+                                      {msg.isEdited && (
+                                        <span className="text-[10px] font-mono text-white/40 select-none">
+                                          (edited)
+                                        </span>
+                                      )}
+                                      {msg.hadProfanity && (
+                                        <span
+                                          title="Automatic profanity filter masked restricted words"
+                                          className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-white/5 text-white/40"
                                         >
-                                          <span>Open Creation</span>
-                                          <ExternalLink className="w-3 h-3" />
-                                        </a>
-                                        <button
-                                          onClick={() => setActiveThreadMessage(msg)}
-                                          className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/85 text-xs font-bold cursor-pointer"
-                                        >
-                                          Feedback Thread ({msg.threadCount})
-                                        </button>
+                                          filtered
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {!isFirstInGroup && (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveActionMessageId((prev) =>
+                                            prev === msg.id ? null : msg.id
+                                          );
+                                        }}
+                                        aria-label="Message Actions"
+                                        title="Message Actions (Reply, Edit, Delete, React)"
+                                        className="p-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                      >
+                                        <MoreHorizontal className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Rich Link Preview & Uploaded Cover Card (Rendered when Link Previews are enabled) */}
+                                {msg.linkUrl && effectiveEnableLinkPreviews && (
+                                  <div className="mt-2.5 max-w-xl rounded-2xl bg-[#101115] border-l-4 border-l-[#FFF025] border border-white/15 overflow-hidden shadow-lg">
+                                    <div className="grid grid-cols-1 sm:grid-cols-12">
+                                      {msg.coverImageUrl && (
+                                        <div className="sm:col-span-5 h-36 sm:h-auto bg-black/50 overflow-hidden">
+                                          <img
+                                            src={msg.coverImageUrl}
+                                            alt={msg.linkTitle || 'Creation preview'}
+                                            className="w-full h-full object-cover"
+                                          />
+                                        </div>
+                                      )}
+                                      <div
+                                        className={`${
+                                          msg.coverImageUrl ? 'sm:col-span-7' : 'sm:col-span-12'
+                                        } p-3.5 flex flex-col justify-between gap-2`}
+                                      >
+                                        <div>
+                                          <div className="flex items-center justify-between gap-2 mb-1">
+                                            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-white/10 text-[#FFF025] font-bold">
+                                              {msg.linkCategory || 'creation'}
+                                            </span>
+                                            <span className="text-[11px] font-mono text-white/45 truncate">
+                                              {msg.linkDomain}
+                                            </span>
+                                          </div>
+                                          <a
+                                            href={msg.linkUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-sm font-bold text-sky-400 hover:underline line-clamp-1 flex items-center gap-1"
+                                          >
+                                            <span>{msg.linkTitle || msg.linkUrl}</span>
+                                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                                          </a>
+                                          {msg.linkDescription && (
+                                            <p className="text-xs text-white/65 mt-1 line-clamp-2 leading-relaxed">
+                                              {msg.linkDescription}
+                                            </p>
+                                          )}
+                                        </div>
+
+                                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                                          <a
+                                            href={msg.linkUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                                          >
+                                            <span>Open Creation</span>
+                                            <ExternalLink className="w-3 h-3" />
+                                          </a>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setShowAdminDrawer(false);
+                                              setShowMembersDrawer(false);
+                                              setActiveThreadMessage(msg);
+                                            }}
+                                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/85 text-xs font-bold cursor-pointer"
+                                          >
+                                            Feedback Thread ({effectiveReplyCount})
+                                          </button>
+                                        </div>
                                       </div>
                                     </div>
                                   </div>
-                                </div>
-                              )}
-
-                              {/* Plain Link Fallback when Link Previews are turned off by Admin */}
-                              {msg.linkUrl && !effectiveEnableLinkPreviews && (
-                                <div className="mt-1">
-                                  <a
-                                    href={msg.linkUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs font-mono text-sky-400 hover:underline"
-                                  >
-                                    <span>{msg.linkUrl}</span>
-                                    <ExternalLink className="w-3 h-3" />
-                                  </a>
-                                </div>
-                              )}
-
-                              {/* Reaction Pills Row + Thread Button */}
-                              <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                                {Object.entries(msg.reactions || {}).map(([emoji, count]) =>
-                                  count > 0 ? (
-                                    <button
-                                      key={emoji}
-                                      onClick={() => handleToggleReaction(msg, emoji)}
-                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#23252c] hover:bg-[#2e313a] border border-white/10 text-xs font-mono font-bold text-white tabular-nums cursor-pointer transition-transform active:scale-95"
-                                    >
-                                      <span>{emoji}</span>
-                                      <span>{count}</span>
-                                    </button>
-                                  ) : null
                                 )}
 
-                                {msg.threadCount > 0 && (
-                                  <button
-                                    onClick={() => setActiveThreadMessage(msg)}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/25 text-xs font-bold text-sky-300 cursor-pointer"
-                                  >
-                                    <MessageSquare className="w-3 h-3" />
-                                    <span>
-                                      {msg.threadCount} {msg.threadCount === 1 ? 'reply' : 'replies'}
-                                    </span>
-                                  </button>
+                                {/* Plain Link Fallback when Link Previews are turned off by Admin */}
+                                {msg.linkUrl && !effectiveEnableLinkPreviews && (
+                                  <div className="mt-1">
+                                    <a
+                                      href={msg.linkUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 text-xs font-mono text-sky-400 hover:underline"
+                                    >
+                                      <span>{msg.linkUrl}</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  </div>
+                                )}
+
+                                {/* Reaction Pills Row + Accurate Multi-Reply Thread Button */}
+                                {hasReactionsOrThreads && (
+                                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                    {Object.entries(msg.reactions || {}).map(([emoji, count]) =>
+                                      count > 0 ? (
+                                        <button
+                                          key={emoji}
+                                          type="button"
+                                          onClick={() => handleToggleReaction(msg, emoji)}
+                                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#23252c] hover:bg-[#2e313a] border border-white/10 text-xs font-mono font-bold text-white tabular-nums cursor-pointer transition-transform active:scale-95"
+                                        >
+                                          <span>{emoji}</span>
+                                          <span>{count}</span>
+                                        </button>
+                                      ) : null
+                                    )}
+
+                                    {effectiveReplyCount > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowAdminDrawer(false);
+                                          setShowMembersDrawer(false);
+                                          setActiveThreadMessage(msg);
+                                        }}
+                                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/10 hover:bg-sky-500/20 border border-sky-400/25 text-xs font-bold text-sky-300 cursor-pointer"
+                                      >
+                                        <MessageSquare className="w-3 h-3" />
+                                        <span>
+                                          {effectiveReplyCount}{' '}
+                                          {effectiveReplyCount === 1 ? 'reply' : 'replies'}
+                                        </span>
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </div>
-                          </div>
 
-                          {/* Hover Action Bar */}
-                          <div className="hidden group-hover:flex items-center gap-0.5 absolute -top-3 right-3 bg-[#1e2028] border border-white/15 rounded-xl px-1.5 py-1 shadow-xl z-10">
-                            {QUICK_EMOJIS.map((emoji) => (
+                            {/* Hover & Touch Action Bar (Emoji Reactions, Reply, Thread, Edit, Delete, Report) */}
+                            <div
+                              onClick={(e) => e.stopPropagation()}
+                              className={`${
+                                isActionOpen ? 'flex' : 'hidden group-hover:flex'
+                              } items-center gap-0.5 absolute -top-3 right-2 sm:right-3 bg-[#1e2028] border border-white/15 rounded-xl px-1.5 py-1 shadow-xl z-10 max-w-[95vw] overflow-x-auto no-scrollbar`}
+                            >
+                              {QUICK_EMOJIS.map((emoji) => (
+                                <button
+                                  key={emoji}
+                                  type="button"
+                                  onClick={() => {
+                                    handleToggleReaction(msg, emoji);
+                                    setActiveActionMessageId(null);
+                                  }}
+                                  title={`React with ${emoji}`}
+                                  className="p-1 rounded hover:bg-white/10 text-sm cursor-pointer transition-transform hover:scale-110 shrink-0"
+                                >
+                                  {emoji}
+                                </button>
+                              ))}
+
+                              <div className="w-px h-4 bg-white/15 mx-1 shrink-0" />
+
                               <button
-                                key={emoji}
-                                onClick={() => handleToggleReaction(msg, emoji)}
-                                title={`React with ${emoji}`}
-                                className="p-1 rounded hover:bg-white/10 text-sm cursor-pointer transition-transform hover:scale-110"
+                                type="button"
+                                onClick={() => {
+                                  setReplyingTo(msg);
+                                  setActiveActionMessageId(null);
+                                }}
+                                title="Reply Inline"
+                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-white cursor-pointer shrink-0"
                               >
-                                {emoji}
+                                <Reply className="w-3.5 h-3.5" />
                               </button>
-                            ))}
 
-                            <div className="w-px h-4 bg-white/15 mx-1" />
-
-                            <button
-                              onClick={() => setReplyingTo(msg)}
-                              title="Inline Reply"
-                              className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-white cursor-pointer"
-                            >
-                              <Reply className="w-3.5 h-3.5" />
-                            </button>
-
-                            <button
-                              onClick={() => setActiveThreadMessage(msg)}
-                              title="Open Discussion Thread"
-                              className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-[#FFF025] cursor-pointer"
-                            >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                            </button>
-
-                            <button
-                              onClick={() => handleReportMessage(msg)}
-                              title="Report Message to Moderators"
-                              className="p-1.5 rounded hover:bg-white/10 text-white/60 hover:text-amber-400 cursor-pointer"
-                            >
-                              <Flag className="w-3.5 h-3.5" />
-                            </button>
-
-                            {(isOwnMessage || isSuperAdmin || isCurrentChannelModerator) && (
                               <button
-                                onClick={() => handleDeleteMessage(msg)}
-                                title="Delete Message"
-                                className="p-1.5 rounded hover:bg-rose-500/20 text-white/60 hover:text-rose-400 cursor-pointer"
+                                type="button"
+                                onClick={() => {
+                                  setShowAdminDrawer(false);
+                                  setShowMembersDrawer(false);
+                                  setActiveThreadMessage(msg);
+                                  setActiveActionMessageId(null);
+                                }}
+                                title="Open Discussion Thread"
+                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-[#FFF025] cursor-pointer shrink-0"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <MessageSquare className="w-3.5 h-3.5" />
                               </button>
-                            )}
+
+                              {/* Edit Own Message */}
+                              {isOwnMessage && userStatus === 'active' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartEditMessage(msg)}
+                                  title="Edit Message"
+                                  aria-label="Edit Message"
+                                  className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-[#FFF025] cursor-pointer shrink-0"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              {/* Delete Own Message (or Admin/Moderator Delete) */}
+                              {(isOwnMessage || isSuperAdmin || isCurrentChannelModerator) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleDeleteMessage(msg);
+                                    setActiveActionMessageId(null);
+                                  }}
+                                  title="Delete Message"
+                                  aria-label="Delete Message"
+                                  className="p-1.5 rounded hover:bg-rose-500/20 text-white/70 hover:text-rose-400 cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              {!isOwnMessage && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleReportMessage(msg);
+                                    setActiveActionMessageId(null);
+                                  }}
+                                  title="Report Message to Moderators"
+                                  className="p-1.5 rounded hover:bg-white/10 text-white/60 hover:text-amber-400 cursor-pointer shrink-0"
+                                >
+                                  <Flag className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+                    </div>
                   )}
 
-                  {/* Typing Indicator Bubble (Only shown when a real user is actively typing) */}
+                  {/* Typing Indicator Bubble inside Stream */}
                   {typingUsersInChannel.length > 0 && (
-                    <div className="flex items-center gap-3 pt-1 pl-0.5">
-                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-500 to-amber-300 flex items-center justify-center text-xs font-black text-black border border-white/20">
-                        {typingUsersInChannel[0].displayName.charAt(0).toUpperCase()}
+                    <div className="flex items-center gap-3 pt-3 pl-0.5">
+                      <img
+                        src={getLiveUserAvatarUrl(
+                          typingUsersInChannel[0].uid,
+                          typingUsersInChannel[0].avatarUrl
+                        )}
+                        alt={typingUsersInChannel[0].displayName}
+                        className="w-8 h-8 rounded-full object-cover border border-white/20"
+                      />
+                      <div className="px-3.5 py-2 rounded-2xl bg-[#22242b] border border-[#FFF025]/40 inline-flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce [animation-delay:-0.3s]" />
+                        <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce [animation-delay:-0.15s]" />
+                        <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce" />
                       </div>
-                      <div className="px-3.5 py-2 rounded-2xl bg-[#22242b] border border-white/10 inline-flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce [animation-delay:-0.3s]" />
-                        <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce [animation-delay:-0.15s]" />
-                        <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce" />
-                      </div>
-                      <span className="text-xs font-mono text-white/60">
-                        {typingUsersInChannel.map((u) => u.displayName).join(', ')} is typing...
+                      <span className="text-xs font-mono font-bold text-[#FFF025]">
+                        {typingUsersInChannel.map((u) => u.displayName).join(', ')}{' '}
+                        {typingUsersInChannel.length === 1 ? 'is' : 'are'} typing...
                       </span>
                     </div>
                   )}
@@ -2343,7 +3397,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               )}
 
               {/* BOTTOM COMPOSER AREA */}
-              <div className="p-3 sm:px-5 sm:pb-4 bg-[#141519] border-t border-white/10 space-y-2.5">
+              <div className="p-2.5 sm:px-5 sm:pb-4 bg-[#141519] border-t border-white/10 space-y-2">
+                {/* Pinned Real-Time Typing Indicator Banner right above the input box */}
+                {typingUsersInChannel.length > 0 && (
+                  <div className="px-3.5 py-1.5 rounded-xl bg-[#1d1f29] border border-[#FFF025]/40 flex items-center gap-2.5 text-xs">
+                    <div className="inline-flex items-center gap-1">
+                      <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-2 h-2 rounded-full bg-[#FFF025] animate-bounce" />
+                    </div>
+                    <span className="font-mono font-bold text-[#FFF025]">
+                      {typingUsersInChannel.map((u) => u.displayName).join(', ')}
+                    </span>
+                    <span className="text-white/75 font-medium">
+                      {typingUsersInChannel.length === 1 ? 'is typing a message...' : 'are typing messages...'}
+                    </span>
+                  </div>
+                )}
+
                 {/* Suspended Account Read-Only Banner */}
                 {userStatus === 'suspended' && (
                   <div className="px-3.5 py-2 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center gap-2">
@@ -2395,10 +3466,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 {replyingTo && (
                   <div className="flex items-center justify-between px-3.5 py-1.5 rounded-xl bg-[#1f2129] border border-white/10 text-xs">
                     <div className="flex items-center gap-2 truncate">
-                      <Reply className="w-3.5 h-3.5 text-[#FFF025]" />
-                      <span className="text-white/65">Replying to</span>
+                      <Reply className="w-3.5 h-3.5 text-[#FFF025] shrink-0" />
+                      <span className="text-white/65 shrink-0">Replying to</span>
                       <span
-                        className="font-bold"
+                        className="font-bold shrink-0"
                         style={{ color: replyingTo.authorColor || '#FFF025' }}
                       >
                         @{replyingTo.authorName}
@@ -2408,8 +3479,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       </span>
                     </div>
                     <button
+                      type="button"
                       onClick={() => setReplyingTo(null)}
-                      className="text-white/50 hover:text-white cursor-pointer"
+                      className="text-white/50 hover:text-white cursor-pointer shrink-0"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -2553,14 +3625,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         disabled={!canUserSendMessageInChannel}
                         onClick={() => fileInputRef.current?.click()}
                         title="Upload Cover Image of Your Game or Project"
-                        className="p-3 rounded-xl bg-[#1c1e24] hover:bg-[#252830] text-white/75 hover:text-[#FFF025] border border-white/10 transition-colors cursor-pointer shrink-0 disabled:opacity-40"
+                        className="hidden sm:flex p-3 rounded-xl bg-[#1c1e24] hover:bg-[#252830] text-white/75 hover:text-[#FFF025] border border-white/10 transition-colors cursor-pointer shrink-0 disabled:opacity-40"
                       >
                         <ImageIcon className="w-4 h-4" />
                       </button>
                     </>
                   )}
 
-                  <div className="flex-1 relative">
+                  <div className="flex-1 relative min-w-0">
                     <input
                       type="text"
                       disabled={!canUserSendMessageInChannel}
@@ -2568,20 +3640,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       onChange={(e) => handleInputChange(e.target.value)}
                       placeholder={
                         !currentUser
-                          ? 'Sign in with Google or Email to send messages...'
+                          ? 'Sign in to send messages...'
                           : userStatus === 'suspended'
                             ? 'Account suspended (Read-Only Mode)'
                             : !canUserSendMessageInChannel
                               ? 'Channel is locked or restricted'
                               : activeSubGroup
-                                ? `Message sub-group #${activeSubGroup.name}...`
+                                ? `Message #${activeSubGroup.name}...`
                                 : `Message #${activeChannel.name}...`
                       }
-                      className="w-full px-4 py-3 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-white/30 disabled:opacity-50"
+                      className="w-full px-3.5 sm:px-4 py-3 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-white/30 disabled:opacity-50"
                     />
                     {cooldownRemaining > 0 && !isSuperAdmin && !isCurrentChannelModerator && (
                       <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-mono text-amber-400 tabular-nums">
-                        {cooldownRemaining}s slowmode
+                        {cooldownRemaining}s
                       </span>
                     )}
                   </div>
@@ -2603,9 +3675,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           )}
         </main>
 
-        {/* RIGHT DRAWER: Admin/Moderator Dashboard OR Thread Replies OR Real Online Members */}
+        {/* RIGHT DRAWER: Admin/Moderator Dashboard OR Thread Replies OR Real Online Members
+            Responsive: Full-screen slide-over on mobile (<sm), 400px drawer on tablet/desktop */}
         {(showAdminDrawer || activeThreadMessage || showMembersDrawer) && (
-          <aside className="w-80 sm:w-[420px] bg-[#121317] border-l border-white/10 flex flex-col shrink-0 z-20">
+          <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-[400px] lg:static lg:w-80 xl:w-[400px] bg-[#121317] border-l border-white/10 flex flex-col shrink-0 lg:z-20 shadow-2xl">
             {showAdminDrawer && (isSuperAdmin || isCurrentChannelModerator) ? (
               /* ==============================================================
                  DEDICATED ADMIN & CHANNEL MODERATOR CONTROL DRAWER
@@ -3384,40 +4457,58 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
               </>
             ) : activeThreadMessage ? (
-              /* THREAD REPLIES PANEL */
+              /* THREAD REPLIES PANEL (WITH EDIT & DELETE FOR REPLIES + ACCURATE COUNT) */
               <>
-                <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+                <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between bg-[#15171e]">
                   <div className="flex items-center gap-2">
                     <MessageSquare className="w-4 h-4 text-[#FFF025]" />
-                    <span className="font-bold text-sm text-white">Discussion Thread</span>
+                    <span className="font-bold text-sm text-white">
+                      Discussion Thread ({getMessageEffectiveReplyCount(activeThreadMessage)})
+                    </span>
                   </div>
                   <button
-                    onClick={() => setActiveThreadMessage(null)}
-                    className="p-1 rounded-lg text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      setActiveThreadMessage(null);
+                      setEditingThreadReplyId(null);
+                      setEditingThreadReplyText('');
+                    }}
+                    aria-label="Close Discussion Thread"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
                 <div className="p-4 border-b border-white/10 bg-white/[0.02] space-y-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <img
+                      src={getLiveUserAvatarUrl(
+                        activeThreadMessage.authorId,
+                        activeThreadMessage.authorAvatar
+                      )}
+                      alt={activeThreadMessage.authorName}
+                      className="w-7 h-7 rounded-full object-cover border border-white/20 shrink-0"
+                    />
                     <span
-                      className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-black text-black"
-                      style={{ backgroundColor: activeThreadMessage.authorColor }}
+                      className="font-mono font-bold text-xs truncate"
+                      style={{
+                        color: getLiveUserColor(
+                          activeThreadMessage.authorId,
+                          activeThreadMessage.authorColor
+                        ),
+                      }}
                     >
-                      {activeThreadMessage.authorName.charAt(0).toUpperCase()}
+                      {getLiveUserDisplayName(
+                        activeThreadMessage.authorId,
+                        activeThreadMessage.authorName
+                      )}
                     </span>
-                    <span
-                      className="font-mono font-bold text-xs"
-                      style={{ color: activeThreadMessage.authorColor }}
-                    >
-                      {activeThreadMessage.authorName}
-                    </span>
-                    <span className="text-[11px] font-mono text-white/40">
+                    <span className="text-[11px] font-mono text-white/40 shrink-0">
                       {activeThreadMessage.timeLabel}
                     </span>
                   </div>
-                  <p className="text-xs font-mono text-white/90 leading-relaxed select-text">
+                  <p className="text-xs font-mono text-white/90 leading-relaxed select-text break-words">
                     {activeThreadMessage.text}
                   </p>
                   {activeThreadMessage.linkUrl && (
@@ -3433,39 +4524,205 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   )}
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 select-text">
-                  {threadReplies.length === 0 ? (
-                    <div className="text-center py-8 text-xs text-white/45 font-mono">
-                      No replies in this thread yet. Start the conversation below!
-                    </div>
-                  ) : (
-                    threadReplies.map((reply) => (
-                      <div
-                        key={reply.id}
-                        className="p-3 rounded-xl bg-white/[0.03] border border-white/10 space-y-1"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span
-                            className="font-mono text-xs font-bold"
-                            style={{ color: reply.authorColor }}
-                          >
-                            {reply.authorName}
-                          </span>
-                          <span className="text-[10px] font-mono text-white/35">
-                            {reply.timeLabel}
-                          </span>
+                <div className="flex-1 overflow-y-auto hub-scroll p-4 space-y-3 select-text">
+                  {(() => {
+                    const inlineReplies = inlineRepliesByParentId[activeThreadMessage.id] || [];
+                    if (threadReplies.length === 0 && inlineReplies.length === 0) {
+                      return (
+                        <div className="text-center py-8 text-xs text-white/45 font-mono">
+                          No replies in this thread yet. Start the conversation below!
                         </div>
-                        <p className="text-xs font-mono text-white/85 leading-relaxed">
-                          {reply.text}
-                        </p>
-                      </div>
-                    ))
-                  )}
+                      );
+                    }
+
+                    return (
+                      <>
+                        {/* Direct Thread Replies */}
+                        {threadReplies.map((reply) => {
+                          const isOwnReply = currentUser?.uid === reply.authorId;
+                          const canDeleteReply =
+                            isOwnReply || isSuperAdmin || isCurrentChannelModerator;
+                          const isEditingThisReply = editingThreadReplyId === reply.id;
+
+                          return (
+                            <div
+                              key={reply.id}
+                              className="group/reply p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.05] border border-white/10 space-y-1.5 transition-colors"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <img
+                                    src={getLiveUserAvatarUrl(reply.authorId)}
+                                    alt={reply.authorName}
+                                    className="w-5 h-5 rounded-full object-cover border border-white/15 shrink-0"
+                                  />
+                                  <span
+                                    className="font-mono text-xs font-bold truncate"
+                                    style={{
+                                      color: getLiveUserColor(reply.authorId, reply.authorColor),
+                                    }}
+                                  >
+                                    {getLiveUserDisplayName(reply.authorId, reply.authorName)}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="text-[10px] font-mono text-white/35 mr-1">
+                                    {reply.timeLabel}
+                                  </span>
+
+                                  {isOwnReply && userStatus === 'active' && !isEditingThisReply && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditThreadReply(reply)}
+                                      title="Edit Reply"
+                                      aria-label="Edit Reply"
+                                      className="p-1 rounded hover:bg-white/10 text-white/55 hover:text-[#FFF025] cursor-pointer transition-colors"
+                                    >
+                                      <Pencil className="w-3 h-3" />
+                                    </button>
+                                  )}
+
+                                  {canDeleteReply && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteThreadReply(reply)}
+                                      title="Delete Reply"
+                                      aria-label="Delete Reply"
+                                      className="p-1 rounded hover:bg-rose-500/20 text-white/55 hover:text-rose-400 cursor-pointer transition-colors"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {isEditingThisReply ? (
+                                <form
+                                  onSubmit={(e) => {
+                                    e.preventDefault();
+                                    handleSaveEditThreadReply(reply);
+                                  }}
+                                  className="space-y-2 pt-1"
+                                >
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={editingThreadReplyText}
+                                    onChange={(e) => setEditingThreadReplyText(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Escape') {
+                                        setEditingThreadReplyId(null);
+                                        setEditingThreadReplyText('');
+                                      }
+                                    }}
+                                    className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-[#FFF025] text-xs font-mono text-white focus:outline-none"
+                                  />
+                                  <div className="flex items-center gap-1.5 text-[10px]">
+                                    <button
+                                      type="submit"
+                                      className="px-2.5 py-1 rounded bg-[#FFF025] text-black font-black cursor-pointer flex items-center gap-1"
+                                    >
+                                      <Check className="w-2.5 h-2.5" />
+                                      <span>Save</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingThreadReplyId(null);
+                                        setEditingThreadReplyText('');
+                                      }}
+                                      className="px-2.5 py-1 rounded bg-white/10 text-white/80 font-bold cursor-pointer"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : (
+                                <div className="flex items-baseline gap-1.5 flex-wrap">
+                                  <p className="text-xs font-mono text-white/85 leading-relaxed break-words">
+                                    {reply.text}
+                                  </p>
+                                  {reply.isEdited && (
+                                    <span className="text-[10px] font-mono text-white/40">
+                                      (edited)
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Inline Channel Replies targeting this parent message */}
+                        {inlineReplies.map((inlineMsg) => {
+                          const isOwnInline = currentUser?.uid === inlineMsg.authorId;
+                          const canDeleteInline =
+                            isOwnInline || isSuperAdmin || isCurrentChannelModerator;
+                          return (
+                            <div
+                              key={`inline-${inlineMsg.id}`}
+                              className="p-3 rounded-xl bg-sky-500/[0.04] border border-sky-400/20 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <img
+                                    src={getLiveUserAvatarUrl(
+                                      inlineMsg.authorId,
+                                      inlineMsg.authorAvatar
+                                    )}
+                                    alt={inlineMsg.authorName}
+                                    className="w-5 h-5 rounded-full object-cover border border-white/15 shrink-0"
+                                  />
+                                  <span
+                                    className="font-mono text-xs font-bold truncate"
+                                    style={{
+                                      color: getLiveUserColor(
+                                        inlineMsg.authorId,
+                                        inlineMsg.authorColor
+                                      ),
+                                    }}
+                                  >
+                                    {getLiveUserDisplayName(
+                                      inlineMsg.authorId,
+                                      inlineMsg.authorName
+                                    )}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 text-[9px] font-mono">
+                                    inline
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <span className="text-[10px] font-mono text-white/35 mr-1">
+                                    {inlineMsg.timeLabel}
+                                  </span>
+                                  {canDeleteInline && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteMessage(inlineMsg)}
+                                      title="Delete Inline Reply"
+                                      className="p-1 rounded hover:bg-rose-500/20 text-white/55 hover:text-rose-400 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="text-xs font-mono text-white/85 leading-relaxed break-words">
+                                {inlineMsg.text}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <form
                   onSubmit={handleSendThreadReply}
-                  className="p-3 border-t border-white/10 flex items-center gap-2"
+                  className="p-3 border-t border-white/10 flex items-center gap-2 bg-[#141519]"
                 >
                   <input
                     type="text"
@@ -3475,12 +4732,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     placeholder={
                       userStatus === 'suspended' ? 'Suspended (Read-Only)' : 'Reply to thread...'
                     }
-                    className="flex-1 px-3 py-2 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50"
+                    className="flex-1 px-3 py-2.5 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50"
                   />
                   <button
                     type="submit"
                     disabled={userStatus === 'suspended'}
-                    className="px-3 py-2 rounded-xl bg-[#FFF025] text-black font-black text-xs cursor-pointer disabled:opacity-40"
+                    className="px-3.5 py-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer disabled:opacity-40 shrink-0"
                   >
                     Reply
                   </button>
@@ -3489,7 +4746,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             ) : (
               /* REAL ONLINE & REGISTERED MEMBERS LIST (ZERO DEMO USERS) */
               <>
-                <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+                <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between bg-[#15171e]">
                   <div className="flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
                     <span className="font-bold text-sm text-white tabular-nums">
@@ -3497,46 +4754,50 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     </span>
                   </div>
                   <button
+                    type="button"
                     onClick={() => setShowMembersDrawer(false)}
-                    className="p-1 rounded-lg text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
+                    aria-label="Close Members Drawer"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-3 space-y-4">
+                <div className="flex-1 overflow-y-auto hub-scroll p-3 space-y-4">
                   {/* Currently Online Section */}
                   <div>
-                    <div className="px-2 mb-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-                      Online Now ({liveOnlineCount})
+                    <div className="px-2 mb-1.5 flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                      <span>Online Now ({liveOnlineCount})</span>
+                      <span className="text-white/45 font-mono">
+                        {activeChannelOnlineCount} in #{activeChannel.name}
+                      </span>
                     </div>
-                    {onlineMembers.length === 0 ? (
+                    {effectiveOnlineMembers.length === 0 ? (
                       <div className="px-2 py-2 text-xs text-white/40 font-mono">
                         No active sessions right now.
                       </div>
                     ) : (
                       <div className="space-y-1">
-                        {onlineMembers.map((member) => (
+                        {effectiveOnlineMembers.map((member) => (
                           <div
                             key={member.uid}
                             className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="relative">
-                                <div
-                                  className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-black text-black"
-                                  style={{ backgroundColor: member.avatarColor }}
-                                >
-                                  {member.displayName.charAt(0).toUpperCase()}
-                                </div>
+                              <div className="relative shrink-0">
+                                <img
+                                  src={getLiveUserAvatarUrl(member.uid, member.avatarUrl)}
+                                  alt={member.displayName}
+                                  className="w-8 h-8 rounded-full object-cover border border-white/20"
+                                />
                                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#121317]" />
                               </div>
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-white truncate">
-                                  {member.displayName}
+                                  {getLiveUserDisplayName(member.uid, member.displayName)}
                                 </div>
                                 <div className="text-[10px] text-white/45 font-mono truncate">
-                                  in #{member.activeChannelId}
+                                  in #{member.activeChannelId.split('__group__')[0]}
                                 </div>
                               </div>
                             </div>
@@ -3561,20 +4822,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     ) : (
                       <div className="space-y-1">
                         {registeredUsers.map((u) => {
-                          const isOnline = onlineMembers.some((m) => m.uid === u.uid);
+                          const isOnline = effectiveOnlineMembers.some((m) => m.uid === u.uid);
                           return (
                             <div
                               key={u.uid}
                               className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                <div className="relative">
-                                  <div
-                                    className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-black text-black"
-                                    style={{ backgroundColor: u.avatarColor }}
-                                  >
-                                    {u.displayName.charAt(0).toUpperCase()}
-                                  </div>
+                                <div className="relative shrink-0">
+                                  <img
+                                    src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
+                                    alt={u.displayName}
+                                    className="w-8 h-8 rounded-full object-cover border border-white/20"
+                                  />
                                   <span
                                     className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#121317] ${
                                       isOnline ? 'bg-emerald-400' : 'bg-white/25'
@@ -3813,6 +5073,450 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* UNIFIED ACCOUNT & PROFILE SETTINGS MODAL (OPENED BY CLICKING ACCOUNT ICON) */}
+      {showAvatarModal && currentUser && builderProfile && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Account & Profile Settings"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+        >
+          <div className="w-full max-w-2xl rounded-3xl bg-[#14161f] border-2 border-white/20 p-4 sm:p-6 space-y-4 shadow-2xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <div className="flex items-center gap-2 text-[#FFF025] font-black text-xs uppercase tracking-wider">
+                  <Sparkles className="w-4 h-4" />
+                  <span>Account & Profile Settings</span>
+                </div>
+                <h3 className="font-chewy text-xl sm:text-2xl text-white mt-0.5">
+                  Customize Your Builder Profile
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAvatarModal(false)}
+                aria-label="Close Account Settings"
+                className="p-1.5 rounded-xl bg-white/5 text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Settings Tabs: Profile & Avatar vs Push Notifications */}
+            <div className="flex items-center gap-2 border-b border-white/10 pb-2.5">
+              <button
+                type="button"
+                onClick={() => setProfileModalTab('profile')}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black cursor-pointer transition-colors ${
+                  profileModalTab === 'profile'
+                    ? 'bg-[#FFF025] text-black'
+                    : 'bg-white/5 text-white/70 hover:text-white'
+                }`}
+              >
+                Profile & Character Avatar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBrowserPermission(getBrowserNotificationPermission());
+                  setProfileModalTab('notifications');
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-black cursor-pointer transition-colors flex items-center gap-1.5 ${
+                  profileModalTab === 'notifications'
+                    ? 'bg-[#FFF025] text-black'
+                    : 'bg-white/5 text-white/70 hover:text-white'
+                }`}
+              >
+                <Bell className="w-3.5 h-3.5" />
+                <span>Notifications</span>
+              </button>
+            </div>
+
+            {profileModalTab === 'profile' ? (
+              <>
+                {/* Editable Nickname & School + Live Avatar Preview */}
+                {(() => {
+                  const activePreset =
+                    findPresetAvatar(selectedPresetAvatarId) ||
+                    getDefaultPresetAvatar(currentUser.uid);
+                  return (
+                    <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0e1017] border border-white/15 space-y-3.5">
+                      <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                        <div className="flex items-center gap-3.5 w-full sm:w-auto">
+                          <img
+                            src={activePreset.dataUrl}
+                            alt={activePreset.name}
+                            className="w-14 h-14 sm:w-16 sm:h-16 rounded-full object-cover border-2 border-[#FFF025] shadow-lg shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className="font-mono font-bold text-base truncate"
+                                style={{ color: selectedAccentColor }}
+                              >
+                                {editProfileName.trim() || builderProfile.displayName}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md bg-white/10 text-[10px] font-black text-[#FFF025] uppercase">
+                                {activePreset.name}
+                              </span>
+                            </div>
+                            <p className="text-xs text-white/65 mt-0.5">{activePreset.tagline}</p>
+                            <p className="text-[11px] text-white/40 mt-0.5 truncate">
+                              {currentUser.email || 'Authenticated Builder'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Name Color Accent Picker */}
+                        <div className="flex flex-col items-start sm:items-end gap-1.5 w-full sm:w-auto">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-white/50">
+                            Name Accent Color
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {AVATAR_COLORS.map((color) => (
+                              <button
+                                key={color}
+                                type="button"
+                                onClick={() => setSelectedAccentColor(color)}
+                                aria-label={`Select accent color ${color}`}
+                                className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform ${
+                                  selectedAccentColor === color
+                                    ? 'scale-115 border-white ring-2 ring-[#FFF025]'
+                                    : 'border-black/50 opacity-75 hover:opacity-100'
+                                }`}
+                                style={{ backgroundColor: color }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Nickname & School Inputs */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-white/10">
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-white/55 mb-1">
+                            Builder Nickname
+                          </label>
+                          <input
+                            type="text"
+                            value={editProfileName}
+                            onChange={(e) => setEditProfileName(e.target.value)}
+                            placeholder="Your Builder Nickname"
+                            className="w-full px-3 py-2 rounded-xl bg-[#14161f] border border-white/15 text-xs font-bold text-white focus:outline-none focus:border-[#FFF025]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-white/55 mb-1">
+                            School or Creator Club
+                          </label>
+                          <input
+                            type="text"
+                            value={editProfileSchool}
+                            onChange={(e) => setEditProfileSchool(e.target.value)}
+                            placeholder="School or Club"
+                            className="w-full px-3 py-2 rounded-xl bg-[#14161f] border border-white/15 text-xs font-bold text-white focus:outline-none focus:border-[#FFF025]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Scrollable Grid of 24 Graphical Character Portraits */}
+                <div className="flex-1 overflow-y-auto hub-scroll pr-1 min-h-[180px]">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-white/50 mb-2">
+                    Choose Character Portrait ({PRESET_AVATARS.length} Available)
+                  </div>
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2.5">
+                    {PRESET_AVATARS.map((avatar) => {
+                      const isSelected = selectedPresetAvatarId === avatar.id;
+                      return (
+                        <button
+                          key={avatar.id}
+                          type="button"
+                          onClick={() => setSelectedPresetAvatarId(avatar.id)}
+                          className={`p-2 rounded-2xl border flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#FFF025]/15 border-[#FFF025] ring-2 ring-[#FFF025] scale-[1.02]'
+                              : 'bg-[#0e1017] border-white/10 hover:border-white/30 hover:bg-white/5'
+                          }`}
+                        >
+                          <img
+                            src={avatar.dataUrl}
+                            alt={avatar.name}
+                            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover border border-black/40 shadow"
+                          />
+                          <span
+                            className={`text-[11px] font-bold truncate w-full text-center ${
+                              isSelected ? 'text-[#FFF025]' : 'text-white/85'
+                            }`}
+                          >
+                            {avatar.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Save, Sign Out & Cancel Footer */}
+                <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSignOutFromHub}
+                    className="px-3.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold cursor-pointer flex items-center gap-1.5"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Sign Out</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAvatarModal(false)}
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-bold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSavingAvatar}
+                      onClick={handleSaveSelectedAvatar}
+                      className="px-5 py-2 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] disabled:opacity-50 text-black text-xs font-black border-2 border-black cursor-pointer shadow-lg"
+                    >
+                      {isSavingAvatar ? 'Saving...' : 'Save Changes'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* NOTIFICATIONS TAB INSIDE ACCOUNT MODAL */
+              <div className="flex-1 overflow-y-auto hub-scroll space-y-4 pr-1">
+                <div className="p-4 rounded-2xl bg-[#0e1017] border border-white/15 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-bold text-white text-sm">
+                        Desktop & Browser Message Alerts
+                      </div>
+                      <div className="text-xs text-white/60 mt-0.5">
+                        Get notified when builders post in channels while you are in another tab or window.
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleToggleBrowserNotifications}
+                      className={`px-4 py-2 rounded-xl text-xs font-black cursor-pointer shrink-0 transition-colors ${
+                        notificationPrefs.enabled && browserPermission === 'granted'
+                          ? 'bg-emerald-400 text-black'
+                          : 'bg-[#FFF025] text-black'
+                      }`}
+                    >
+                      {notificationPrefs.enabled && browserPermission === 'granted'
+                        ? 'Enabled ✓'
+                        : 'Enable Alerts'}
+                    </button>
+                  </div>
+
+                  {notificationStatusBanner && (
+                    <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-xs text-[#FFF025] font-medium">
+                      {notificationStatusBanner}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-bold uppercase tracking-wider text-white/50">
+                    Channel Alert Preferences (Mute / Unmute)
+                  </div>
+                  {allChannels.map((ch) => {
+                    const isMuted = notificationPrefs.mutedChannels.includes(ch.id);
+                    return (
+                      <div
+                        key={ch.id}
+                        className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e1017] border border-white/10"
+                      >
+                        <div className="flex items-center gap-2 text-xs font-bold text-white">
+                          <span>{ch.emoji}</span>
+                          <span>#{ch.name}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNotificationPrefs((prev) => ({
+                              ...prev,
+                              mutedChannels: isMuted
+                                ? prev.mutedChannels.filter((id) => id !== ch.id)
+                                : [...prev.mutedChannels, ch.id],
+                            }))
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-black cursor-pointer ${
+                            isMuted
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                          }`}
+                        >
+                          {isMuted ? 'Muted' : 'Active'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* BROWSER PUSH NOTIFICATION PREFERENCES MODAL */}
+      {showNotificationModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Browser Notification Settings"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-lg rounded-3xl bg-[#14161f] border-2 border-white/20 p-6 space-y-4 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2 text-[#FFF025] font-black text-sm uppercase">
+                <Bell className="w-5 h-5" />
+                <span>Browser Push Notifications</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowNotificationModal(false)}
+                aria-label="Close Notification Settings"
+                className="text-white/60 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Permission Status & Master Toggle */}
+            <div className="p-4 rounded-2xl bg-[#0e1017] border border-white/15 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-bold text-white text-sm">
+                    Desktop & Browser Message Alerts
+                  </div>
+                  <div className="text-xs text-white/60 mt-0.5">
+                    Get notified when builders post in channels while you are in another tab or window.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleBrowserNotifications}
+                  className={`px-4 py-2 rounded-xl text-xs font-black cursor-pointer shrink-0 transition-colors ${
+                    notificationPrefs.enabled && browserPermission === 'granted'
+                      ? 'bg-emerald-400 text-black'
+                      : 'bg-[#FFF025] text-black'
+                  }`}
+                >
+                  {notificationPrefs.enabled && browserPermission === 'granted'
+                    ? 'Enabled ✓'
+                    : 'Enable Alerts'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between pt-2 border-t border-white/10 text-xs">
+                <span className="text-white/55">Browser Permission Status:</span>
+                <span
+                  className={`px-2 py-0.5 rounded font-mono font-bold uppercase text-[11px] ${
+                    browserPermission === 'granted'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : browserPermission === 'denied'
+                        ? 'bg-rose-500/20 text-rose-300'
+                        : 'bg-amber-500/20 text-amber-300'
+                  }`}
+                >
+                  {browserPermission === 'granted'
+                    ? 'Allowed'
+                    : browserPermission === 'denied'
+                      ? 'Blocked in Browser'
+                      : browserPermission === 'unsupported'
+                        ? 'Unsupported'
+                        : 'Not Yet Requested'}
+                </span>
+              </div>
+
+              {browserPermission === 'denied' && (
+                <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-200 leading-relaxed">
+                  <strong>How to unblock:</strong> Click the lock or site-settings icon on the left side of your browser&apos;s address bar, set <strong>Notifications</strong> to <strong>Allow</strong>, and click Enable Alerts again.
+                </div>
+              )}
+
+              {notificationStatusBanner && (
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-xs text-[#FFF025] font-medium">
+                  {notificationStatusBanner}
+                </div>
+              )}
+
+              {browserPermission === 'granted' && (
+                <div className="pt-1 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleSendTestNotification}
+                    className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
+                  >
+                    Send Test Notification
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Per-Channel Mute Controls */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+              <div className="text-xs font-bold uppercase tracking-wider text-white/50">
+                Channel Alert Preferences (Mute / Unmute)
+              </div>
+              <div className="space-y-1.5">
+                {allChannels.map((ch) => {
+                  const isMuted = notificationPrefs.mutedChannels.includes(ch.id);
+                  return (
+                    <div
+                      key={ch.id}
+                      className="flex items-center justify-between px-3 py-2 rounded-xl bg-[#0e1017] border border-white/10"
+                    >
+                      <div className="flex items-center gap-2 text-xs font-bold text-white">
+                        <span>{ch.emoji}</span>
+                        <span>#{ch.name}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNotificationPrefs((prev) => ({
+                            ...prev,
+                            mutedChannels: isMuted
+                              ? prev.mutedChannels.filter((id) => id !== ch.id)
+                              : [...prev.mutedChannels, ch.id],
+                          }))
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-black cursor-pointer ${
+                          isMuted
+                            ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                        }`}
+                      >
+                        {isMuted ? 'Muted' : 'Active'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-white/10 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowNotificationModal(false)}
+                className="px-5 py-2 rounded-xl bg-[#FFF025] text-black text-xs font-black cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}

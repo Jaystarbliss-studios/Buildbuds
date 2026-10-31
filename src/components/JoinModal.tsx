@@ -4,10 +4,13 @@ import { validateJoinForm, JoinFormData } from '../utils/communityLogic.ts';
 import {
   auth,
   googleProvider,
+  EmailAuthProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  updatePassword,
+  linkWithCredential,
   signOut,
   checkExistingBuilderProfile,
   registerBuilderProfile,
@@ -30,9 +33,6 @@ function formatFriendlyError(err: unknown, fallback: string): string {
   }
   if (code === 'auth/operation-not-allowed') {
     return 'Email/Password authentication is not enabled in Firebase Console yet. Please use Google above.';
-  }
-  if (code === 'auth/email-already-in-use') {
-    return 'This email is already registered. Switch to the Sign In tab to sign in.';
   }
   if (
     code === 'auth/user-not-found' ||
@@ -63,6 +63,7 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   const [authError, setAuthError] = useState<string | null>(null);
   const [redirectNotice, setRedirectNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingAuthUser, setPendingAuthUser] = useState<User | null>(null);
 
   const [formData, setFormData] = useState<JoinFormData>({
     fullName: '',
@@ -78,6 +79,12 @@ export const JoinModal: React.FC<JoinModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleCloseModal = () => {
+    setPendingAuthUser(null);
+    onAuthBusyChange?.(false);
+    onClose();
+  };
+
   // SIGN IN with Google: ONLY allows users whose account is ALREADY signed up in the database
   const handleGoogleSignIn = async () => {
     setAuthError(null);
@@ -90,12 +97,9 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       const existingProfile = await checkExistingBuilderProfile(result.user);
 
       if (!existingProfile) {
-        // User has NOT signed up in the database yet!
+        // User has NOT signed up in the Firestore database yet!
         const googleName = result.user.displayName || '';
         const googleEmail = result.user.email || '';
-
-        // Immediately sign out so the unregistered Gmail cannot access the website
-        await signOut(auth);
 
         if (googleName && !formData.fullName.trim()) {
           setFormData((prev) => ({ ...prev, fullName: googleName }));
@@ -104,25 +108,31 @@ export const JoinModal: React.FC<JoinModalProps> = ({
           setEmail(googleEmail);
         }
 
-        // Redirect user to the Sign Up section
+        // Keep pendingAuthUser inside the modal while keeping onAuthBusyChange(true)
+        // so the website header does NOT recognize them unless they complete Sign Up.
+        // If they close the modal without signing up, onClose signs them out immediately.
+        setPendingAuthUser(result.user);
         setMode('join');
         setRedirectNotice(
-          'User not signed up! Your Gmail is not in the database yet. We have redirected you to Sign Up — please sign up below first to access Build Buds.'
+          'User not signed up! Your Gmail is not in the database yet. Please fill in your Builder Nickname & School below and click Sign Up to create your account.'
         );
         return;
       }
 
+      setPendingAuthUser(null);
+      onAuthBusyChange?.(false);
       setCreatedProfile(existingProfile);
       onSuccess(existingProfile, result.user);
     } catch (err: unknown) {
+      setPendingAuthUser(null);
       try {
         await signOut(auth);
       } catch {
         // Ignore signOut error
       }
+      onAuthBusyChange?.(false);
       setAuthError(formatFriendlyError(err, 'Could not sign in. Please make sure you have signed up first.'));
     } finally {
-      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
@@ -142,12 +152,12 @@ export const JoinModal: React.FC<JoinModalProps> = ({
     onAuthBusyChange?.(true);
 
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const profile = await registerBuilderProfile(result.user, {
+      const targetUser = pendingAuthUser || (await signInWithPopup(auth, googleProvider)).user;
+      const profile = await registerBuilderProfile(targetUser, {
         displayName:
           formData.fullName.trim() ||
-          result.user.displayName ||
-          (result.user.email ? result.user.email.split('@')[0] : 'Builder'),
+          targetUser.displayName ||
+          (targetUser.email ? targetUser.email.split('@')[0] : 'Builder'),
         schoolName: formData.schoolName.trim() || 'Build Buds Creator Club',
         gradeLevel: formData.gradeLevel || 'Grade 8',
         primaryInterest: formData.primaryInterest || 'Games & Simulations',
@@ -155,22 +165,41 @@ export const JoinModal: React.FC<JoinModalProps> = ({
         acceptedGuidelines: formData.agreedToValues,
       });
 
+      setPendingAuthUser(null);
+      onAuthBusyChange?.(false);
       setCreatedProfile(profile);
-      onSuccess(profile, result.user);
+      onSuccess(profile, targetUser);
     } catch (err: unknown) {
+      setPendingAuthUser(null);
       try {
         await signOut(auth);
       } catch {
         // Ignore signOut error
       }
+      onAuthBusyChange?.(false);
       setAuthError(formatFriendlyError(err, 'Could not complete Google Sign Up. Please try again.'));
     } finally {
-      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
 
+  // Helper to attach password to an existing Google/Auth user if they typed one during Sign Up
+  const tryAttachPasswordToUser = async (user: User, cleanEmail: string, rawPassword: string) => {
+    if (!rawPassword || rawPassword.length < 6) return;
+    try {
+      const cred = EmailAuthProvider.credential(cleanEmail, rawPassword);
+      await linkWithCredential(user, cred);
+    } catch {
+      try {
+        await updatePassword(user, rawPassword);
+      } catch {
+        // Ignore if password linking requires recent login or is already set
+      }
+    }
+  };
+
   // SIGN UP with Email & Password: Creates the user's Builder account in the database
+  // Also seamlessly handles the case where an Auth record already exists without a Firestore database profile!
   const handleEmailRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
@@ -182,7 +211,8 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       return;
     }
 
-    if (!email.trim() || !email.includes('@')) {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
       setAuthError('Please enter a valid email address for your account.');
       return;
     }
@@ -196,30 +226,102 @@ export const JoinModal: React.FC<JoinModalProps> = ({
     setIsLoading(true);
     onAuthBusyChange?.(true);
 
+    const profileOverrides = {
+      displayName: formData.fullName.trim(),
+      schoolName: formData.schoolName.trim(),
+      gradeLevel: formData.gradeLevel,
+      primaryInterest: formData.primaryInterest,
+      avatarColor: selectedAvatarBg,
+      acceptedGuidelines: formData.agreedToValues,
+    };
+
     try {
-      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      // Case 1: User already authenticated in this modal (e.g., redirected from Sign In because DB profile was missing)
+      const activeModalUser =
+        pendingAuthUser && pendingAuthUser.email?.toLowerCase() === cleanEmail.toLowerCase()
+          ? pendingAuthUser
+          : auth.currentUser && auth.currentUser.email?.toLowerCase() === cleanEmail.toLowerCase()
+            ? auth.currentUser
+            : null;
+
+      if (activeModalUser) {
+        await tryAttachPasswordToUser(activeModalUser, cleanEmail, password);
+        try {
+          await updateProfile(activeModalUser, { displayName: formData.fullName.trim() });
+        } catch {
+          // Ignore updateProfile error
+        }
+        const profile = await registerBuilderProfile(activeModalUser, profileOverrides);
+        setPendingAuthUser(null);
+        onAuthBusyChange?.(false);
+        setCreatedProfile(profile);
+        onSuccess(profile, activeModalUser);
+        return;
+      }
+
+      // Case 2: Standard new Email & Password account creation
+      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
       await updateProfile(cred.user, { displayName: formData.fullName.trim() });
 
-      const profile = await registerBuilderProfile(cred.user, {
-        displayName: formData.fullName.trim(),
-        schoolName: formData.schoolName.trim(),
-        gradeLevel: formData.gradeLevel,
-        primaryInterest: formData.primaryInterest,
-        avatarColor: selectedAvatarBg,
-        acceptedGuidelines: formData.agreedToValues,
-      });
-
+      const profile = await registerBuilderProfile(cred.user, profileOverrides);
+      setPendingAuthUser(null);
+      onAuthBusyChange?.(false);
       setCreatedProfile(profile);
       onSuccess(profile, cred.user);
     } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+
+      // Case 3: Email already exists in Firebase Authentication (e.g. from an earlier Google login or incomplete signup)
+      if (code === 'auth/email-already-in-use') {
+        try {
+          // Try signing in with the email and password they just entered
+          const signInCred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+          try {
+            await updateProfile(signInCred.user, { displayName: formData.fullName.trim() });
+          } catch {
+            // Ignore
+          }
+          const profile = await registerBuilderProfile(signInCred.user, profileOverrides);
+          setPendingAuthUser(null);
+          onAuthBusyChange?.(false);
+          setCreatedProfile(profile);
+          onSuccess(profile, signInCred.user);
+          return;
+        } catch {
+          // The email exists in Firebase Auth without this password (e.g. registered via Google Sign-In)
+          try {
+            const googleRes = await signInWithPopup(auth, googleProvider);
+            await tryAttachPasswordToUser(googleRes.user, cleanEmail, password);
+            try {
+              await updateProfile(googleRes.user, { displayName: formData.fullName.trim() });
+            } catch {
+              // Ignore
+            }
+            const profile = await registerBuilderProfile(googleRes.user, profileOverrides);
+            setPendingAuthUser(null);
+            onAuthBusyChange?.(false);
+            setCreatedProfile(profile);
+            onSuccess(profile, googleRes.user);
+            return;
+          } catch {
+            setAuthError(
+              'This Gmail was previously connected via Google (without a password). Please click the white "Sign Up with Google" button at the top to finish creating your profile!'
+            );
+            onAuthBusyChange?.(false);
+            return;
+          }
+        }
+      }
+
+      setPendingAuthUser(null);
       try {
         await signOut(auth);
       } catch {
         // Ignore
       }
+      onAuthBusyChange?.(false);
       setAuthError(formatFriendlyError(err, 'Could not complete registration.'));
     } finally {
-      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
@@ -230,7 +332,8 @@ export const JoinModal: React.FC<JoinModalProps> = ({
     setAuthError(null);
     setRedirectNotice(null);
 
-    if (!email.trim() || !password) {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !password) {
       setAuthError('Please enter your email address and password, or click Sign In with Google.');
       return;
     }
@@ -239,32 +342,40 @@ export const JoinModal: React.FC<JoinModalProps> = ({
     onAuthBusyChange?.(true);
 
     try {
-      const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
       const existingProfile = await checkExistingBuilderProfile(cred.user);
 
       if (!existingProfile) {
-        await signOut(auth);
+        // Auth user exists, but no Firestore `users/{uid}` document yet!
+        // Keep `pendingAuthUser` so when they fill in Nickname & School on the Sign Up tab, it completes immediately!
+        setPendingAuthUser(cred.user);
+        if (cred.user.displayName && !formData.fullName.trim()) {
+          setFormData((prev) => ({ ...prev, fullName: cred.user.displayName || '' }));
+        }
         setMode('join');
         setRedirectNotice(
-          'User not signed up! Your account is not in the database yet. We have redirected you to Sign Up — please sign up below first.'
+          'User not signed up! Your account is not in the database yet. Please fill in your Builder Nickname & School below and click "Create Email Account & Open Hub" to finish signing up.'
         );
         return;
       }
 
+      setPendingAuthUser(null);
+      onAuthBusyChange?.(false);
       setCreatedProfile(existingProfile);
       onSuccess(existingProfile, cred.user);
     } catch (err: unknown) {
+      setPendingAuthUser(null);
+      onAuthBusyChange?.(false);
       const code = (err as { code?: string })?.code || '';
       if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
         setMode('join');
         setRedirectNotice(
-          'User not signed up! We could not find that account in the database. Please sign up below first.'
+          'User not signed up! We could not find that account in the database. Please fill out your details below to sign up first.'
         );
       } else {
         setAuthError(formatFriendlyError(err, 'Invalid email or password.'));
       }
     } finally {
-      onAuthBusyChange?.(false);
       setIsLoading(false);
     }
   };
@@ -279,7 +390,7 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       <div className="relative w-full max-w-lg bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-8 shadow-2xl">
         {/* Close Button */}
         <button
-          onClick={onClose}
+          onClick={handleCloseModal}
           aria-label="Close modal"
           className="absolute top-5 right-5 p-1.5 rounded-lg border-2 border-white/20 bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
         >

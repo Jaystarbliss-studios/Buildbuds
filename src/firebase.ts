@@ -2,10 +2,13 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
+  EmailAuthProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  updatePassword,
+  linkWithCredential,
   signOut,
   onAuthStateChanged,
   User,
@@ -29,6 +32,7 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+import { getDefaultPresetAvatar } from './utils/avatars.ts';
 
 // Resolve Firebase config from Vercel FIREBASE_* or VITE_FIREBASE_* env vars, or local firebase-applet-config.json
 const env = import.meta.env as Record<string, string | undefined>;
@@ -199,8 +203,6 @@ export function pickAvatarColor(seed: string): string {
 /**
  * Checks if a user has ALREADY signed up in the Firestore `users/{uid}` database.
  * - For regular users, this NEVER creates a profile document. If the user is not in the database, it returns `null`.
- * - If an incomplete/ghost record from a prior aborted sign-in exists (`schoolName === 'Build Buds Network'` and `gradeLevel === 'Student Builder'`),
- *   it cleans up that record and returns `null` so the user must complete Sign Up first.
  * - For the Super Admin (`ADMIN_EMAIL`), automatically ensures the admin profile exists so the admin can sign straight in.
  */
 export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
@@ -222,24 +224,7 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
       return null;
     }
 
-    const existing = snap.data() as BuilderProfile;
-
-    // Clean up any accidental auto-created ghost profile where the user never completed Sign Up
-    if (
-      existing.role !== 'admin' &&
-      existing.schoolName === 'Build Buds Network' &&
-      existing.gradeLevel === 'Student Builder' &&
-      existing.primaryInterest === 'All Creations'
-    ) {
-      try {
-        await deleteDoc(userRef);
-      } catch {
-        // Ignore cleanup errors
-      }
-      return null;
-    }
-
-    return existing;
+    return snap.data() as BuilderProfile;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
   }
@@ -256,6 +241,7 @@ export async function registerBuilderProfile(
     schoolName?: string;
     gradeLevel?: string;
     primaryInterest?: string;
+    avatarUrl?: string;
     avatarColor?: string;
     acceptedGuidelines?: boolean;
   }
@@ -266,10 +252,11 @@ export async function registerBuilderProfile(
   try {
     const snap = await getDoc(userRef);
     const isAdminUser = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    const canClaimAdminInRules = isAdminUser && user.emailVerified;
 
     if (snap.exists()) {
       const existing = snap.data() as BuilderProfile;
-      const shouldPromoteToAdmin = isAdminUser && existing.role !== 'admin';
+      const shouldPromoteToAdmin = canClaimAdminInRules && existing.role !== 'admin';
 
       if (overrides || shouldPromoteToAdmin) {
         const updatedFields: Record<string, unknown> = {
@@ -279,6 +266,9 @@ export async function registerBuilderProfile(
         if (overrides?.schoolName) updatedFields.schoolName = overrides.schoolName.slice(0, 100);
         if (overrides?.gradeLevel) updatedFields.gradeLevel = overrides.gradeLevel.slice(0, 40);
         if (overrides?.primaryInterest) updatedFields.primaryInterest = overrides.primaryInterest.slice(0, 60);
+        if (typeof overrides?.avatarUrl === 'string') {
+          updatedFields.avatarUrl = overrides.avatarUrl.slice(0, 4000);
+        }
         if (overrides?.avatarColor) updatedFields.avatarColor = overrides.avatarColor.slice(0, 30);
         if (typeof overrides?.acceptedGuidelines === 'boolean') {
           updatedFields.acceptedGuidelines = overrides.acceptedGuidelines;
@@ -290,10 +280,13 @@ export async function registerBuilderProfile(
         return {
           ...existing,
           ...(overrides || {}),
-          ...(shouldPromoteToAdmin ? { role: 'admin' } : {}),
+          ...(isAdminUser ? { role: 'admin' } : {}),
         };
       }
-      return existing;
+      return {
+        ...existing,
+        ...(isAdminUser ? { role: 'admin' } : {}),
+      };
     }
 
     const displayName = (
@@ -302,8 +295,11 @@ export async function registerBuilderProfile(
       (user.email ? user.email.split('@')[0] : 'Builder')
     ).slice(0, 60);
 
+    const defaultAvatar = getDefaultPresetAvatar(user.uid);
+    const avatarUrl = (overrides?.avatarUrl || defaultAvatar.id).slice(0, 4000);
     const avatarColor = overrides?.avatarColor || pickAvatarColor(user.uid);
-    const role: 'member' | 'moderator' | 'admin' = isAdminUser ? 'admin' : 'member';
+    const firestoreRole: 'member' | 'moderator' | 'admin' = canClaimAdminInRules ? 'admin' : 'member';
+    const effectiveRole: 'member' | 'moderator' | 'admin' = isAdminUser ? 'admin' : firestoreRole;
     const status: UserAccountStatus = 'active';
     const acceptedGuidelines = overrides?.acceptedGuidelines ?? true;
 
@@ -313,9 +309,9 @@ export async function registerBuilderProfile(
       schoolName: (overrides?.schoolName?.trim() || 'Build Buds Creator Club').slice(0, 100),
       gradeLevel: (overrides?.gradeLevel?.trim() || 'Grade 8').slice(0, 40),
       primaryInterest: (overrides?.primaryInterest?.trim() || 'Games & Simulations').slice(0, 60),
-      avatarUrl: (user.photoURL || '').slice(0, 2000),
+      avatarUrl,
       avatarColor,
-      role,
+      role: firestoreRole,
       status,
       acceptedGuidelines,
       createdAt: serverTimestamp(),
@@ -344,7 +340,7 @@ export async function registerBuilderProfile(
       primaryInterest: String(newProfileData.primaryInterest),
       avatarUrl: String(newProfileData.avatarUrl),
       avatarColor,
-      role,
+      role: effectiveRole,
       status,
       acceptedGuidelines,
     };
@@ -356,10 +352,13 @@ export async function registerBuilderProfile(
 export const ensureBuilderProfile = registerBuilderProfile;
 
 export {
+  EmailAuthProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  updatePassword,
+  linkWithCredential,
   signOut,
   onAuthStateChanged,
   doc,

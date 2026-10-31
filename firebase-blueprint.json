@@ -39,6 +39,7 @@
         "uid": { "type": "string", "description": "Firebase Auth UID" },
         "displayName": { "type": "string", "description": "Builder display name" },
         "avatarColor": { "type": "string", "description": "Avatar badge color" },
+        "avatarUrl": { "type": "string", "description": "Selected predefined avatar ID or URL" },
         "activeChannelId": { "type": "string", "description": "Currently open channel ID" },
         "isTyping": { "type": "boolean", "description": "Whether user is actively typing" },
         "lastSeen": { "type": "string", "format": "date-time", "description": "Heartbeat timestamp" }
@@ -131,7 +132,9 @@
         "coverImageUrl": { "type": "string", "description": "Optional uploaded cover image data URL or preview image" },
         "reactions": { "type": "object", "description": "Map of emoji keys to count numbers" },
         "threadCount": { "type": "integer", "description": "Number of thread replies" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Message creation timestamp" }
+        "isEdited": { "type": "boolean", "description": "Whether the message text was edited by the author" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Message creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
       },
       "required": ["channelId", "authorId", "authorName", "authorColor", "text", "threadCount", "createdAt"]
     },
@@ -145,7 +148,9 @@
         "authorName": { "type": "string", "description": "Author display name" },
         "authorColor": { "type": "string", "description": "Author badge color" },
         "text": { "type": "string", "description": "Filtered reply text" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Reply creation timestamp" }
+        "isEdited": { "type": "boolean", "description": "Whether the reply text was edited by the author" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Reply creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
       },
       "required": ["messageId", "authorId", "authorName", "authorColor", "text", "createdAt"]
     },
