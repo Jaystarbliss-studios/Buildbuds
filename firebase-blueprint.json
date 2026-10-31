@@ -1,0 +1,205 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public builder profile for community members",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "Builder display name or nickname" },
+        "schoolName": { "type": "string", "description": "School or learning community name" },
+        "gradeLevel": { "type": "string", "description": "Student grade level" },
+        "primaryInterest": { "type": "string", "description": "Primary building interest" },
+        "avatarUrl": { "type": "string", "description": "Optional avatar photo URL" },
+        "avatarColor": { "type": "string", "description": "Brand accent badge color" },
+        "role": { "type": "string", "enum": ["member", "moderator", "admin"], "description": "Community role" },
+        "status": { "type": "string", "enum": ["active", "suspended", "banned"], "description": "Account moderation status" },
+        "acceptedGuidelines": { "type": "boolean", "description": "Whether the user agreed to community safety guidelines" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["uid", "displayName", "avatarColor", "role", "acceptedGuidelines", "createdAt"]
+    },
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Private PII user details restricted to the owner",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "format": "email", "description": "User email address" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Presence": {
+      "title": "Presence",
+      "description": "Real-time online presence and typing status in channels",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "Builder display name" },
+        "avatarColor": { "type": "string", "description": "Avatar badge color" },
+        "activeChannelId": { "type": "string", "description": "Currently open channel ID" },
+        "isTyping": { "type": "boolean", "description": "Whether user is actively typing" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Heartbeat timestamp" }
+      },
+      "required": ["uid", "displayName", "activeChannelId", "isTyping", "lastSeen"]
+    },
+    "CommunitySettings": {
+      "title": "CommunitySettings",
+      "description": "Global community administration settings controlled by the Super Admin",
+      "type": "object",
+      "properties": {
+        "cooldownSeconds": { "type": "integer", "description": "Global slow-mode cooldown in seconds" },
+        "disableCooldown": { "type": "boolean", "description": "Whether message cooldown is completely disabled" },
+        "banLinks": { "type": "boolean", "description": "Whether external links are banned globally" },
+        "enableLinkPreviews": { "type": "boolean", "description": "Whether OpenGraph/creation link previews are rendered" },
+        "globalChatLocked": { "type": "boolean", "description": "Whether all community channels are locked to read-only for regular members" },
+        "updatedBy": { "type": "string", "description": "UID of administrator who updated settings" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["cooldownSeconds", "disableCooldown", "banLinks", "enableLinkPreviews", "globalChatLocked", "updatedBy", "updatedAt"]
+    },
+    "CommunityChannel": {
+      "title": "CommunityChannel",
+      "description": "Channel definition, moderator assignments, and per-channel member permissions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Channel slug ID" },
+        "name": { "type": "string", "description": "Channel display name" },
+        "category": { "type": "string", "enum": ["INFORMATION", "CREATOR SHOWCASES", "SOCIAL"], "description": "Sidebar category" },
+        "emoji": { "type": "string", "description": "Channel icon emoji" },
+        "description": { "type": "string", "description": "Channel topic description" },
+        "defaultCreationCategory": { "type": "string", "enum": ["game", "website", "video", "novel", "other"], "description": "Optional default showcase link type" },
+        "isCustom": { "type": "boolean", "description": "Whether created dynamically by admin" },
+        "isLocked": { "type": "boolean", "description": "Whether channel is locked by admin/moderator" },
+        "banLinks": { "type": "boolean", "description": "Whether links are banned in this channel" },
+        "enableLinkPreviews": { "type": "boolean", "description": "Whether link previews are enabled in this channel" },
+        "cooldownSeconds": { "type": "integer", "description": "Channel-specific cooldown override (-1 uses global default)" },
+        "allowMemberMessages": { "type": "boolean", "description": "Whether regular members can send messages in this channel" },
+        "allowMemberGroups": { "type": "boolean", "description": "Whether regular members can create sub-groups in this channel" },
+        "allowMemberInvites": { "type": "boolean", "description": "Whether regular members can add others to sub-groups in this channel" },
+        "moderatorIds": { "type": "array", "description": "List of user UIDs appointed as Channel Moderators" },
+        "kickedUserIds": { "type": "array", "description": "List of user UIDs removed/kicked from this channel" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": [
+        "id", "name", "category", "emoji", "description", "isCustom", "isLocked",
+        "banLinks", "enableLinkPreviews", "cooldownSeconds", "allowMemberMessages",
+        "allowMemberGroups", "allowMemberInvites", "moderatorIds", "kickedUserIds", "updatedAt"
+      ]
+    },
+    "CommunityGroup": {
+      "title": "CommunityGroup",
+      "description": "Sub-group or private room nested inside a community channel",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Sub-group ID" },
+        "channelId": { "type": "string", "description": "Parent channel ID" },
+        "name": { "type": "string", "description": "Sub-group display name" },
+        "description": { "type": "string", "description": "Sub-group purpose or topic" },
+        "isPrivate": { "type": "boolean", "description": "Whether only invited members can view and chat" },
+        "createdBy": { "type": "string", "description": "Creator user UID" },
+        "memberIds": { "type": "array", "description": "List of member UIDs in this sub-group" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["id", "channelId", "name", "description", "isPrivate", "createdBy", "memberIds", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Community message or creation link showcase in a channel or sub-group",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string", "description": "Target channel or sub-group stream ID" },
+        "authorId": { "type": "string", "description": "Firebase Auth UID of author" },
+        "authorName": { "type": "string", "description": "Author display name" },
+        "authorAvatar": { "type": "string", "description": "Author avatar URL or empty string" },
+        "authorColor": { "type": "string", "description": "Author badge color" },
+        "authorRole": { "type": "string", "description": "Author community role" },
+        "text": { "type": "string", "description": "Filtered message text" },
+        "hadProfanity": { "type": "boolean", "description": "Whether profanity was masked with asterisks" },
+        "replyToId": { "type": "string", "description": "Optional parent message ID for inline curved reply" },
+        "replyToAuthor": { "type": "string", "description": "Optional parent message author name" },
+        "replyToColor": { "type": "string", "description": "Optional parent message author color" },
+        "replyToSnippet": { "type": "string", "description": "Optional parent message snippet" },
+        "linkUrl": { "type": "string", "description": "Optional attached creation URL" },
+        "linkTitle": { "type": "string", "description": "Optional link preview title" },
+        "linkDescription": { "type": "string", "description": "Optional link preview description" },
+        "linkCategory": { "type": "string", "description": "Optional creation category (game, website, video, novel)" },
+        "linkDomain": { "type": "string", "description": "Optional domain name for preview" },
+        "coverImageUrl": { "type": "string", "description": "Optional uploaded cover image data URL or preview image" },
+        "reactions": { "type": "object", "description": "Map of emoji keys to count numbers" },
+        "threadCount": { "type": "integer", "description": "Number of thread replies" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Message creation timestamp" }
+      },
+      "required": ["channelId", "authorId", "authorName", "authorColor", "text", "threadCount", "createdAt"]
+    },
+    "ThreadReply": {
+      "title": "ThreadReply",
+      "description": "Reply inside a message discussion thread",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "description": "Parent message ID" },
+        "authorId": { "type": "string", "description": "Firebase Auth UID of author" },
+        "authorName": { "type": "string", "description": "Author display name" },
+        "authorColor": { "type": "string", "description": "Author badge color" },
+        "text": { "type": "string", "description": "Filtered reply text" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Reply creation timestamp" }
+      },
+      "required": ["messageId", "authorId", "authorName", "authorColor", "text", "createdAt"]
+    },
+    "ModerationReport": {
+      "title": "ModerationReport",
+      "description": "User report for a community message",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "description": "Reported message ID" },
+        "channelId": { "type": "string", "description": "Channel ID of reported message" },
+        "reporterId": { "type": "string", "description": "UID of reporting user" },
+        "reason": { "type": "string", "description": "Report reason" },
+        "status": { "type": "string", "enum": ["open", "resolved"], "description": "Moderation status" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Report timestamp" }
+      },
+      "required": ["messageId", "channelId", "reporterId", "reason", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public builder profiles"
+    },
+    "/users_private/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Private user PII restricted to owner"
+    },
+    "/presence/{userId}": {
+      "schema": { "$ref": "#/entities/Presence" },
+      "description": "Real-time online presence and typing indicators"
+    },
+    "/community_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/CommunitySettings" },
+      "description": "Global community administration settings"
+    },
+    "/community_channels/{channelId}": {
+      "schema": { "$ref": "#/entities/CommunityChannel" },
+      "description": "Custom channels, channel moderator assignments, and per-channel permissions"
+    },
+    "/community_groups/{groupId}": {
+      "schema": { "$ref": "#/entities/CommunityGroup" },
+      "description": "Sub-groups and private rooms inside channels"
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Channel and sub-group chat messages and creation link showcases"
+    },
+    "/messages/{messageId}/threadReplies/{replyId}": {
+      "schema": { "$ref": "#/entities/ThreadReply" },
+      "description": "Thread replies for a specific message"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/ModerationReport" },
+      "description": "Community moderation reports"
+    }
+  }
+}

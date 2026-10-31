@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ArrowRight, Compass, Sparkles, MessageSquare, Star, Code2, Heart } from 'lucide-react';
+import React from 'react';
+import { ArrowRight, Compass, Sparkles } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface HeroSectionProps {
@@ -14,7 +14,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   onOpenProject,
 }) => {
   const { isDark } = useTheme();
-  const [hoveredBadge, setHoveredBadge] = useState<string | null>(null);
 
   return (
     <section className="relative overflow-hidden z-10 isolate pt-10 pb-16 lg:pt-16 lg:pb-24 border-b transition-colors duration-300 border-white/10 dark:border-white/15">
@@ -39,7 +38,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
           
           {/* Left Text Column (6 cols) */}
           <div className="lg:col-span-6 flex flex-col justify-center text-left">
-            {/* Chewy Big Headline without the removed text */}
             <h1
               className={`font-chewy text-5xl sm:text-6xl lg:text-7xl leading-[1.05] tracking-normal mb-6 transition-colors duration-200 ${
                 isDark ? 'text-white drop-shadow-[0_4px_16px_rgba(0,0,0,0.8)]' : 'text-slate-900'
@@ -63,20 +61,20 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
               The community for young creators to share projects, exchange constructive ideas, solve problems, and build amazing games and apps together.
             </p>
 
-            {/* Action CTAs */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8">
+            {/* Action CTAs: Only Join Build Buds and Explore Creations */}
+            <div className="flex flex-wrap items-center gap-3.5">
               <button
                 onClick={onJoinClick}
-                className="inline-flex items-center justify-center gap-3 px-8 py-4 text-base sm:text-lg font-black text-black rounded-2xl border-2 border-black brand-shadow transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 cursor-pointer"
-                style={{ backgroundColor: '#FFF025' }}
+                className="inline-flex items-center justify-center gap-2 px-7 py-4 text-base font-black text-white rounded-2xl border-2 border-black brand-shadow transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 cursor-pointer"
+                style={{ backgroundColor: '#B11469' }}
               >
                 <span>Join Build Buds</span>
-                <ArrowRight className="w-5 h-5 stroke-[3]" />
+                <ArrowRight className="w-5 h-5 stroke-[2.5]" />
               </button>
 
               <button
                 onClick={onExploreClick}
-                className={`inline-flex items-center justify-center gap-2 px-7 py-4 text-base sm:text-lg font-bold rounded-2xl border-2 transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 cursor-pointer ${
+                className={`inline-flex items-center justify-center gap-2 px-6 py-4 text-base font-bold rounded-2xl border-2 transition-all duration-150 active:translate-x-1 active:translate-y-1 hover:-translate-y-1 cursor-pointer ${
                   isDark
                     ? 'text-white bg-black/60 hover:bg-black/80 backdrop-blur-md border-white/30 brand-shadow'
                     : 'text-slate-900 bg-white/90 hover:bg-white backdrop-blur-md border-black brand-shadow'
@@ -85,28 +83,6 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                 <Compass className="w-5 h-5 stroke-[2.5]" style={{ color: isDark ? '#FFF025' : '#B11469' }} />
                 <span>Explore Creations</span>
               </button>
-            </div>
-
-            {/* Community Highlights Bar */}
-            <div
-              className={`rounded-2xl border px-5 py-3.5 flex flex-wrap items-center gap-5 text-xs sm:text-sm font-bold w-fit transition-colors duration-200 ${
-                isDark
-                  ? 'bg-black/55 backdrop-blur-md border-white/20 text-white shadow-lg'
-                  : 'bg-white/85 backdrop-blur-md border-black/15 text-slate-800 shadow-sm'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#FFF025' }} />
-                <span>Games & Simulations</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#B11469' }} />
-                <span>Websites & Utilities</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-full border border-black" style={{ backgroundColor: '#C15D00' }} />
-                <span>Friendly Peer Discussions</span>
-              </div>
             </div>
           </div>
 

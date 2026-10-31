@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ThemeProvider, useTheme } from './utils/themeContext.tsx';
 import { SpaceBackdrop } from './components/SpaceBackdrop.tsx';
 import { SparkleCursor } from './components/SparkleCursor.tsx';
@@ -19,6 +19,7 @@ import { CommunityValues } from './components/CommunityValues.tsx';
 import { FAQSection } from './components/FAQSection.tsx';
 import { FinalCTA } from './components/FinalCTA.tsx';
 import { SiteFooter } from './components/SiteFooter.tsx';
+import { CommunityHub } from './components/CommunityHub.tsx';
 
 // Interactive Modals
 import { ProjectDetailModal } from './components/ProjectDetailModal.tsx';
@@ -28,6 +29,15 @@ import { ChallengeJoinModal } from './components/ChallengeJoinModal.tsx';
 import { GuidelinesModal } from './components/GuidelinesModal.tsx';
 import { ShareProjectModal } from './components/ShareProjectModal.tsx';
 
+// Firebase Auth & Profile
+import {
+  auth,
+  onAuthStateChanged,
+  ensureBuilderProfile,
+  BuilderProfile,
+  User,
+} from './firebase.ts';
+
 // Data
 import { SAMPLE_PROJECTS, SAMPLE_DISCUSSIONS } from './data/mockData.ts';
 import { ProjectItem, DiscussionPost, ChallengeItem } from './types/index.ts';
@@ -36,7 +46,15 @@ function BuildBudsApp() {
   const { isDark } = useTheme();
   const [projects, setProjects] = useState<ProjectItem[]>(SAMPLE_PROJECTS);
   const [discussions, setDiscussions] = useState<DiscussionPost[]>(SAMPLE_DISCUSSIONS);
-  
+
+  // Full-screen Discord-style Community Hub state
+  const [isCommunityHubOpen, setIsCommunityHubOpen] = useState(false);
+  const [hubChannelId, setHubChannelId] = useState<string>('general-chat');
+
+  // Firebase Auth user & Builder Profile
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [builderProfile, setBuilderProfile] = useState<BuilderProfile | null>(null);
+
   // Modal states
   const [activeProjectModal, setActiveProjectModal] = useState<ProjectItem | null>(null);
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
@@ -45,6 +63,35 @@ function BuildBudsApp() {
   const [activeChallengeModal, setActiveChallengeModal] = useState<ChallengeItem | null>(null);
   const [isGuidelinesOpen, setIsGuidelinesOpen] = useState(false);
   const [isShareProjectOpen, setIsShareProjectOpen] = useState(false);
+
+  // Listen to Firebase Auth state for automatic session persistence
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user) {
+        try {
+          const profile = await ensureBuilderProfile(user);
+          setBuilderProfile(profile);
+        } catch (err) {
+          console.error('Failed to load builder profile:', err);
+        }
+      } else {
+        setBuilderProfile(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Unified handler: if signed in, go straight into Community Chat; otherwise prompt Sign In / Join and then go straight into Community Chat
+  const handleEnterCommunity = (mode: 'join' | 'signin' = 'join', channelId = 'general-chat') => {
+    setHubChannelId(channelId);
+    if (currentUser) {
+      setIsCommunityHubOpen(true);
+    } else {
+      setJoinModalMode(mode);
+      setIsJoinModalOpen(true);
+    }
+  };
 
   const handleOpenProjectById = (id: string) => {
     const found = projects.find((p) => p.id === id);
@@ -81,23 +128,33 @@ function BuildBudsApp() {
       {/* Fairy dust / cosmic sparkle mouse trail */}
       <SparkleCursor />
 
-      {/* 1. Header with Day/Night Mode Switcher & Responsive Navigation */}
+      {/* Full-Screen Discord-Style Community Hub View */}
+      {isCommunityHubOpen && (
+        <CommunityHub
+          currentUser={currentUser}
+          builderProfile={builderProfile}
+          initialChannelId={hubChannelId}
+          onBackToLanding={() => setIsCommunityHubOpen(false)}
+          onOpenAuthModal={(mode) => {
+            setJoinModalMode(mode);
+            setIsJoinModalOpen(true);
+          }}
+          onProfileUpdated={(profile) => setBuilderProfile(profile)}
+        />
+      )}
+
+      {/* 1. Header with Day/Night Mode Switcher, Sign In & Join Build Buds CTA */}
       <SiteHeader
-        onJoinClick={() => {
-          setJoinModalMode('join');
-          setIsJoinModalOpen(true);
-        }}
-        onSignInClick={() => {
-          setJoinModalMode('signin');
-          setIsJoinModalOpen(true);
-        }}
+        builderProfile={builderProfile}
+        onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
+        onSignInClick={() => handleEnterCommunity('signin', 'general-chat')}
       />
 
       {/* Main Page Body */}
       <main className="flex-1">
         {/* 2. Hero Section: Young creator lady with laptop mockup visual, beautiful build buds backdrop */}
         <HeroSection
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
           onExploreClick={scrollToExplore}
           onOpenProject={handleOpenProjectById}
         />
@@ -106,29 +163,29 @@ function BuildBudsApp() {
         <ProjectShowcase
           projects={projects}
           onSelectProject={(project) => setActiveProjectModal(project)}
-          onSubmitProjectClick={() => setIsShareProjectOpen(true)}
+          onSubmitProjectClick={() => handleEnterCommunity('join', 'games')}
         />
 
         {/* 4. Community Preview: "Making things is better together." with collaboration photo banner */}
         <CommunityPreview
           initialDiscussions={discussions}
-          onNewDiscussionClick={() => setIsNewDiscussionOpen(true)}
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onNewDiscussionClick={() => handleEnterCommunity('join', 'general-chat')}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         />
 
         {/* 5. Project Publishing Section: "Your work deserves a home." with Forest Quest card */}
         <ProjectPublishingSection
-          onPublishClick={() => setIsShareProjectOpen(true)}
+          onPublishClick={() => handleEnterCommunity('join', 'games')}
         />
 
         {/* 6. How It Works: "Got an idea? Let’s build on it." (4 numbered circular steps) */}
         <HowItWorks
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         />
 
         {/* 7. Builder Community: "Your people are building here." with group banner & interest pills */}
         <BuilderCommunity
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         />
 
         {/* 8. Challenges & Creative Missions: "What will you build next?" with 3 challenge cards */}
@@ -141,19 +198,19 @@ function BuildBudsApp() {
 
         {/* 10. Homepage FAQ: Questions Accordion */}
         <FAQSection
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         />
 
         {/* 11. Final Call To Action: "You bring the idea. We'll build the community." */}
         <FinalCTA
-          onJoinClick={() => setIsJoinModalOpen(true)}
+          onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
           onExploreClick={scrollToExplore}
         />
       </main>
 
       {/* 12. Site Footer with Jaystarbliss Studios ownership credit */}
       <SiteFooter
-        onJoinClick={() => setIsJoinModalOpen(true)}
+        onJoinClick={() => handleEnterCommunity('join', 'general-chat')}
         onOpenGuidelines={() => setIsGuidelinesOpen(true)}
       />
 
@@ -168,7 +225,11 @@ function BuildBudsApp() {
         isOpen={isJoinModalOpen}
         initialMode={joinModalMode}
         onClose={() => setIsJoinModalOpen(false)}
-        onSuccess={() => {}}
+        onSuccess={(profile) => {
+          setBuilderProfile(profile);
+          setIsJoinModalOpen(false);
+          setIsCommunityHubOpen(true);
+        }}
       />
 
       <NewDiscussionModal

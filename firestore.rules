@@ -1,0 +1,441 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == "johnrufai242@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isGlobalModerator() {
+      return isSignedIn() && (
+        isAdmin() ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['moderator', 'admin'])
+      );
+    }
+
+    function isChannelModerator(channelId) {
+      return isSignedIn() && (
+        isGlobalModerator() ||
+        (exists(/databases/$(database)/documents/community_channels/$(channelId)) &&
+         request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.moderatorIds)
+      );
+    }
+
+    function isActiveMember() {
+      return isSignedIn() && (
+        isAdmin() ||
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        !('status' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active'
+      );
+    }
+
+    // Entity Validators
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'avatarColor', 'role', 'acceptedGuidelines', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'uid', 'displayName', 'schoolName', 'gradeLevel', 'primaryInterest',
+               'avatarUrl', 'avatarColor', 'role', 'status', 'acceptedGuidelines', 'createdAt', 'updatedAt'
+             ]) &&
+             data.uid == userId &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             (!('schoolName' in data) || (data.schoolName is string && data.schoolName.size() <= 100)) &&
+             (!('gradeLevel' in data) || (data.gradeLevel is string && data.gradeLevel.size() <= 40)) &&
+             (!('primaryInterest' in data) || (data.primaryInterest is string && data.primaryInterest.size() <= 60)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 2000)) &&
+             data.avatarColor is string && data.avatarColor.size() >= 1 && data.avatarColor.size() <= 30 &&
+             data.role in ['member', 'moderator', 'admin'] &&
+             (!('status' in data) || (data.status in ['active', 'suspended', 'banned'])) &&
+             data.acceptedGuidelines is bool &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+             data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+             data.uid == userId &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidPresence(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen']) &&
+             data.keys().hasOnly(['uid', 'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen']) &&
+             data.uid == userId &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+             data.avatarColor is string && data.avatarColor.size() >= 1 && data.avatarColor.size() <= 30 &&
+             data.activeChannelId is string && data.activeChannelId.size() >= 1 && data.activeChannelId.size() <= 128 &&
+             data.isTyping is bool &&
+             data.lastSeen is timestamp;
+    }
+
+    function isValidCommunitySettings(data) {
+      return data.keys().hasAll([
+               'cooldownSeconds', 'disableCooldown', 'banLinks',
+               'enableLinkPreviews', 'globalChatLocked', 'updatedBy', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'cooldownSeconds', 'disableCooldown', 'banLinks',
+               'enableLinkPreviews', 'globalChatLocked', 'updatedBy', 'updatedAt'
+             ]) &&
+             data.cooldownSeconds is int && data.cooldownSeconds >= 0 && data.cooldownSeconds <= 3600 &&
+             data.disableCooldown is bool &&
+             data.banLinks is bool &&
+             data.enableLinkPreviews is bool &&
+             data.globalChatLocked is bool &&
+             data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidCommunityChannel(data, channelId) {
+      return data.keys().hasAll([
+               'id', 'name', 'category', 'emoji', 'description', 'isCustom', 'isLocked',
+               'banLinks', 'enableLinkPreviews', 'cooldownSeconds', 'allowMemberMessages',
+               'allowMemberGroups', 'allowMemberInvites', 'moderatorIds', 'kickedUserIds', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'name', 'category', 'emoji', 'description', 'defaultCreationCategory',
+               'isCustom', 'isLocked', 'banLinks', 'enableLinkPreviews', 'cooldownSeconds',
+               'allowMemberMessages', 'allowMemberGroups', 'allowMemberInvites',
+               'moderatorIds', 'kickedUserIds', 'createdBy', 'createdAt', 'updatedAt'
+             ]) &&
+             data.id == channelId &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+             data.category in ['INFORMATION', 'CREATOR SHOWCASES', 'SOCIAL'] &&
+             data.emoji is string && data.emoji.size() >= 1 && data.emoji.size() <= 16 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 300 &&
+             (!('defaultCreationCategory' in data) || (data.defaultCreationCategory in ['game', 'website', 'video', 'novel', 'other'])) &&
+             data.isCustom is bool &&
+             data.isLocked is bool &&
+             data.banLinks is bool &&
+             data.enableLinkPreviews is bool &&
+             data.cooldownSeconds is int && data.cooldownSeconds >= -1 && data.cooldownSeconds <= 3600 &&
+             data.allowMemberMessages is bool &&
+             data.allowMemberGroups is bool &&
+             data.allowMemberInvites is bool &&
+             data.moderatorIds is list && data.moderatorIds.size() <= 50 &&
+             (data.moderatorIds.size() == 0 || data.moderatorIds[0] is string) &&
+             data.kickedUserIds is list && data.kickedUserIds.size() <= 200 &&
+             (data.kickedUserIds.size() == 0 || data.kickedUserIds[0] is string) &&
+             (!('createdBy' in data) || (data.createdBy is string && data.createdBy.size() <= 128)) &&
+             (!('createdAt' in data) || data.createdAt is timestamp) &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidCommunityGroup(data, groupId) {
+      return data.keys().hasAll([
+               'id', 'channelId', 'name', 'description', 'isPrivate',
+               'createdBy', 'memberIds', 'createdAt', 'updatedAt'
+             ]) &&
+             data.keys().hasOnly([
+               'id', 'channelId', 'name', 'description', 'isPrivate',
+               'createdBy', 'memberIds', 'createdAt', 'updatedAt'
+             ]) &&
+             data.id == groupId &&
+             data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 64 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+             data.description is string && data.description.size() <= 300 &&
+             data.isPrivate is bool &&
+             data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+             data.memberIds is list && data.memberIds.size() <= 100 &&
+             (data.memberIds.size() == 0 || data.memberIds[0] is string) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['channelId', 'authorId', 'authorName', 'authorColor', 'text', 'threadCount', 'createdAt']) &&
+             data.keys().hasOnly([
+               'channelId', 'authorId', 'authorName', 'authorAvatar', 'authorColor', 'authorRole',
+               'text', 'hadProfanity', 'replyToId', 'replyToAuthor', 'replyToColor', 'replyToSnippet',
+               'linkUrl', 'linkTitle', 'linkDescription', 'linkCategory', 'linkDomain', 'coverImageUrl',
+               'reactions', 'threadCount', 'createdAt', 'updatedAt'
+             ]) &&
+             data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 128 &&
+             data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 2000)) &&
+             data.authorColor is string && data.authorColor.size() >= 1 && data.authorColor.size() <= 30 &&
+             (!('authorRole' in data) || (data.authorRole in ['member', 'moderator', 'admin'])) &&
+             data.text is string && data.text.size() <= 2000 &&
+             (!('hadProfanity' in data) || data.hadProfanity is bool) &&
+             (!('replyToId' in data) || (data.replyToId is string && data.replyToId.size() <= 128)) &&
+             (!('replyToAuthor' in data) || (data.replyToAuthor is string && data.replyToAuthor.size() <= 60)) &&
+             (!('replyToColor' in data) || (data.replyToColor is string && data.replyToColor.size() <= 30)) &&
+             (!('replyToSnippet' in data) || (data.replyToSnippet is string && data.replyToSnippet.size() <= 300)) &&
+             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 2000)) &&
+             (!('linkTitle' in data) || (data.linkTitle is string && data.linkTitle.size() <= 160)) &&
+             (!('linkDescription' in data) || (data.linkDescription is string && data.linkDescription.size() <= 600)) &&
+             (!('linkCategory' in data) || (data.linkCategory in ['game', 'website', 'video', 'novel', 'other'])) &&
+             (!('linkDomain' in data) || (data.linkDomain is string && data.linkDomain.size() <= 120)) &&
+             (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 350000)) &&
+             (!('reactions' in data) || (data.reactions is map && data.reactions.keys().size() <= 20)) &&
+             data.threadCount is int && data.threadCount >= 0 && data.threadCount <= 10000 &&
+             data.createdAt is timestamp &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidThreadReply(data, messageId) {
+      return data.keys().hasAll(['messageId', 'authorId', 'authorName', 'authorColor', 'text', 'createdAt']) &&
+             data.keys().hasOnly(['messageId', 'authorId', 'authorName', 'authorColor', 'text', 'createdAt']) &&
+             data.messageId == messageId &&
+             data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+             data.authorColor is string && data.authorColor.size() >= 1 && data.authorColor.size() <= 30 &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 1500 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['messageId', 'channelId', 'reporterId', 'reason', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['messageId', 'channelId', 'reporterId', 'reason', 'status', 'createdAt']) &&
+             data.messageId is string && data.messageId.size() >= 1 && data.messageId.size() <= 128 &&
+             data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 128 &&
+             data.reporterId == request.auth.uid &&
+             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500 &&
+             data.status in ['open', 'resolved'] &&
+             data.createdAt is timestamp;
+    }
+
+    // Boot connection check path
+    match /test/{docId} {
+      allow get: if isValidId(docId);
+      allow list, write: if false;
+    }
+
+    // Admins lookup collection
+    match /admins/{adminId} {
+      allow get: if isOwner(adminId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin() && isValidId(adminId);
+    }
+
+    // Public Builder Profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if resource.data.uid is string && resource.data.uid.size() <= 128;
+      allow create: if isValidId(userId) &&
+                    isValidUserProfile(request.resource.data, userId) &&
+                    request.resource.data.createdAt == request.time &&
+                    request.resource.data.updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      (isOwner(userId) &&
+                       request.resource.data.role == 'member' &&
+                       (!('status' in request.resource.data) || request.resource.data.status == 'active'))
+                    );
+      allow update: if isValidId(userId) &&
+                    isValidUserProfile(request.resource.data, userId) &&
+                    request.resource.data.uid == resource.data.uid &&
+                    request.resource.data.createdAt == resource.data.createdAt &&
+                    request.resource.data.updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      (isOwner(userId) &&
+                       request.resource.data.role == resource.data.role &&
+                       (!('status' in request.resource.data) || request.resource.data.status == resource.data.get('status', 'active')) &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'displayName', 'schoolName', 'gradeLevel', 'primaryInterest',
+                         'avatarUrl', 'avatarColor', 'acceptedGuidelines', 'updatedAt'
+                       ]))
+                    );
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // Private PII Profiles
+    match /users_private/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if (isOwner(userId) || isAdmin()) &&
+                    isValidId(userId) &&
+                    isValidUserPrivate(request.resource.data, userId) &&
+                    request.resource.data.createdAt == request.time;
+      allow update: if (isOwner(userId) || isAdmin()) &&
+                    isValidId(userId) &&
+                    isValidUserPrivate(request.resource.data, userId) &&
+                    request.resource.data.uid == resource.data.uid &&
+                    request.resource.data.createdAt == resource.data.createdAt &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['email']);
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // Live Channel Presence & Typing Indicators
+    match /presence/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if resource.data.uid is string && resource.data.uid.size() <= 128;
+      allow create: if isOwner(userId) &&
+                    isValidId(userId) &&
+                    isValidPresence(request.resource.data, userId) &&
+                    request.resource.data.lastSeen == request.time;
+      allow update: if isOwner(userId) &&
+                    isValidId(userId) &&
+                    isValidPresence(request.resource.data, userId) &&
+                    request.resource.data.uid == resource.data.uid &&
+                    request.resource.data.lastSeen == request.time &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                      'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen'
+                    ]);
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // Global Community Settings (Admin Control Center)
+    match /community_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if resource.data.updatedBy is string && resource.data.updatedBy.size() <= 128;
+      allow create, update: if isAdmin() &&
+                            isValidId(settingId) &&
+                            isValidCommunitySettings(request.resource.data) &&
+                            request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(settingId);
+    }
+
+    // Community Channels & Per-Channel Moderator / Permission Rules
+    match /community_channels/{channelId} {
+      allow get: if isValidId(channelId);
+      allow list: if resource.data.id is string && resource.data.id.size() <= 64;
+      allow create: if isAdmin() &&
+                    isValidId(channelId) &&
+                    isValidCommunityChannel(request.resource.data, channelId) &&
+                    request.resource.data.updatedAt == request.time;
+      allow update: if isValidId(channelId) &&
+                    isValidCommunityChannel(request.resource.data, channelId) &&
+                    request.resource.data.id == resource.data.id &&
+                    request.resource.data.updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      (isChannelModerator(channelId) &&
+                       request.resource.data.moderatorIds == resource.data.moderatorIds &&
+                       request.resource.data.isCustom == resource.data.isCustom &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'name', 'description', 'isLocked', 'banLinks', 'enableLinkPreviews',
+                         'cooldownSeconds', 'allowMemberMessages', 'allowMemberGroups',
+                         'allowMemberInvites', 'kickedUserIds', 'updatedAt'
+                       ]))
+                    );
+      allow delete: if isAdmin() && isValidId(channelId);
+    }
+
+    // Channel Sub-Groups & Private Rooms
+    match /community_groups/{groupId} {
+      allow get: if isValidId(groupId);
+      allow list: if resource.data.channelId is string && resource.data.channelId.size() <= 64;
+      allow create: if isSignedIn() &&
+                    isActiveMember() &&
+                    isValidId(groupId) &&
+                    isValidCommunityGroup(request.resource.data, groupId) &&
+                    request.resource.data.createdBy == request.auth.uid &&
+                    request.resource.data.createdAt == request.time &&
+                    request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn() &&
+                    isActiveMember() &&
+                    isValidId(groupId) &&
+                    isValidCommunityGroup(request.resource.data, groupId) &&
+                    request.resource.data.id == resource.data.id &&
+                    request.resource.data.channelId == resource.data.channelId &&
+                    request.resource.data.createdBy == resource.data.createdBy &&
+                    request.resource.data.createdAt == resource.data.createdAt &&
+                    request.resource.data.updatedAt == request.time &&
+                    (
+                      isAdmin() ||
+                      isChannelModerator(resource.data.channelId) ||
+                      request.auth.uid == resource.data.createdBy ||
+                      (request.auth.uid in resource.data.memberIds &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
+                    );
+      allow delete: if isSignedIn() &&
+                    isValidId(groupId) &&
+                    (isAdmin() || isChannelModerator(resource.data.channelId) || request.auth.uid == resource.data.createdBy);
+    }
+
+    // Community Messages & Creation Link Showcases
+    match /messages/{messageId} {
+      allow get: if isValidId(messageId);
+      allow list: if resource.data.channelId is string && resource.data.channelId.size() <= 128;
+      allow create: if isSignedIn() &&
+                    isActiveMember() &&
+                    isValidId(messageId) &&
+                    isValidChatMessage(request.resource.data) &&
+                    request.resource.data.authorId == request.auth.uid &&
+                    request.resource.data.threadCount == 0 &&
+                    request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() &&
+                    isActiveMember() &&
+                    isValidId(messageId) &&
+                    isValidChatMessage(request.resource.data) &&
+                    request.resource.data.channelId == resource.data.channelId &&
+                    request.resource.data.authorId == resource.data.authorId &&
+                    request.resource.data.createdAt == resource.data.createdAt &&
+                    (
+                      isAdmin() ||
+                      // Case 1: Any active signed-in member toggling emoji reactions or incrementing threadCount
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'threadCount', 'updatedAt']) ||
+                      // Case 2: Author editing their own message text
+                      (request.auth.uid == resource.data.authorId &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'hadProfanity', 'reactions', 'threadCount', 'updatedAt']))
+                    );
+      allow delete: if isSignedIn() && (
+                      request.auth.uid == resource.data.authorId ||
+                      isGlobalModerator() ||
+                      isChannelModerator(resource.data.channelId)
+                    );
+
+      // Thread Replies Subcollection
+      match /threadReplies/{replyId} {
+        allow get: if isValidId(replyId);
+        allow list: if resource.data.messageId is string && resource.data.messageId.size() <= 128;
+        allow create: if isSignedIn() &&
+                      isActiveMember() &&
+                      isValidId(messageId) &&
+                      isValidId(replyId) &&
+                      isValidThreadReply(request.resource.data, messageId) &&
+                      request.resource.data.authorId == request.auth.uid &&
+                      request.resource.data.createdAt == request.time;
+        allow update: if false;
+        allow delete: if isSignedIn() && (
+                        request.auth.uid == resource.data.authorId ||
+                        isGlobalModerator()
+                      );
+      }
+    }
+
+    // Moderation Reports
+    match /reports/{reportId} {
+      allow get, list: if isGlobalModerator();
+      allow create: if isSignedIn() &&
+                    isValidId(reportId) &&
+                    isValidReport(request.resource.data) &&
+                    request.resource.data.status == 'open' &&
+                    request.resource.data.createdAt == request.time;
+      allow update: if isGlobalModerator() &&
+                    isValidId(reportId) &&
+                    isValidReport(request.resource.data) &&
+                    request.resource.data.messageId == resource.data.messageId &&
+                    request.resource.data.createdAt == resource.data.createdAt &&
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+      allow delete: if isGlobalModerator();
+    }
+  }
+}

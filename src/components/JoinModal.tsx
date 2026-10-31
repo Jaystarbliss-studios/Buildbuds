@@ -1,12 +1,22 @@
 import React, { useState } from 'react';
-import { X, Check, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
+import { X, Sparkles, ArrowRight, ShieldCheck, AlertCircle, LogIn } from 'lucide-react';
 import { validateJoinForm, JoinFormData } from '../utils/communityLogic.ts';
+import {
+  auth,
+  googleProvider,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  ensureBuilderProfile,
+  BuilderProfile,
+} from '../firebase.ts';
 
 interface JoinModalProps {
   isOpen: boolean;
   initialMode?: 'join' | 'signin';
   onClose: () => void;
-  onSuccess: (data: JoinFormData) => void;
+  onSuccess: (profile: BuilderProfile) => void;
 }
 
 export const JoinModal: React.FC<JoinModalProps> = ({
@@ -16,49 +26,132 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   onSuccess,
 }) => {
   const [mode, setMode] = useState<'join' | 'signin'>(initialMode);
-  const [signInIdentifier, setSignInIdentifier] = useState('');
-  const [signInError, setSignInError] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
   const [formData, setFormData] = useState<JoinFormData>({
     fullName: '',
     schoolName: '',
     gradeLevel: 'Grade 8',
     primaryInterest: 'Games & Simulations',
-    agreedToValues: false,
+    agreedToValues: true,
   });
 
   const [selectedAvatarBg, setSelectedAvatarBg] = useState<string>('#FFF025');
   const [errors, setErrors] = useState<Partial<Record<keyof JoinFormData, string>>>({});
-  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [createdProfile, setCreatedProfile] = useState<BuilderProfile | null>(null);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // One-click Google Sign-In (works automatically on return visits)
+  const handleGoogleSignIn = async () => {
+    setAuthError(null);
+    setIsLoading(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const profile = await ensureBuilderProfile(result.user, {
+        ...(formData.fullName.trim() ? { displayName: formData.fullName.trim() } : {}),
+        ...(formData.schoolName.trim() ? { schoolName: formData.schoolName.trim() } : {}),
+        gradeLevel: formData.gradeLevel,
+        primaryInterest: formData.primaryInterest,
+        avatarColor: selectedAvatarBg,
+        acceptedGuidelines: true,
+      });
+      setCreatedProfile(profile);
+      onSuccess(profile);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
+      setAuthError(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Email & Password Registration
+  const handleEmailRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAuthError(null);
+
     const result = validateJoinForm(formData);
     if (!result.valid) {
       setErrors(result.errors);
       return;
     }
 
-    setErrors({});
-    setIsSubmitted(true);
-    onSuccess(formData);
-  };
-
-  const handleSignInSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!signInIdentifier.trim()) {
-      setSignInError('Please enter your builder username or school code.');
+    if (!email.trim() || !email.includes('@')) {
+      setAuthError('Please enter a valid email address for your account.');
       return;
     }
-    setFormData({
-      fullName: signInIdentifier.trim(),
-      schoolName: 'Build Buds Network',
-      gradeLevel: 'Student Builder',
-      primaryInterest: 'All Creations',
-      agreedToValues: true,
-    });
-    setIsSubmitted(true);
+
+    if (password.length < 6) {
+      setAuthError('Password must be at least 6 characters long.');
+      return;
+    }
+
+    setErrors({});
+    setIsLoading(true);
+
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      await updateProfile(cred.user, { displayName: formData.fullName.trim() });
+
+      const profile = await ensureBuilderProfile(cred.user, {
+        displayName: formData.fullName.trim(),
+        schoolName: formData.schoolName.trim(),
+        gradeLevel: formData.gradeLevel,
+        primaryInterest: formData.primaryInterest,
+        avatarColor: selectedAvatarBg,
+        acceptedGuidelines: formData.agreedToValues,
+      });
+
+      setCreatedProfile(profile);
+      onSuccess(profile);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'Email/Password sign-up is not yet enabled in your Firebase Console. Click "Continue with Google" above for instant 1-click sign-in, or enable Email/Password in Firebase Console > Authentication > Sign-in method.'
+        );
+      } else if (code === 'auth/email-already-in-use') {
+        setAuthError('This email is already registered. Switch to the Sign In tab or use Continue with Google.');
+      } else {
+        setAuthError(err instanceof Error ? err.message : 'Could not complete registration.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Email & Password Sign In
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+
+    if (!email.trim() || !password) {
+      setAuthError('Please enter your email address and password, or click Continue with Google.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+      const profile = await ensureBuilderProfile(cred.user);
+      setCreatedProfile(profile);
+      onSuccess(profile);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'Email/Password sign-in is not enabled in Firebase Console yet. Please use "Continue with Google" above for instant automatic sign-in.'
+        );
+      } else {
+        setAuthError('Invalid email or password. You can also sign in automatically with Google above.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -69,7 +162,6 @@ export const JoinModal: React.FC<JoinModalProps> = ({
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md overflow-y-auto"
     >
       <div className="relative w-full max-w-lg bg-[#10101f] text-white rounded-3xl border-2 border-white/20 brand-shadow-yellow p-6 sm:p-8 my-8 shadow-2xl">
-        
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -80,22 +172,32 @@ export const JoinModal: React.FC<JoinModalProps> = ({
         </button>
 
         {/* Tab switcher: Join vs Sign In */}
-        {!isSubmitted && (
-          <div className="flex gap-2 mb-6 border-b-2 border-white/15 pb-2">
+        {!createdProfile && (
+          <div className="flex gap-2 mb-5 border-b-2 border-white/15 pb-3">
             <button
               type="button"
-              onClick={() => setMode('join')}
+              onClick={() => {
+                setMode('join');
+                setAuthError(null);
+              }}
               className={`px-4 py-1.5 rounded-xl text-xs font-black border-2 cursor-pointer transition-all ${
-                mode === 'join' ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5' : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
+                mode === 'join'
+                  ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                  : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
-              New Builder Registration
+              Create Builder Account
             </button>
             <button
               type="button"
-              onClick={() => setMode('signin')}
+              onClick={() => {
+                setMode('signin');
+                setAuthError(null);
+              }}
               className={`px-4 py-1.5 rounded-xl text-xs font-black border-2 cursor-pointer transition-all ${
-                mode === 'signin' ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5' : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
+                mode === 'signin'
+                  ? 'bg-[#FFF025] text-black border-black brand-shadow-sm -translate-y-0.5'
+                  : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
               }`}
             >
               Sign In
@@ -103,19 +205,19 @@ export const JoinModal: React.FC<JoinModalProps> = ({
           </div>
         )}
 
-        {isSubmitted ? (
+        {createdProfile ? (
           <div className="text-center py-6 space-y-4">
             <div
               className="w-16 h-16 mx-auto rounded-3xl border-2 border-black flex items-center justify-center text-3xl brand-shadow"
-              style={{ backgroundColor: selectedAvatarBg }}
+              style={{ backgroundColor: createdProfile.avatarColor }}
             >
               🎉
             </div>
             <h3 id="join-modal-title" className="font-chewy text-3xl sm:text-4xl text-white">
-              Welcome to Build Buds, {formData.fullName}!
+              Welcome, {createdProfile.displayName}!
             </h3>
             <p className="text-sm text-white/80 font-medium leading-relaxed max-w-sm mx-auto">
-              You are now part of our cross-school creator community representing <span className="font-bold text-[#FFF025]">{formData.schoolName}</span>.
+              Your Build Buds account is active and stays signed in automatically across visits.
             </p>
 
             {/* Builder Card Preview */}
@@ -123,245 +225,252 @@ export const JoinModal: React.FC<JoinModalProps> = ({
               <div className="flex items-center gap-3">
                 <div
                   className="w-10 h-10 rounded-full border border-white flex items-center justify-center font-bold text-black text-sm"
-                  style={{ backgroundColor: selectedAvatarBg }}
+                  style={{ backgroundColor: createdProfile.avatarColor }}
                 >
-                  {formData.fullName.charAt(0)}
+                  {createdProfile.displayName.charAt(0).toUpperCase()}
                 </div>
                 <div>
-                  <div className="text-sm font-bold text-white">{formData.fullName}</div>
-                  <div className="text-xs text-white/70">{formData.schoolName} • {formData.gradeLevel}</div>
+                  <div className="text-sm font-bold text-white">{createdProfile.displayName}</div>
+                  <div className="text-xs text-white/70">
+                    {createdProfile.schoolName || 'Build Buds Network'} •{' '}
+                    {createdProfile.gradeLevel || 'Builder'}
+                  </div>
                 </div>
               </div>
               <div className="pt-2 border-t border-white/20 flex justify-between text-xs font-mono">
-                <span className="text-[#FFF025]">{formData.primaryInterest}</span>
-                <span className="text-white/60">Ready to Build</span>
+                <span className="text-[#FFF025]">
+                  {createdProfile.primaryInterest || 'All Creations'}
+                </span>
+                <span className="text-emerald-400">● Online</span>
               </div>
             </div>
 
             <div className="pt-4">
               <button
                 onClick={onClose}
-                className="w-full py-3 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow cursor-pointer"
+                className="w-full py-3.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow cursor-pointer"
                 style={{ backgroundColor: '#FFF025' }}
               >
-                Jump into the Community
+                Enter the Community Hub
               </button>
             </div>
           </div>
-        ) : mode === 'signin' ? (
-          <div>
-            <div className="mb-6">
-              <span
-                className="inline-block px-3 py-1 rounded-md border border-black text-xs font-black uppercase mb-2 text-black"
-                style={{ backgroundColor: '#FFF025' }}
-              >
-                Builder Access
-              </span>
-              <h3 id="join-modal-title" className="font-chewy text-3xl sm:text-4xl text-white">
-                Sign In to Build Buds
-              </h3>
-              <p className="text-xs text-white/75 font-medium mt-1">
-                Enter your builder username or student invite code to access your community stream.
-              </p>
-            </div>
-
-            <form onSubmit={handleSignInSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                  Builder Handle or Email *
-                </label>
-                <input
-                  type="text"
-                  value={signInIdentifier}
-                  onChange={(e) => setSignInIdentifier(e.target.value)}
-                  placeholder="e.g. maya_builder or student@school.org"
-                  className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
-                />
-                {signInError && (
-                  <p className="text-xs font-bold text-[#FFF025] mt-1">{signInError}</p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                  Password or School Passcode
-                </label>
-                <input
-                  type="password"
-                  placeholder="••••••••••••"
-                  className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
-                />
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  className="w-full py-3.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer"
-                  style={{ backgroundColor: '#FFF025' }}
-                >
-                  Sign In to Community
-                </button>
-              </div>
-
-              <div className="text-center text-xs text-white/70 pt-2">
-                Don't have an account yet?{' '}
-                <button
-                  type="button"
-                  onClick={() => setMode('join')}
-                  className="font-bold underline text-[#FFF025] cursor-pointer"
-                >
-                  Register here
-                </button>
-              </div>
-            </form>
-          </div>
         ) : (
           <div>
-            <div className="mb-6">
-              <span
-                className="inline-block px-3 py-1 rounded-md border border-black text-xs font-black uppercase mb-2 text-black"
-                style={{ backgroundColor: '#FFF025' }}
+            {/* Instant Google Sign-In Button (Recommended for automatic future sign-in) */}
+            <div className="mb-5">
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={handleGoogleSignIn}
+                className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-gray-100 text-slate-900 font-black text-sm border-2 border-black brand-shadow flex items-center justify-center gap-3 cursor-pointer transition-transform hover:-translate-y-0.5 active:translate-y-0.5"
               >
-                Student Registration
-              </span>
-              <h3 id="join-modal-title" className="font-chewy text-3xl sm:text-4xl text-white">
-                Join Build Buds
-              </h3>
-              <p className="text-xs text-white/75 font-medium mt-1">
-                Create your builder identity to share projects, join discussions, and tackle challenges.
-              </p>
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                  />
+                </svg>
+                <span>Continue with Google (1-Click Auto Sign-In)</span>
+              </button>
+
+              <div className="relative flex py-3 items-center">
+                <div className="flex-grow border-t border-white/15" />
+                <span className="flex-shrink mx-3 text-[11px] uppercase tracking-wider text-white/45 font-bold">
+                  Or use Email & Password
+                </span>
+                <div className="flex-grow border-t border-white/15" />
+              </div>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Full Name */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                  Builder Name or Nickname *
-                </label>
-                <input
-                  type="text"
-                  value={formData.fullName}
-                  onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                  placeholder="e.g. Maya, Jordan K., or NeoBuilder"
-                  className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
-                />
-                {errors.fullName && (
-                  <p className="text-xs font-bold text-[#FFF025] mt-1">{errors.fullName}</p>
-                )}
+            {authError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-200 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <span>{authError}</span>
               </div>
+            )}
 
-              {/* School Name */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                  School or Learning Community *
-                </label>
-                <input
-                  type="text"
-                  value={formData.schoolName}
-                  onChange={(e) => setFormData({ ...formData, schoolName: e.target.value })}
-                  placeholder="e.g. Westfield Middle School or Home Schoolers Group"
-                  className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
-                />
-                {errors.schoolName && (
-                  <p className="text-xs font-bold text-[#FFF025] mt-1">{errors.schoolName}</p>
-                )}
-              </div>
-
-              {/* Grade & Primary Interest */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {mode === 'signin' ? (
+              <form onSubmit={handleEmailSignIn} className="space-y-4">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                    Grade Level
+                    Email Address *
                   </label>
-                  <select
-                    value={formData.gradeLevel}
-                    onChange={(e) => setFormData({ ...formData, gradeLevel: e.target.value })}
-                    className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-[#1c1c30] text-white focus:outline-none focus:border-[#FFF025]"
-                  >
-                    <option value="Grade 5-6">Grade 5-6</option>
-                    <option value="Grade 7">Grade 7</option>
-                    <option value="Grade 8">Grade 8</option>
-                    <option value="Grade 9">Grade 9</option>
-                    <option value="Grade 10-12">Grade 10-12</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                    Favorite Thing to Build
-                  </label>
-                  <select
-                    value={formData.primaryInterest}
-                    onChange={(e) => setFormData({ ...formData, primaryInterest: e.target.value })}
-                    className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-[#1c1c30] text-white focus:outline-none focus:border-[#FFF025]"
-                  >
-                    <option value="Games & Simulations">Games & Simulations</option>
-                    <option value="Websites & Portfolios">Websites & Portfolios</option>
-                    <option value="Creative Tools & Art">Creative Tools & Art</option>
-                    <option value="Science & Experiments">Science & Experiments</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Avatar Accent Color Picker */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                  Choose Your Badge Accent
-                </label>
-                <div className="flex items-center gap-3">
-                  {[
-                    { color: '#FFF025', name: 'Lemon Yellow' },
-                    { color: '#B11469', name: 'Berry Pink' },
-                    { color: '#C15D00', name: 'Burnt Orange' },
-                  ].map((item) => (
-                    <button
-                      key={item.color}
-                      type="button"
-                      onClick={() => setSelectedAvatarBg(item.color)}
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-bold transition-all cursor-pointer ${
-                        selectedAvatarBg === item.color ? 'ring-2 ring-white scale-105' : 'opacity-80'
-                      }`}
-                      style={{ backgroundColor: item.color, color: item.color === '#FFF025' ? '#000000' : '#FFFFFF' }}
-                    >
-                      <span className="w-2.5 h-2.5 rounded-full border border-black bg-white" />
-                      <span>{item.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Values Agreement */}
-              <div className="pt-2">
-                <label className="flex items-start gap-2.5 cursor-pointer">
                   <input
-                    type="checkbox"
-                    checked={formData.agreedToValues}
-                    onChange={(e) => setFormData({ ...formData, agreedToValues: e.target.checked })}
-                    className="mt-1 w-4 h-4 rounded border-2 border-white/40 bg-white/10 text-[#FFF025] focus:ring-0"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="builder@school.org"
+                    className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
                   />
-                  <span className="text-xs font-semibold text-white/85 leading-snug">
-                    I agree to build boldly, treat fellow creators with kindness, and follow community safety rules.
-                  </span>
-                </label>
-                {errors.agreedToValues && (
-                  <p className="text-xs font-bold text-[#FFF025] mt-1">{errors.agreedToValues}</p>
-                )}
-              </div>
+                </div>
 
-              {/* Submit CTA */}
-              <div className="pt-3">
-                <button
-                  type="submit"
-                  className="w-full py-3.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer"
-                  style={{ backgroundColor: '#FFF025' }}
-                >
-                  Complete Registration & Join
-                </button>
-              </div>
-            </form>
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                    Password *
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full px-3.5 py-2.5 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
+                  />
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="w-full py-3.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer disabled:opacity-60"
+                    style={{ backgroundColor: '#FFF025' }}
+                  >
+                    {isLoading ? 'Signing in...' : 'Sign In with Email'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleEmailRegister} className="space-y-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                      Builder Nickname *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.fullName}
+                      onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
+                      placeholder="e.g. Maya_Builds"
+                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
+                    />
+                    {errors.fullName && (
+                      <p className="text-[11px] font-bold text-[#FFF025] mt-1">{errors.fullName}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                      School or Club *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schoolName}
+                      onChange={(e) => setFormData({ ...formData, schoolName: e.target.value })}
+                      placeholder="e.g. Westfield High"
+                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
+                    />
+                    {errors.schoolName && (
+                      <p className="text-[11px] font-bold text-[#FFF025] mt-1">{errors.schoolName}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                      Email Address *
+                    </label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                      Password (6+ chars) *
+                    </label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
+                    />
+                  </div>
+                </div>
+
+                {/* Avatar Accent Color Picker */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
+                    Choose Your Badge Accent
+                  </label>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    {[
+                      { color: '#FFF025', name: 'Lemon Yellow' },
+                      { color: '#B11469', name: 'Berry Pink' },
+                      { color: '#C15D00', name: 'Burnt Orange' },
+                    ].map((item) => (
+                      <button
+                        key={item.color}
+                        type="button"
+                        onClick={() => setSelectedAvatarBg(item.color)}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-xl border-2 border-black text-xs font-bold transition-all cursor-pointer ${
+                          selectedAvatarBg === item.color ? 'ring-2 ring-white scale-105' : 'opacity-80'
+                        }`}
+                        style={{
+                          backgroundColor: item.color,
+                          color: item.color === '#FFF025' ? '#000000' : '#FFFFFF',
+                        }}
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full border border-black bg-white" />
+                        <span>{item.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Values Agreement */}
+                <div className="pt-1">
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.agreedToValues}
+                      onChange={(e) =>
+                        setFormData({ ...formData, agreedToValues: e.target.checked })
+                      }
+                      className="mt-1 w-4 h-4 rounded border-2 border-white/40 bg-white/10 text-[#FFF025] focus:ring-0"
+                    />
+                    <span className="text-xs font-semibold text-white/85 leading-snug">
+                      I agree to build boldly, treat fellow creators with kindness, and follow community safety guidelines.
+                    </span>
+                  </label>
+                  {errors.agreedToValues && (
+                    <p className="text-xs font-bold text-[#FFF025] mt-1">
+                      {errors.agreedToValues}
+                    </p>
+                  )}
+                </div>
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="w-full py-3.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform hover:-translate-y-0.5 active:translate-y-0.5 cursor-pointer disabled:opacity-60"
+                    style={{ backgroundColor: '#FFF025' }}
+                  >
+                    {isLoading ? 'Creating Account...' : 'Create Email Account & Open Hub'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         )}
-
       </div>
     </div>
   );

@@ -1,18 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { BrandLogo } from './BrandLogo.tsx';
-import { Menu, X, ArrowRight, Sun, Moon, Sparkles } from 'lucide-react';
+import { Menu, X, ArrowRight, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
+import { BuilderProfile } from '../firebase.ts';
 
 interface SiteHeaderProps {
   onJoinClick: () => void;
   onSignInClick: () => void;
+  builderProfile?: BuilderProfile | null;
 }
 
-export const SiteHeader: React.FC<SiteHeaderProps> = ({ onJoinClick, onSignInClick }) => {
+export const SiteHeader: React.FC<SiteHeaderProps> = ({
+  onJoinClick,
+  onSignInClick,
+  builderProfile,
+}) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [activeSection, setActiveSection] = useState('discover');
-  const { isDark, toggleTheme, timeOfDayGreeting, isAuto } = useTheme();
+  const { isDark, toggleTheme } = useTheme();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -66,7 +72,7 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({ onJoinClick, onSignInCli
 
           {/* Desktop Navigation Links */}
           <nav
-            className={`hidden md:flex items-center gap-7 text-sm font-semibold transition-colors ${
+            className={`hidden md:flex items-center gap-6 text-sm font-semibold transition-colors ${
               isDark ? 'text-white' : 'text-slate-800'
             }`}
             aria-label="Main Navigation"
@@ -99,7 +105,7 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({ onJoinClick, onSignInCli
             })}
           </nav>
 
-          {/* Action Zone: Day/Night Theme Toggle + Sign In + Join CTA */}
+          {/* Action Zone: Day/Night Theme Toggle + Sign In + Join Build Buds CTA */}
           <div className="hidden md:flex items-center gap-3">
             
             {/* Day / Cosmic Night Theme Toggle */}
@@ -128,11 +134,11 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({ onJoinClick, onSignInCli
 
             <button
               onClick={onSignInClick}
-              className={`px-4 py-2 text-sm font-bold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded-lg cursor-pointer ${
+              className={`px-3.5 py-2 text-sm font-bold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded-lg cursor-pointer ${
                 isDark ? 'text-white hover:text-[#FFF025]' : 'text-slate-800 hover:text-[#B11469]'
               }`}
             >
-              Sign In
+              {builderProfile ? `Signed in (${builderProfile.displayName})` : 'Sign In'}
             </button>
 
             <button
@@ -155,14 +161,6 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({ onJoinClick, onSignInCli
               aria-label="Toggle theme mode"
             >
               {isDark ? <Moon className="w-4 h-4 text-[#FFF025]" /> : <Sun className="w-4 h-4 text-[#C15D00]" />}
-            </button>
-
-            <button
-              onClick={onJoinClick}
-              className="px-3 py-1.5 text-xs font-black text-black rounded-lg border-2 border-black brand-shadow-sm cursor-pointer"
-              style={{ backgroundColor: '#FFF025' }}
-            >
-              Join
             </button>
 
             <button
