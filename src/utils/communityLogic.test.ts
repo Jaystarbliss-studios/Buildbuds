@@ -4,6 +4,7 @@ import {
   filterProjects,
   getCategoryCounts,
   toggleReaction,
+  toggleMessageReaction,
   addReplyToPost,
   validateJoinForm,
 } from './communityLogic.ts';
@@ -144,4 +145,52 @@ test('validateJoinForm validates required student onboarding fields', () => {
   });
   assert.equal(valid.valid, true);
   assert.equal(Object.keys(valid.errors).length, 0);
+});
+
+test('toggleMessageReaction restricts each user to 1 reaction per emoji per message', () => {
+  const user1 = 'user-abc';
+  const user2 = 'user-xyz';
+  const emoji = '🔥';
+
+  // 1. First reaction by User 1 (toggle ON)
+  const step1 = toggleMessageReaction({
+    reactions: {},
+    userReactions: {},
+    emoji,
+    userId: user1,
+  });
+
+  assert.equal(step1.reactions[emoji], 1);
+  assert.deepEqual(step1.userReactions[emoji], [user1]);
+  assert.equal(step1.hasReacted, true);
+
+  // 2. Second reaction by User 1 (toggle OFF)
+  const step2 = toggleMessageReaction({
+    reactions: step1.reactions,
+    userReactions: step1.userReactions,
+    emoji,
+    userId: user1,
+  });
+
+  assert.equal(step2.reactions[emoji], undefined);
+  assert.equal(step2.userReactions[emoji], undefined);
+  assert.equal(step2.hasReacted, false);
+
+  // 3. User 1 reacts again, then User 2 reacts
+  const step3 = toggleMessageReaction({
+    reactions: step2.reactions,
+    userReactions: step2.userReactions,
+    emoji,
+    userId: user1,
+  });
+
+  const step4 = toggleMessageReaction({
+    reactions: step3.reactions,
+    userReactions: step3.userReactions,
+    emoji,
+    userId: user2,
+  });
+
+  assert.equal(step4.reactions[emoji], 2);
+  assert.deepEqual(step4.userReactions[emoji], [user1, user2]);
 });

@@ -238,6 +238,66 @@ export function isSuperAdminUser(user?: User | null, profile?: BuilderProfile | 
   return false;
 }
 
+function normalizeIsoTimestamp(val: unknown, fallbackIso: string): string {
+  if (typeof val === 'string' && val.trim().length > 0) {
+    return val;
+  }
+  if (
+    val &&
+    typeof val === 'object' &&
+    'toDate' in val &&
+    typeof (val as { toDate: () => Date }).toDate === 'function'
+  ) {
+    try {
+      return (val as { toDate: () => Date }).toDate().toISOString();
+    } catch {
+      return fallbackIso;
+    }
+  }
+  return fallbackIso;
+}
+
+/**
+ * Determines whether a user is an approved Student Hub member based on their admin status,
+ * `communityMemberships/{uid}`, `studentAccessRequests/{uid}`, or pre-existing Student Hub builder profile.
+ */
+export function isApprovedStudentMember(params: {
+  user?: User | null;
+  profile?: BuilderProfile | null;
+  membership?: CommunityMembership | null;
+  studentRequest?: StudentAccessRequest | null;
+}): boolean {
+  const { user, profile, membership, studentRequest } = params;
+  if (!user) return false;
+  if (isSuperAdminUser(user, profile)) return true;
+
+  if (membership?.status === 'approved') return true;
+  if (membership?.status === 'suspended' || membership?.status === 'revoked') return false;
+
+  if (studentRequest?.status === 'approved') return true;
+  if (
+    studentRequest?.status === 'pending' ||
+    studentRequest?.status === 'rejected' ||
+    studentRequest?.status === 'more_information_required' ||
+    studentRequest?.status === 'suspended'
+  ) {
+    return false;
+  }
+
+  if (profile && profile.status !== 'banned' && profile.status !== 'suspended') {
+    if (
+      profile.accountType === 'student' ||
+      profile.role === 'moderator' ||
+      profile.role === 'admin' ||
+      (profile.accountType !== 'public' && Boolean(profile.schoolName?.trim()))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Builds a complete in-memory BuilderProfile from a Firebase User and optional overrides,
  * guaranteeing that a signed-in user always has a valid profile state even while Firestore syncs.
@@ -250,6 +310,17 @@ export function buildFallbackBuilderProfile(
   const colorIndex = (user.uid ? user.uid.charCodeAt(0) : 0) % AVATAR_COLORS.length;
   const presetAvatar = getDefaultPresetAvatar(user.uid || 'default');
   const nowIso = new Date().toISOString();
+  const cleanSchool = overrides?.schoolName?.trim() || '';
+  const effectiveRole = isAdmin ? 'admin' : overrides?.role || 'member';
+
+  const inferredAccountType: 'public' | 'student' =
+    isAdmin ||
+    overrides?.accountType === 'student' ||
+    effectiveRole === 'moderator' ||
+    effectiveRole === 'admin' ||
+    (overrides?.accountType !== 'public' && cleanSchool.length > 0)
+      ? 'student'
+      : 'public';
 
   return {
     uid: user.uid,
@@ -257,19 +328,21 @@ export function buildFallbackBuilderProfile(
       overrides?.displayName?.trim() ||
       user.displayName ||
       (user.email ? user.email.split('@')[0] : 'Creator'),
-    schoolName: overrides?.schoolName?.trim() || '',
+    schoolName: cleanSchool,
     gradeLevel: overrides?.gradeLevel || '',
     primaryInterest: overrides?.primaryInterest || 'Creative Projects',
     avatarUrl: overrides?.avatarUrl || user.photoURL || presetAvatar.id,
     avatarColor: overrides?.avatarColor || AVATAR_COLORS[colorIndex],
-    role: isAdmin ? 'admin' : overrides?.role || 'member',
+    role: effectiveRole,
     status: overrides?.status || 'active',
-    accountType: isAdmin ? 'student' : overrides?.accountType || 'public',
+    accountType: inferredAccountType,
     publishingDisabled: overrides?.publishingDisabled ?? false,
-    bookmarkedPostIds: overrides?.bookmarkedPostIds || [],
+    bookmarkedPostIds: Array.isArray(overrides?.bookmarkedPostIds)
+      ? overrides.bookmarkedPostIds
+      : [],
     acceptedGuidelines: overrides?.acceptedGuidelines ?? true,
-    createdAt: overrides?.createdAt || nowIso,
-    updatedAt: overrides?.updatedAt || nowIso,
+    createdAt: normalizeIsoTimestamp(overrides?.createdAt, nowIso),
+    updatedAt: normalizeIsoTimestamp(overrides?.updatedAt, nowIso),
   };
 }
 
@@ -281,10 +354,22 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
     if (snap.exists()) {
       const raw = snap.data() as Partial<BuilderProfile>;
       const isAdminEmail = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+      const hasLegacySchool = Boolean(raw.schoolName && raw.schoolName.trim().length > 0);
+      const inferredType: 'public' | 'student' =
+        isAdminEmail ||
+        raw.accountType === 'student' ||
+        raw.role === 'moderator' ||
+        raw.role === 'admin' ||
+        (raw.accountType !== 'public' && hasLegacySchool)
+          ? 'student'
+          : 'public';
+
       const normalized = buildFallbackBuilderProfile(user, {
         ...raw,
         role: isAdminEmail ? 'admin' : raw.role || 'member',
         status: raw.status || 'active',
+        accountType: inferredType,
+        acceptedGuidelines: raw.acceptedGuidelines ?? true,
       });
 
       if (isAdminEmail && raw.role !== 'admin') {
@@ -305,7 +390,7 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
 
 /**
  * Ensures a basic public user profile exists in `users/{uid}` after Google sign-in.
- * Does NOT overwrite existing accounts and does NOT grant Student Hub access.
+ * Does NOT overwrite existing accounts and does NOT grant Student Hub access unless overrides are supplied.
  */
 export async function ensurePublicUserProfile(
   user: User,
@@ -313,18 +398,20 @@ export async function ensurePublicUserProfile(
 ): Promise<BuilderProfile> {
   const existing = await checkExistingBuilderProfile(user);
   if (existing) {
-    // If the user explicitly provided a displayName during registration and their profile lacked a custom name, update it gently
-    const requestedName = overrides?.displayName?.trim();
-    if (requestedName && requestedName !== existing.displayName) {
-      const updatedExisting: BuilderProfile = {
+    if (overrides && Object.keys(overrides).length > 0) {
+      const updatedExisting = buildFallbackBuilderProfile(user, {
         ...existing,
-        displayName: requestedName,
+        ...overrides,
+        role: existing.role,
+        status: existing.status,
+        accountType: overrides.accountType || existing.accountType,
+        createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
-      };
+      });
       try {
         await setDoc(doc(db, 'users', user.uid), updatedExisting, { merge: true });
-      } catch {
-        // Non-fatal
+      } catch (err) {
+        console.warn('Could not merge profile updates to Firestore:', err);
       }
       return updatedExisting;
     }
@@ -409,6 +496,7 @@ export async function getStudentAccessState(
 
   let membership: CommunityMembership | null = null;
   let request: StudentAccessRequest | null = null;
+  let resolvedProfile: BuilderProfile | null = profile || null;
 
   try {
     const membershipSnap = await getDoc(doc(db, 'communityMemberships', user.uid));
@@ -428,7 +516,18 @@ export async function getStudentAccessState(
     // Ignore
   }
 
-  if (membership?.status === 'approved') {
+  if (!resolvedProfile) {
+    resolvedProfile = await checkExistingBuilderProfile(user);
+  }
+
+  const approved = isApprovedStudentMember({
+    user,
+    profile: resolvedProfile,
+    membership,
+    studentRequest: request,
+  });
+
+  if (approved) {
     return {
       isApprovedForHub: true,
       accessStatus: 'approved',

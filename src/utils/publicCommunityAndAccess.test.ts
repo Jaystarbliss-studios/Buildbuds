@@ -200,11 +200,13 @@ test('Category filter helper accurately matches posts by categoryId, slug, and c
   assert.equal(doesPostMatchCategoryFilter(seedAnnouncementPost, 'announcements'), true);
 });
 
-test('Hardened firestore.rules separates Public Community from Private Student Hub and gates publicPosts creation via isApprovedStudent()', () => {
+test('Hardened firestore.rules separates Public Community from Private Student Hub, supports serverTimestamp on messages/threadReplies, and gates publicPosts creation via isApprovedStudent()', () => {
   const rulesPath = path.resolve(process.cwd(), 'firestore.rules');
   const rulesText = fs.readFileSync(rulesPath, 'utf8');
 
   assert.ok(rulesText.includes('function isApprovedStudent()'));
+  assert.ok(rulesText.includes('data.createdAt is timestamp'));
+  assert.ok(rulesText.includes('request.resource.data.createdAt is timestamp'));
   assert.ok(rulesText.includes('match /publicPosts/{postId}'));
   assert.ok(rulesText.includes('match /communityChallenges/{challengeId}'));
   assert.ok(rulesText.includes('match /studentAccessRequests/{userId}'));

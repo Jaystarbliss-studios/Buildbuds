@@ -109,7 +109,7 @@ export default defineConfig(() => {
           theme_color: '#06060c',
           background_color: '#06060c',
           display: 'standalone',
-          start_url: '/',
+          start_url: '/community',
           scope: '/',
           icons: [
             {

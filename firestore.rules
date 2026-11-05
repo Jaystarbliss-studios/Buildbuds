@@ -32,7 +32,18 @@ service cloud.firestore {
         (
           isAdmin() ||
           (exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved')
+            get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved') ||
+          (exists(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)).data.status == 'approved') ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            (!exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) ||
+              get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved') &&
+            (
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accountType', '') == 'student' ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'] ||
+              (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accountType', '') != 'public' &&
+                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('schoolName', '') != '')
+            ))
         );
     }
 
@@ -85,20 +96,20 @@ service cloud.firestore {
         data.avatarColor is string && data.avatarColor.size() <= 30 &&
         data.role in ['member', 'moderator', 'admin'] &&
         (!('status' in data) || data.status in ['active', 'suspended', 'banned']) &&
-        data.acceptedGuidelines == true &&
-        data.createdAt is string && data.createdAt.size() <= 50;
+        (!('acceptedGuidelines' in data) || data.acceptedGuidelines is bool) &&
+        (!('createdAt' in data) || data.createdAt is timestamp || (data.createdAt is string && data.createdAt.size() <= 60));
     }
 
     function isValidMessage(data) {
-      return data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 120 &&
+      return data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 160 &&
         data.authorId is string && data.authorId == request.auth.uid &&
-        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
-        data.authorColor is string && data.authorColor.size() <= 30 &&
-        data.text is string && data.text.size() >= 1 && data.text.size() <= 2500 &&
-        data.threadCount is int && data.threadCount >= 0 &&
-        data.createdAt is string && data.createdAt.size() <= 50 &&
-        (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 600000)) &&
-        (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 1000));
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100 &&
+        (!('authorColor' in data) || (data.authorColor is string && data.authorColor.size() <= 40)) &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 4000 &&
+        (!('threadCount' in data) || (data.threadCount is int && data.threadCount >= 0)) &&
+        (!('createdAt' in data) || data.createdAt is timestamp || (data.createdAt is string && data.createdAt.size() <= 60)) &&
+        (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 800000)) &&
+        (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 2000));
     }
 
     // ===============================================================
@@ -107,14 +118,14 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if true;
 
-      allow create: if isOwner(userId) &&
+      allow create: if (isOwner(userId) &&
         isValidUserProfile(request.resource.data, userId) &&
         (!('status' in request.resource.data) || request.resource.data.status == 'active') &&
-        (request.resource.data.role == 'member' || isAdmin());
+        (request.resource.data.role == 'member' || isAdmin())) ||
+        isAdmin();
 
       allow update: if (isOwner(userId) &&
         (!('uid' in resource.data) || request.resource.data.uid == resource.data.uid) &&
-        (!('createdAt' in resource.data) || request.resource.data.createdAt == resource.data.createdAt) &&
         (!('role' in resource.data) || request.resource.data.role == resource.data.role || isAdmin()) &&
         request.resource.data.get('status', 'active') == resource.data.get('status', 'active') &&
         request.resource.data.get('publishingDisabled', false) == resource.data.get('publishingDisabled', false)) ||
@@ -417,15 +428,27 @@ service cloud.firestore {
         isActiveUser() &&
         request.resource.data.authorId == resource.data.authorId &&
         request.resource.data.channelId == resource.data.channelId &&
-        request.resource.data.createdAt == resource.data.createdAt &&
         (
           (request.resource.data.text == resource.data.text &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'threadCount'])) ||
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'reactions',
+              'userReactions',
+              'threadCount',
+              'updatedAt',
+              'showcaseStatus',
+              'showcaseRequestedAt',
+              'publicPostId'
+            ])) ||
           (resource.data.authorId == request.auth.uid &&
             request.resource.data.text is string &&
             request.resource.data.text.size() >= 1 &&
-            request.resource.data.text.size() <= 2500 &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt', 'hadProfanity'])) ||
+            request.resource.data.text.size() <= 4000 &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'text',
+              'isEdited',
+              'updatedAt',
+              'hadProfanity'
+            ])) ||
           isAdmin() ||
           isChannelModerator(resource.data.channelId)
         );
@@ -445,21 +468,22 @@ service cloud.firestore {
           request.resource.data.authorId == request.auth.uid &&
           request.resource.data.authorName is string &&
           request.resource.data.authorName.size() >= 1 &&
-          request.resource.data.authorName.size() <= 80 &&
+          request.resource.data.authorName.size() <= 100 &&
           request.resource.data.text is string &&
           request.resource.data.text.size() >= 1 &&
-          request.resource.data.text.size() <= 1500 &&
-          request.resource.data.createdAt is string;
+          request.resource.data.text.size() <= 2500 &&
+          (!('createdAt' in request.resource.data) ||
+            request.resource.data.createdAt is timestamp ||
+            (request.resource.data.createdAt is string && request.resource.data.createdAt.size() <= 60));
 
         allow update: if isApprovedStudent() &&
           isActiveUser() &&
           resource.data.authorId == request.auth.uid &&
           request.resource.data.authorId == resource.data.authorId &&
           request.resource.data.messageId == resource.data.messageId &&
-          request.resource.data.createdAt == resource.data.createdAt &&
           request.resource.data.text is string &&
           request.resource.data.text.size() >= 1 &&
-          request.resource.data.text.size() <= 1500 &&
+          request.resource.data.text.size() <= 2500 &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt']);
 
         allow delete: if isApprovedStudent() &&

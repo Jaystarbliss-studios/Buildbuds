@@ -1,101 +1,238 @@
 export interface NotificationPreferences {
   enabled: boolean;
   mutedChannels: string[];
-  soundEnabled: boolean;
+  mutedChannelIds?: string[];
+  explicitlyDisabled?: boolean;
 }
 
-const PREFS_STORAGE_KEY = 'buildbuds_notification_prefs_v1';
-const DEDUPE_STORAGE_PREFIX = 'buildbuds_notified_msg_';
+const NOTIFICATION_PREFS_STORAGE_KEY = 'buildbuds_notification_prefs_v1';
+const NOTIFICATION_PROMPT_DISMISSED_KEY = 'buildbuds_notif_prompt_dismissed_session';
+export const BUILDBUDS_LOGO_ICON = '/assets/aistudio/images/aurora-logo.png';
 
-export function loadNotificationPreferences(): NotificationPreferences {
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  enabled: true,
+  mutedChannels: [],
+  mutedChannelIds: [],
+  explicitlyDisabled: false,
+};
+
+/**
+ * Load user's saved notification preferences from localStorage.
+ * If browser Notification permission is already 'granted' and the user hasn't explicitly disabled
+ * notifications, `enabled` is automatically true so desktop notifications work seamlessly.
+ */
+export const loadNotificationPreferences = (): NotificationPreferences => {
+  const permissionGranted =
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    Notification.permission === 'granted';
+
+  if (typeof window === 'undefined') return DEFAULT_NOTIFICATION_PREFERENCES;
   try {
-    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(NOTIFICATION_PREFS_STORAGE_KEY);
     if (!raw) {
       return {
-        enabled: false,
+        enabled: permissionGranted,
         mutedChannels: [],
-        soundEnabled: true,
+        mutedChannelIds: [],
+        explicitlyDisabled: false,
       };
     }
     const parsed = JSON.parse(raw);
+    const explicitlyDisabled = Boolean(parsed?.explicitlyDisabled);
+    const rawMuted = Array.isArray(parsed?.mutedChannels)
+      ? parsed.mutedChannels
+      : Array.isArray(parsed?.mutedChannelIds)
+      ? parsed.mutedChannelIds
+      : [];
+    const muted = rawMuted.filter((id: unknown): id is string => typeof id === 'string');
     return {
-      enabled: Boolean(parsed.enabled),
-      mutedChannels: Array.isArray(parsed.mutedChannels) ? parsed.mutedChannels : [],
-      soundEnabled: parsed.soundEnabled !== false,
+      enabled: explicitlyDisabled ? false : Boolean(parsed?.enabled || permissionGranted),
+      mutedChannels: muted,
+      mutedChannelIds: muted,
+      explicitlyDisabled,
     };
   } catch {
     return {
-      enabled: false,
+      enabled: permissionGranted,
       mutedChannels: [],
-      soundEnabled: true,
+      mutedChannelIds: [],
+      explicitlyDisabled: false,
     };
   }
-}
+};
 
-export function saveNotificationPreferences(prefs: NotificationPreferences): void {
+/**
+ * Persist notification preferences to localStorage.
+ */
+export const saveNotificationPreferences = (prefs: NotificationPreferences): void => {
+  if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
+    window.localStorage.setItem(
+      NOTIFICATION_PREFS_STORAGE_KEY,
+      JSON.stringify({
+        ...prefs,
+        explicitlyDisabled: !prefs.enabled,
+      })
+    );
   } catch {
-    // Ignore storage quota errors
+    // Storage quota or privacy mode
   }
-}
+};
 
-export type BrowserPermissionStatus = 'granted' | 'denied' | 'default' | 'unsupported';
-
-export function getBrowserNotificationPermission(): BrowserPermissionStatus {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return 'unsupported';
+export const hasDismissedNotificationPromptThisSession = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(NOTIFICATION_PROMPT_DISMISSED_KEY) === '1';
+  } catch {
+    return false;
   }
-  return Notification.permission as BrowserPermissionStatus;
-}
+};
 
-export async function registerBuildBudsServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+export const markNotificationPromptDismissedThisSession = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(NOTIFICATION_PROMPT_DISMISSED_KEY, '1');
+  } catch {
+    // Ignore
+  }
+};
+
+/**
+ * Check if browser supports Web Notifications + Service Workers.
+ */
+export const isBrowserNotificationSupported = (): boolean => {
+  return typeof window !== 'undefined' && 'Notification' in window;
+};
+
+export type BrowserPermissionStatus = NotificationPermission | 'unsupported';
+
+/**
+ * Get current browser Notification permission state.
+ */
+export const getBrowserNotificationPermission = (): BrowserPermissionStatus => {
+  if (!isBrowserNotificationSupported()) return 'unsupported';
+  return Notification.permission;
+};
+
+/**
+ * Register the Build Buds service worker (`/sw.js`) for background/system notifications.
+ */
+export const registerNotificationServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return null;
   }
   try {
     const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    await navigator.serviceWorker.ready;
     return registration;
   } catch {
     return null;
   }
-}
+};
 
-export async function requestBrowserNotificationPermission(): Promise<BrowserPermissionStatus> {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return 'unsupported';
-  }
-  try {
-    const result = await Notification.requestPermission();
-    if (result === 'granted') {
-      await registerBuildBudsServiceWorker();
-    }
-    return result as BrowserPermissionStatus;
-  } catch {
-    return Notification.permission as BrowserPermissionStatus;
-  }
-}
+export const registerBuildBudsServiceWorker = registerNotificationServiceWorker;
 
 /**
- * Claims a message ID across browser tabs so only a single tab displays a notification
- * for a given incoming message.
+ * Request browser notification permission and register service worker if granted.
  */
-function claimMessageNotificationOnce(messageId: string): boolean {
+export const requestBrowserNotificationPermission = async (): Promise<NotificationPermission | 'unsupported'> => {
+  if (!isBrowserNotificationSupported()) return 'unsupported';
   try {
-    const key = `${DEDUPE_STORAGE_PREFIX}${messageId}`;
-    const existing = localStorage.getItem(key);
-    const now = Date.now();
-    if (existing && now - Number(existing) < 5 * 60 * 1000) {
-      return false;
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      await registerNotificationServiceWorker();
+      const currentPrefs = loadNotificationPreferences();
+      saveNotificationPreferences({
+        ...currentPrefs,
+        enabled: true,
+        explicitlyDisabled: false,
+      });
     }
-    localStorage.setItem(key, String(now));
+    return permission;
+  } catch {
+    return Notification.permission;
+  }
+};
+
+/**
+ * Low-level helper that sends a real OS / Desktop notification to the Chrome/PC notification centre.
+ * Uses ServiceWorkerRegistration.showNotification AND falls back to `new Notification()` so it
+ * reliably appears in the desktop notification tray.
+ */
+export const triggerSystemDesktopNotification = async (params: {
+  title: string;
+  body: string;
+  tag: string;
+  iconUrl?: string;
+  channelId?: string;
+  actionUrl?: string;
+  onClick?: () => void;
+}): Promise<boolean> => {
+  if (!isBrowserNotificationSupported()) return false;
+  if (Notification.permission !== 'granted') return false;
+
+  const icon = params.iconUrl || BUILDBUDS_LOGO_ICON;
+  const truncatedBody =
+    params.body.length > 140 ? `${params.body.slice(0, 137)}...` : params.body;
+
+  // Prefer direct `new Notification()` when the page is open on desktop Chrome/Edge/Firefox
+  // because it immediately pops a native toast in the OS notification centre and supports direct onclick,
+  // and fallback to ServiceWorkerRegistration.showNotification if constructor is restricted (e.g. mobile Chrome).
+  try {
+    const notif = new Notification(params.title, {
+      body: truncatedBody,
+      icon,
+      badge: BUILDBUDS_LOGO_ICON,
+      tag: params.tag,
+    });
+    notif.onclick = () => {
+      window.focus();
+      notif.close();
+      params.onClick?.();
+    };
     return true;
   } catch {
-    return true;
+    // Fallback to Service Worker registration (required on Android Chrome / standalone PWA)
+    try {
+      if ('serviceWorker' in navigator) {
+        const registration =
+          (await navigator.serviceWorker.getRegistration('/')) ||
+          (await registerNotificationServiceWorker());
+        if (registration && typeof registration.showNotification === 'function') {
+          await registration.showNotification(params.title, {
+            body: truncatedBody,
+            icon,
+            badge: BUILDBUDS_LOGO_ICON,
+            tag: params.tag,
+            data: {
+              channelId: params.channelId || '',
+              actionUrl: params.actionUrl || '/community',
+            },
+          });
+          return true;
+        }
+      }
+    } catch {
+      // Ignore
+    }
   }
-}
+  return false;
+};
 
-export interface IncomingMessageNotificationParams {
+/**
+ * Send an immediate confirmation notification when the user enables notifications.
+ */
+export const sendWelcomeDesktopNotification = async (): Promise<boolean> => {
+  return triggerSystemDesktopNotification({
+    title: 'Build Buds Notifications Enabled! 🚀',
+    body: 'You will now receive live messages, @mentions, and community updates right in your notification centre.',
+    tag: `buildbuds-welcome-${Date.now()}`,
+    actionUrl: '/community',
+  });
+};
+
+export interface DispatchMessageNotificationParams {
   messageId: string;
   channelId: string;
   channelName: string;
@@ -103,19 +240,21 @@ export interface IncomingMessageNotificationParams {
   authorName: string;
   authorAvatarUrl?: string;
   text: string;
-  currentUserId: string | null | undefined;
-  activeStreamId: string;
+  currentUserId: string;
+  currentUserDisplayName?: string;
+  activeStreamId?: string;
   preferences: NotificationPreferences;
   onNavigateToChannel?: (channelId: string) => void;
 }
 
 /**
- * Evaluates whether a newly arrived message should trigger a browser notification
- * and dispatches it via Service Worker or native Notification API.
+ * Dispatch a browser/system notification for a new incoming chat message.
+ * Fires whenever a message is sent by another user (or if `@all` / `@username` is tagged)
+ * so it pops up in the user's desktop/PC notification centre.
  */
-export async function dispatchMessageBrowserNotification(
-  params: IncomingMessageNotificationParams
-): Promise<boolean> {
+export const dispatchMessageBrowserNotification = async (
+  params: DispatchMessageNotificationParams
+): Promise<boolean> => {
   const {
     messageId,
     channelId,
@@ -125,76 +264,47 @@ export async function dispatchMessageBrowserNotification(
     authorAvatarUrl,
     text,
     currentUserId,
-    activeStreamId,
+    currentUserDisplayName,
     preferences,
     onNavigateToChannel,
   } = params;
 
-  // 1. Must have notifications enabled in user preferences and granted in browser
-  if (!preferences.enabled) return false;
-  if (getBrowserNotificationPermission() !== 'granted') return false;
+  if (!isBrowserNotificationSupported()) return false;
+  if (Notification.permission !== 'granted') return false;
+  if (preferences.explicitlyDisabled) return false;
 
-  // 2. Never notify for the user's own messages
-  if (!currentUserId || authorId === currentUserId) return false;
+  // Never notify the sender of their own message
+  if (authorId === currentUserId) return false;
 
-  // 3. Respect muted channels
   const baseChannelId = channelId.split('__group__')[0];
-  if (
-    preferences.mutedChannels.includes(channelId) ||
-    preferences.mutedChannels.includes(baseChannelId)
-  ) {
+  const mutedList = preferences.mutedChannels || preferences.mutedChannelIds || [];
+  if (mutedList.includes(baseChannelId)) {
     return false;
   }
 
-  // 4. Do not notify if the user is actively viewing this exact channel in a focused tab
-  const isTabFocusedAndVisible =
-    typeof document !== 'undefined' &&
-    document.visibilityState === 'visible' &&
-    document.hasFocus();
+  const lower = (text || '').toLowerCase();
+  const isAllMention = /(?:^|\s)@all(?:\b|\s|$|[!?,.:;])/i.test(lower);
+  const isUserMention =
+    Boolean(currentUserDisplayName) &&
+    lower.includes(`@${currentUserDisplayName!.trim().toLowerCase()}`);
 
-  if (isTabFocusedAndVisible && activeStreamId === channelId) {
-    return false;
-  }
+  const title = isAllMention
+    ? `📣 ${authorName} tagged @all in #${channelName}`
+    : isUserMention
+    ? `🔔 ${authorName} mentioned you in #${channelName}`
+    : `${authorName} in #${channelName}`;
 
-  // 5. Deduplicate across multiple open tabs
-  if (!claimMessageNotificationOnce(messageId)) {
-    return false;
-  }
+  const bodyText = text.trim() || 'Shared a new creation in Build Buds';
 
-  const snippet = text.length > 110 ? `${text.slice(0, 107)}...` : text || 'Shared a creation link';
-  const title = `${authorName} in #${channelName}`;
-  const icon = authorAvatarUrl || '/assets/aistudio/images/aurora logo (1).png';
-
-  try {
-    if ('serviceWorker' in navigator) {
-      const registration = await navigator.serviceWorker.getRegistration();
-      if (registration && 'showNotification' in registration) {
-        await registration.showNotification(title, {
-          body: snippet,
-          icon,
-          badge: '/assets/aistudio/images/aurora logo (1).png',
-          tag: `buildbuds-msg-${messageId}`,
-          data: { channelId: baseChannelId },
-        });
-        return true;
-      }
-    }
-
-    const notification = new Notification(title, {
-      body: snippet,
-      icon,
-      tag: `buildbuds-msg-${messageId}`,
-    });
-
-    notification.onclick = () => {
-      window.focus();
-      notification.close();
-      if (onNavigateToChannel) {
-        onNavigateToChannel(baseChannelId);
-      }
-    };
-    return true;
-  } catch {
-    return false;
-  }
-}
+  return triggerSystemDesktopNotification({
+    title,
+    body: bodyText,
+    tag: `buildbuds-msg-${messageId}`,
+    iconUrl: authorAvatarUrl || BUILDBUDS_LOGO_ICON,
+    channelId: baseChannelId,
+    actionUrl: `/hub?channel=${encodeURIComponent(baseChannelId)}`,
+    onClick: () => {
+      onNavigateToChannel?.(baseChannelId);
+    },
+  });
+};

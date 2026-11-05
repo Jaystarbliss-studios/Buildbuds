@@ -72,6 +72,7 @@ import {
   UserAccountStatus,
   ADMIN_EMAIL,
   AVATAR_COLORS,
+  buildFallbackBuilderProfile,
   checkExistingBuilderProfile,
   ensureBuilderProfile,
   handleFirestoreError,
@@ -113,7 +114,17 @@ import {
   submitCreationForPublicShowcase,
   adminCurateShowcaseSubmission,
 } from '../utils/communityService.ts';
+import { toggleMessageReaction } from '../utils/communityLogic.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
+import {
+  VerifiedAvatarFrame,
+  AnimatedEmoteButton,
+  Emote3DIcon,
+  MentionAutocompletePopover,
+  renderTextWithMentions,
+  doesTextMentionUserOrAll,
+  MentionableUser,
+} from './MentionAndEmotes.tsx';
 
 export interface ChannelItem {
   id: string;
@@ -250,6 +261,7 @@ export interface HubMessage {
   showcaseStatus?: 'pending' | 'approved' | 'rejected';
   publicPostId?: string;
   reactions?: Record<string, number>;
+  userReactions?: Record<string, string[]>;
   threadCount: number;
   createdAtMillis: number;
   timeLabel: string;
@@ -317,6 +329,22 @@ function buildDefaultChannelConfig(ch: ChannelItem): CommunityChannelConfig {
     moderatorIds: [],
     kickedUserIds: [],
   };
+}
+
+function extractMessageMillis(data: Record<string, unknown>): number {
+  const createdAt = data.createdAt as { toMillis?: () => number } | string | undefined;
+  if (createdAt && typeof createdAt === 'object' && typeof createdAt.toMillis === 'function') {
+    const ms = createdAt.toMillis();
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  if (typeof data.createdAtMillis === 'number' && Number.isFinite(data.createdAtMillis) && data.createdAtMillis > 0) {
+    return data.createdAtMillis;
+  }
+  if (typeof createdAt === 'string' && createdAt.trim().length > 0) {
+    const parsed = Date.parse(createdAt);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return Date.now();
 }
 
 interface CommunityHubProps {
@@ -666,7 +694,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       userRef,
       (snap) => {
         if (snap.exists()) {
-          onProfileUpdated(snap.data() as BuilderProfile);
+          const normalized = buildFallbackBuilderProfile(
+            currentUser,
+            snap.data() as Partial<BuilderProfile>
+          );
+          onProfileUpdated(normalized);
         }
       },
       () => {}
@@ -780,6 +812,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             role: d.role || 'member',
             status: d.status || 'active',
             acceptedGuidelines: Boolean(d.acceptedGuidelines),
+            studentAccessStatus: d.studentAccessStatus || 'approved',
+            isApprovedStudent: d.isApprovedStudent !== false,
           };
         });
         setRegisteredUsers(users);
@@ -788,6 +822,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     );
     return () => unsubscribe();
   }, []);
+
+  const mentionableUsersList = useMemo<MentionableUser[]>(() => {
+    return registeredUsers.map((u) => ({
+      uid: u.uid,
+      displayName: u.displayName || 'Builder',
+      avatarUrl: u.avatarUrl || '',
+      avatarColor: u.avatarColor || '#FFF025',
+      role: u.role || 'member',
+      schoolName: u.schoolName || '',
+      isVerifiedStudent: true,
+    }));
+  }, [registeredUsers]);
 
   // Real-time listener for Messages in the active channel or sub-group (`activeStreamId`)
   useEffect(() => {
@@ -802,7 +848,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       (snapshot) => {
         const loaded: HubMessage[] = snapshot.docs.map((docSnap) => {
           const data = docSnap.data();
-          const createdMillis = data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now();
+          const createdMillis = extractMessageMillis(data);
           const dateObj = new Date(createdMillis);
           const hours = String(dateObj.getHours()).padStart(2, '0');
           const mins = String(dateObj.getMinutes()).padStart(2, '0');
@@ -811,7 +857,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             id: docSnap.id,
             channelId: data.channelId,
             authorId: data.authorId,
-            authorName: data.authorName,
+            authorName: data.authorName || 'Builder',
             authorAvatar: data.authorAvatar || '',
             authorColor: data.authorColor || '#FFF025',
             authorRole: data.authorRole || 'member',
@@ -856,7 +902,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         snapshot.docs.forEach((docSnap) => {
           const data = docSnap.data();
           if (!data.linkUrl) return;
-          const createdMillis = data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now();
+          const createdMillis = extractMessageMillis(data);
           const dateObj = new Date(createdMillis);
           items.push({
             id: docSnap.id,
@@ -1235,7 +1281,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       (snapshot) => {
         const replies: ThreadReplyItem[] = snapshot.docs.map((docSnap) => {
           const d = docSnap.data();
-          const millis = d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now();
+          const millis = extractMessageMillis(d);
           const dt = new Date(millis);
           const timeLabel = `${String(dt.getHours()).padStart(2, '0')}:${String(
             dt.getMinutes()
@@ -1244,9 +1290,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             id: docSnap.id,
             messageId: d.messageId,
             authorId: d.authorId,
-            authorName: d.authorName,
+            authorName: d.authorName || 'Builder',
             authorColor: d.authorColor || '#FFF025',
-            text: d.text,
+            text: d.text || '',
             isEdited: Boolean(d.isEdited),
             createdAtMillis: millis,
             timeLabel,
@@ -1515,7 +1561,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       return;
     }
 
-    if (!builderProfile.acceptedGuidelines) {
+    if (builderProfile.acceptedGuidelines === false) {
       setShowGuidelinesPrompt(true);
       return;
     }
@@ -1554,25 +1600,36 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     const chosenAvatarId =
       builderProfile.avatarUrl || getDefaultPresetAvatar(currentUser.uid).id;
 
+    const safeAuthorName = (
+      builderProfile.displayName ||
+      currentUser.displayName ||
+      (currentUser.email ? currentUser.email.split('@')[0] : 'Builder')
+    ).slice(0, 60);
+
+    const safeAuthorColor = (builderProfile.avatarColor || '#FFF025').slice(0, 30);
+    const nowMillis = Date.now();
+
     const payload: Record<string, unknown> = {
-      channelId: activeStreamId.slice(0, 128),
+      channelId: (activeStreamId || 'general-chat').slice(0, 128),
       authorId: currentUser.uid,
-      authorName: builderProfile.displayName.slice(0, 60),
+      authorName: safeAuthorName,
       authorAvatar: chosenAvatarId.slice(0, 4000),
-      authorColor: builderProfile.avatarColor.slice(0, 30),
+      authorColor: safeAuthorColor,
       authorRole: effectiveRole,
-      text: filteredText.slice(0, 2000),
-      hadProfanity,
+      text: (filteredText || 'Shared a creation!').slice(0, 2000),
+      hadProfanity: Boolean(hadProfanity),
       reactions: {},
       threadCount: 0,
+      createdAtMillis: nowMillis,
       createdAt: serverTimestamp(),
     };
 
+    const previousReply = replyingTo;
     if (replyingTo) {
-      payload.replyToId = replyingTo.id.slice(0, 128);
-      payload.replyToAuthor = replyingTo.authorName.slice(0, 60);
-      payload.replyToColor = replyingTo.authorColor.slice(0, 30);
-      payload.replyToSnippet = replyingTo.text.slice(0, 120);
+      payload.replyToId = String(replyingTo.id || '').slice(0, 128);
+      payload.replyToAuthor = String(replyingTo.authorName || 'Builder').slice(0, 60);
+      payload.replyToColor = String(replyingTo.authorColor || '#FFF025').slice(0, 30);
+      payload.replyToSnippet = String(replyingTo.text || '').slice(0, 120);
     }
 
     if ((linkUrlInput.trim() || customCoverDataUrl) && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
@@ -1590,6 +1647,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       payload.coverImageUrl = (customCoverDataUrl || preview.defaultCoverUrl).slice(0, 350000);
     }
 
+    // Optimistically clear composer immediately so sending feels instant and never stalls
+    setMessageText('');
+    setReplyingTo(null);
+    setLinkUrlInput('');
+    setLinkTitleInput('');
+    setLinkDescInput('');
+    setCustomCoverDataUrl('');
+    setShowAttachmentDrawer(false);
+
     try {
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
@@ -1601,14 +1667,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
       await addDoc(collection(db, 'messages'), payload);
 
-      setMessageText('');
-      setReplyingTo(null);
-      setLinkUrlInput('');
-      setLinkTitleInput('');
-      setLinkDescInput('');
-      setCustomCoverDataUrl('');
-      setShowAttachmentDrawer(false);
-
       if (!isSuperAdmin && !isCurrentChannelModerator && effectiveCooldownSeconds > 0) {
         setCooldownRemaining(effectiveCooldownSeconds);
       }
@@ -1618,11 +1676,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         window.setTimeout(() => setComposerNotice(null), 4000);
       }
     } catch (error) {
+      // Restore draft if write failed and surface a clear error banner
+      setMessageText(rawText);
+      setReplyingTo(previousReply);
+      setComposerError('Could not send your message. Please check your connection and try again.');
       handleFirestoreError(error, OperationType.CREATE, 'messages');
     }
   };
 
-  // Toggle emoji reaction on a message
+  // Toggle emoji reaction on a message (single reaction per user per emoji)
   const handleToggleReaction = async (msg: HubMessage, emoji: string) => {
     if (!currentUser) {
       onOpenAuthModal('signin');
@@ -1633,12 +1695,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       return;
     }
 
-    const currentReactions = { ...(msg.reactions || {}) };
-    currentReactions[emoji] = (currentReactions[emoji] || 0) + 1;
+    const { reactions: nextReactions, userReactions: nextUserReactions } =
+      toggleMessageReaction({
+        reactions: msg.reactions,
+        userReactions: msg.userReactions,
+        emoji,
+        userId: currentUser.uid,
+      });
 
     try {
       await updateDoc(doc(db, 'messages', msg.id), {
-        reactions: currentReactions,
+        reactions: nextReactions,
+        userReactions: nextUserReactions,
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
@@ -1724,7 +1792,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Post a reply inside the Thread Drawer
   const handleSendThreadReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeThreadMessage || !threadInput.trim()) return;
+    const rawReply = threadInput.trim();
+    if (!activeThreadMessage || !rawReply) return;
 
     if (!currentUser || !builderProfile) {
       onOpenAuthModal('signin');
@@ -1736,7 +1805,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       return;
     }
 
-    const { filteredText } = filterProfanity(threadInput.trim());
+    const { filteredText } = filterProfanity(rawReply);
     const liveParent = firestoreMessages.find((m) => m.id === activeThreadMessage.id);
     const nextThreadCount = computeNextThreadReplyCount(
       liveParent?.threadCount ?? activeThreadMessage.threadCount,
@@ -1744,19 +1813,25 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       1
     );
 
+    const safeAuthorName = (
+      builderProfile.displayName ||
+      currentUser.displayName ||
+      (currentUser.email ? currentUser.email.split('@')[0] : 'Builder')
+    ).slice(0, 60);
+    const safeAuthorColor = (builderProfile.avatarColor || '#FFF025').slice(0, 30);
+
+    // Clear input optimistically
+    setThreadInput('');
+
     try {
       await addDoc(collection(db, 'messages', activeThreadMessage.id, 'threadReplies'), {
         messageId: activeThreadMessage.id,
         authorId: currentUser.uid,
-        authorName: builderProfile.displayName.slice(0, 60),
-        authorColor: builderProfile.avatarColor.slice(0, 30),
-        text: filteredText.slice(0, 1500),
+        authorName: safeAuthorName,
+        authorColor: safeAuthorColor,
+        text: (filteredText || rawReply).slice(0, 1500),
+        createdAtMillis: Date.now(),
         createdAt: serverTimestamp(),
-      });
-
-      await updateDoc(doc(db, 'messages', activeThreadMessage.id), {
-        threadCount: nextThreadCount,
-        updatedAt: serverTimestamp(),
       });
 
       setLiveThreadCountsByMessageId((prev) => ({
@@ -1766,8 +1841,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setActiveThreadMessage((prev) =>
         prev ? { ...prev, threadCount: nextThreadCount } : null
       );
-      setThreadInput('');
+
+      updateDoc(doc(db, 'messages', activeThreadMessage.id), {
+        threadCount: nextThreadCount,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
     } catch (error) {
+      setThreadInput(rawReply);
+      setComposerError('Could not send your thread reply. Please try again.');
       handleFirestoreError(
         error,
         OperationType.CREATE,
@@ -2571,25 +2652,28 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             <span>{liveOnlineCount} online</span>
           </button>
 
-          {/* Account Icon -> Opens User Profile Settings Modal */}
+          {/* Account Icon -> Opens User Profile Settings Modal (with Verified Student Ring of Light) */}
           {currentUser && builderProfile ? (
             <button
               type="button"
               onClick={() => handleOpenProfileSettings('profile')}
               title="Account & Profile Settings"
               aria-label="Account & Profile Settings"
-              className="relative rounded-full p-0.5 border-2 border-white/20 hover:border-[#FFF025] focus:outline-none focus:border-[#FFF025] transition-all cursor-pointer shrink-0 group"
+              className="relative rounded-full focus:outline-none transition-transform hover:scale-105 cursor-pointer shrink-0 group"
             >
-              <img
+              <VerifiedAvatarFrame
                 src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
                 alt={builderProfile.displayName}
-                className="w-8 h-8 rounded-full object-cover"
-              />
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#141519] ${
-                  userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
-                }`}
-              />
+                isVerified={true}
+                sizeClass="w-9 h-9"
+                ringPaddingClass="p-[2px]"
+              >
+                <span
+                  className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#141519] ${
+                    userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
+                  }`}
+                />
+              </VerifiedAvatarFrame>
             </button>
           ) : (
             <button
@@ -2794,18 +2878,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   title="Open Account & Profile Settings"
                   className="flex items-center gap-2.5 min-w-0 flex-1 text-left p-1 -m-1 rounded-xl hover:bg-white/5 transition-colors cursor-pointer group/pod"
                 >
-                  <div className="relative shrink-0">
-                    <img
-                      src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
-                      alt={builderProfile.displayName}
-                      className="w-9 h-9 rounded-full object-cover border-2 border-white/20 group-hover/pod:border-[#FFF025] transition-colors"
-                    />
+                  <VerifiedAvatarFrame
+                    src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
+                    alt={builderProfile.displayName}
+                    isVerified={true}
+                    sizeClass="w-9 h-9"
+                    ringPaddingClass="p-[2px]"
+                  >
                     <span
                       className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#0b0c0f] ${
                         userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
                       }`}
                     />
-                  </div>
+                  </VerifiedAvatarFrame>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-bold text-white truncate flex items-center gap-1">
                       <span className="truncate">{builderProfile.displayName}</span>
@@ -3138,6 +3223,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           Object.values(msg.reactions || {}).some((c) => c > 0);
                         const isEditingThisMessage = editingMessageId === msg.id;
                         const isActionOpen = activeActionMessageId === msg.id;
+                        const mentionFlags = doesTextMentionUserOrAll(
+                          msg.text,
+                          builderProfile?.displayName
+                        );
+                        const isHighlightedForMe =
+                          mentionFlags.mentionsAll || mentionFlags.mentionsUser;
 
                         return (
                           <div
@@ -3145,7 +3236,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             data-grouped={isFirstInGroup ? 'false' : 'true'}
                             className={`group relative rounded-xl px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 hover:bg-white/[0.035] transition-colors ${
                               isFirstInGroup ? 'mt-4 first:mt-0 pt-1.5 pb-1' : 'mt-0.5 py-0.5'
-                            } ${isActionOpen ? 'bg-white/[0.04]' : ''}`}
+                            } ${isActionOpen ? 'bg-white/[0.04]' : ''} ${
+                              isHighlightedForMe
+                                ? 'bg-[#FFF025]/[0.05] border-l-2 border-l-[#FFF025]'
+                                : ''
+                            }`}
                           >
                             {/* Curved Inline Reply Connector */}
                             {msg.replyToAuthor && (
@@ -3170,12 +3265,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             )}
 
                             <div className="flex items-start gap-2.5 sm:gap-3.5">
-                              {/* Left Column: 40x40 Graphical Avatar on first message of group; subtle hover timestamp on grouped follow-ups */}
+                              {/* Left Column: 40x40 Graphical Avatar with Verified Student Ring of Light */}
                               {isFirstInGroup ? (
-                                <img
+                                <VerifiedAvatarFrame
                                   src={resolvedAvatarUrl}
                                   alt={resolvedAuthorName}
-                                  className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover border border-white/15 shrink-0 mt-0.5 shadow-md"
+                                  isVerified={true}
+                                  sizeClass="w-9 h-9 sm:w-10 sm:h-10 mt-0.5"
+                                  ringPaddingClass="p-[2px]"
                                 />
                               ) : (
                                 <div className="w-9 sm:w-10 shrink-0 flex items-center justify-end pr-1 pt-1 select-none">
@@ -3231,7 +3328,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 )}
 
-                                {/* Inline Message Edit Input OR Message Text */}
+                                {/* Multi-Line Message Edit Textarea OR Rendered Message Text */}
                                 {isEditingThisMessage ? (
                                   <form
                                     onSubmit={(e) => {
@@ -3241,19 +3338,34 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                     onClick={(e) => e.stopPropagation()}
                                     className="mt-1 space-y-2 max-w-xl"
                                   >
-                                    <input
-                                      type="text"
-                                      autoFocus
-                                      value={editingMessageText}
-                                      onChange={(e) => setEditingMessageText(e.target.value)}
-                                      onKeyDown={(e) => {
-                                        if (e.key === 'Escape') {
-                                          setEditingMessageId(null);
-                                          setEditingMessageText('');
+                                    <div className="relative">
+                                      <MentionAutocompletePopover
+                                        inputValue={editingMessageText}
+                                        onSelectMention={(nextVal) =>
+                                          setEditingMessageText(nextVal)
                                         }
-                                      }}
-                                      className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-[#FFF025] text-sm font-mono text-white focus:outline-none"
-                                    />
+                                        overrideUsers={mentionableUsersList}
+                                        position="above"
+                                        variant="dark"
+                                      />
+                                      <textarea
+                                        rows={Math.min(
+                                          6,
+                                          Math.max(2, editingMessageText.split('\n').length)
+                                        )}
+                                        autoFocus
+                                        value={editingMessageText}
+                                        onChange={(e) => setEditingMessageText(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Escape') {
+                                            setEditingMessageId(null);
+                                            setEditingMessageText('');
+                                          }
+                                        }}
+                                        placeholder="Edit message (press Enter for a new line, click Save when done)..."
+                                        className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-[#FFF025] text-sm font-mono text-white focus:outline-none resize-y"
+                                      />
+                                    </div>
                                     <div className="flex items-center gap-2 text-[11px]">
                                       <button
                                         type="submit"
@@ -3273,13 +3385,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                       >
                                         Cancel
                                       </button>
+                                      <span className="text-[10px] text-white/40 ml-auto">
+                                        Enter = new line • Click Save when done
+                                      </span>
                                     </div>
                                   </form>
                                 ) : (
                                   <div className="flex items-baseline justify-between gap-2">
                                     <div className="flex items-baseline gap-2 flex-wrap min-w-0">
-                                      <p className="font-mono text-sm sm:text-[15px] text-[#eef0f3] leading-relaxed break-words">
-                                        {msg.text}
+                                      <p className="font-mono text-sm sm:text-[15px] text-[#eef0f3] leading-relaxed whitespace-pre-wrap break-words">
+                                        {renderTextWithMentions(
+                                          msg.text,
+                                          builderProfile?.displayName,
+                                          mentionableUsersList
+                                        )}
                                       </p>
                                       {msg.isEdited && (
                                         <span className="text-[10px] font-mono text-white/40 select-none">
@@ -3430,22 +3549,28 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 )}
 
-                                {/* Reaction Pills Row + Accurate Multi-Reply Thread Button */}
+                                {/* 3D Animated Reaction Pills Row + Accurate Multi-Reply Thread Button */}
                                 {hasReactionsOrThreads && (
                                   <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                                    {Object.entries(msg.reactions || {}).map(([emoji, count]) =>
-                                      count > 0 ? (
-                                        <button
+                                    {Object.entries(msg.reactions || {}).map(([emoji, count]) => {
+                                      const hasUserReacted = Boolean(
+                                        currentUser &&
+                                          (msg.userReactions?.[emoji] || []).includes(
+                                            currentUser.uid
+                                          )
+                                      );
+                                      return count > 0 ? (
+                                        <AnimatedEmoteButton
                                           key={emoji}
-                                          type="button"
+                                          emote={emoji}
+                                          count={count}
+                                          active={hasUserReacted}
+                                          size="sm"
+                                          variant="dark"
                                           onClick={() => handleToggleReaction(msg, emoji)}
-                                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#23252c] hover:bg-[#2e313a] border border-white/10 text-xs font-mono font-bold text-white tabular-nums cursor-pointer transition-transform active:scale-95"
-                                        >
-                                          <span>{emoji}</span>
-                                          <span>{count}</span>
-                                        </button>
-                                      ) : null
-                                    )}
+                                        />
+                                      ) : null;
+                                    })}
 
                                     {effectiveReplyCount > 0 && (
                                       <button
@@ -3469,12 +3594,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               </div>
                             </div>
 
-                            {/* Hover & Touch Action Bar (Emoji Reactions, Reply, Thread, Edit, Delete, Report) */}
+                            {/* Hover & Touch Action Bar (3D Animated Emote Pack, Reply, Thread, Edit, Delete, Report) */}
                             <div
                               onClick={(e) => e.stopPropagation()}
                               className={`${
                                 isActionOpen ? 'flex' : 'hidden group-hover:flex'
-                              } items-center gap-0.5 absolute -top-3 right-2 sm:right-3 bg-[#1e2028] border border-white/15 rounded-xl px-1.5 py-1 shadow-xl z-10 max-w-[95vw] overflow-x-auto no-scrollbar`}
+                              } items-center gap-1 absolute -top-3.5 right-2 sm:right-3 bg-[#1e2028] border border-white/15 rounded-2xl px-2 py-1 shadow-xl z-10 max-w-[95vw] overflow-x-auto no-scrollbar`}
                             >
                               {QUICK_EMOJIS.map((emoji) => (
                                 <button
@@ -3485,9 +3610,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                     setActiveActionMessageId(null);
                                   }}
                                   title={`React with ${emoji}`}
-                                  className="p-1 rounded hover:bg-white/10 text-sm cursor-pointer transition-transform hover:scale-110 shrink-0"
+                                  className="p-1 rounded-lg hover:bg-white/10 cursor-pointer transition-transform hover:scale-125 active:scale-90 shrink-0 emote-3d-hover"
                                 >
-                                  {emoji}
+                                  <Emote3DIcon emote={emoji} size={18} />
                                 </button>
                               ))}
 
@@ -3801,8 +3926,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   className="hidden"
                 />
 
-                {/* Main Input Row */}
-                <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                {/* Main Input Row (Multi-Line Textarea + @Mention Autocomplete) */}
+                <form onSubmit={handleSendMessage} className="flex items-end gap-2">
                   {(!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator) && (
                     <>
                       <button
@@ -3832,8 +3957,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   )}
 
                   <div className="flex-1 relative min-w-0">
-                    <input
-                      type="text"
+                    <MentionAutocompletePopover
+                      inputValue={messageText}
+                      onSelectMention={(nextVal) => handleInputChange(nextVal)}
+                      overrideUsers={mentionableUsersList}
+                      position="above"
+                      variant="dark"
+                    />
+                    <textarea
+                      rows={Math.min(5, Math.max(1, messageText.split('\n').length))}
                       disabled={!canUserSendMessageInChannel}
                       value={messageText}
                       onChange={(e) => handleInputChange(e.target.value)}
@@ -3845,13 +3977,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             : !canUserSendMessageInChannel
                               ? 'Channel is locked or restricted'
                               : activeSubGroup
-                                ? `Message #${activeSubGroup.name}...`
-                                : `Message #${activeChannel.name}...`
+                                ? `Message #${activeSubGroup.name} (type @ to tag, Enter for new line)...`
+                                : `Message #${activeChannel.name} (type @ to tag, Enter for new line)...`
                       }
-                      className="w-full px-3.5 sm:px-4 py-3 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-white/30 disabled:opacity-50"
+                      className="w-full px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]/70 disabled:opacity-50 resize-none leading-relaxed max-h-36 overflow-y-auto"
                     />
                     {cooldownRemaining > 0 && !isSuperAdmin && !isCurrentChannelModerator && (
-                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-mono text-amber-400 tabular-nums">
+                      <span className="absolute right-3 top-3 text-[11px] font-mono text-amber-400 tabular-nums">
                         {cooldownRemaining}s
                       </span>
                     )}
@@ -4750,10 +4882,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <img
+                                  <VerifiedAvatarFrame
                                     src={getLiveUserAvatarUrl(reply.authorId)}
                                     alt={reply.authorName}
-                                    className="w-5 h-5 rounded-full object-cover border border-white/15 shrink-0"
+                                    isVerified={true}
+                                    sizeClass="w-6 h-6"
+                                    ringPaddingClass="p-[1.5px]"
                                   />
                                   <span
                                     className="font-mono text-xs font-bold truncate"
@@ -4804,19 +4938,33 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   }}
                                   className="space-y-2 pt-1"
                                 >
-                                  <input
-                                    type="text"
-                                    autoFocus
-                                    value={editingThreadReplyText}
-                                    onChange={(e) => setEditingThreadReplyText(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Escape') {
-                                        setEditingThreadReplyId(null);
-                                        setEditingThreadReplyText('');
+                                  <div className="relative">
+                                    <MentionAutocompletePopover
+                                      inputValue={editingThreadReplyText}
+                                      onSelectMention={(nextVal) =>
+                                        setEditingThreadReplyText(nextVal)
                                       }
-                                    }}
-                                    className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-[#FFF025] text-xs font-mono text-white focus:outline-none"
-                                  />
+                                      overrideUsers={mentionableUsersList}
+                                      position="above"
+                                      variant="dark"
+                                    />
+                                    <textarea
+                                      rows={Math.min(
+                                        5,
+                                        Math.max(2, editingThreadReplyText.split('\n').length)
+                                      )}
+                                      autoFocus
+                                      value={editingThreadReplyText}
+                                      onChange={(e) => setEditingThreadReplyText(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Escape') {
+                                          setEditingThreadReplyId(null);
+                                          setEditingThreadReplyText('');
+                                        }
+                                      }}
+                                      className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-[#FFF025] text-xs font-mono text-white focus:outline-none resize-y"
+                                    />
+                                  </div>
                                   <div className="flex items-center gap-1.5 text-[10px]">
                                     <button
                                       type="submit"
@@ -4839,8 +4987,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 </form>
                               ) : (
                                 <div className="flex items-baseline gap-1.5 flex-wrap">
-                                  <p className="text-xs font-mono text-white/85 leading-relaxed break-words">
-                                    {reply.text}
+                                  <p className="text-xs font-mono text-white/85 leading-relaxed whitespace-pre-wrap break-words">
+                                    {renderTextWithMentions(
+                                      reply.text,
+                                      builderProfile?.displayName,
+                                      mentionableUsersList
+                                    )}
                                   </p>
                                   {reply.isEdited && (
                                     <span className="text-[10px] font-mono text-white/40">
@@ -4865,13 +5017,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <div className="flex items-center gap-2 min-w-0">
-                                  <img
+                                  <VerifiedAvatarFrame
                                     src={getLiveUserAvatarUrl(
                                       inlineMsg.authorId,
                                       inlineMsg.authorAvatar
                                     )}
                                     alt={inlineMsg.authorName}
-                                    className="w-5 h-5 rounded-full object-cover border border-white/15 shrink-0"
+                                    isVerified={true}
+                                    sizeClass="w-6 h-6"
+                                    ringPaddingClass="p-[1.5px]"
                                   />
                                   <span
                                     className="font-mono text-xs font-bold truncate"
@@ -4908,8 +5062,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   )}
                                 </div>
                               </div>
-                              <p className="text-xs font-mono text-white/85 leading-relaxed break-words">
-                                {inlineMsg.text}
+                              <p className="text-xs font-mono text-white/85 leading-relaxed whitespace-pre-wrap break-words">
+                                {renderTextWithMentions(
+                                  inlineMsg.text,
+                                  builderProfile?.displayName,
+                                  mentionableUsersList
+                                )}
                               </p>
                             </div>
                           );
@@ -4921,18 +5079,29 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
                 <form
                   onSubmit={handleSendThreadReply}
-                  className="p-3 border-t border-white/10 flex items-center gap-2 bg-[#141519]"
+                  className="p-3 border-t border-white/10 flex items-end gap-2 bg-[#141519]"
                 >
-                  <input
-                    type="text"
-                    disabled={userStatus === 'suspended'}
-                    value={threadInput}
-                    onChange={(e) => setThreadInput(e.target.value)}
-                    placeholder={
-                      userStatus === 'suspended' ? 'Suspended (Read-Only)' : 'Reply to thread...'
-                    }
-                    className="flex-1 px-3 py-2.5 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50"
-                  />
+                  <div className="relative flex-1 min-w-0">
+                    <MentionAutocompletePopover
+                      inputValue={threadInput}
+                      onSelectMention={(nextVal) => setThreadInput(nextVal)}
+                      overrideUsers={mentionableUsersList}
+                      position="above"
+                      variant="dark"
+                    />
+                    <textarea
+                      rows={Math.min(4, Math.max(1, threadInput.split('\n').length))}
+                      disabled={userStatus === 'suspended'}
+                      value={threadInput}
+                      onChange={(e) => setThreadInput(e.target.value)}
+                      placeholder={
+                        userStatus === 'suspended'
+                          ? 'Suspended (Read-Only)'
+                          : 'Reply to thread (type @ to tag, Enter for new line)...'
+                      }
+                      className="w-full px-3 py-2 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50 resize-none leading-relaxed"
+                    />
+                  </div>
                   <button
                     type="submit"
                     disabled={userStatus === 'suspended'}
@@ -4983,14 +5152,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="relative shrink-0">
-                                <img
-                                  src={getLiveUserAvatarUrl(member.uid, member.avatarUrl)}
-                                  alt={member.displayName}
-                                  className="w-8 h-8 rounded-full object-cover border border-white/20"
-                                />
+                              <VerifiedAvatarFrame
+                                src={getLiveUserAvatarUrl(member.uid, member.avatarUrl)}
+                                alt={member.displayName}
+                                isVerified={true}
+                                sizeClass="w-8 h-8"
+                                ringPaddingClass="p-[2px]"
+                              >
                                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#121317]" />
-                              </div>
+                              </VerifiedAvatarFrame>
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-white truncate">
                                   {getLiveUserDisplayName(member.uid, member.displayName)}
@@ -5028,18 +5198,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                <div className="relative shrink-0">
-                                  <img
-                                    src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
-                                    alt={u.displayName}
-                                    className="w-8 h-8 rounded-full object-cover border border-white/20"
-                                  />
+                                <VerifiedAvatarFrame
+                                  src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
+                                  alt={u.displayName}
+                                  isVerified={true}
+                                  sizeClass="w-8 h-8"
+                                  ringPaddingClass="p-[2px]"
+                                >
                                   <span
                                     className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#121317] ${
                                       isOnline ? 'bg-emerald-400' : 'bg-white/25'
                                     }`}
                                   />
-                                </div>
+                                </VerifiedAvatarFrame>
                                 <div className="min-w-0">
                                   <div className="text-xs font-bold text-white truncate flex items-center gap-1">
                                     <span className="truncate">{u.displayName}</span>

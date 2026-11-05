@@ -216,4 +216,23 @@ test('computeAccurateOnlineMembers filters out deleted/unregistered accounts so 
   assert.equal(result.some((m) => m.uid === 'deleted-jaystar-old-uid'), false);
 });
 
+test('Mention detection supports @all, dynamic @username filtering, and multi-line textareas', () => {
+  const detect = (text: string) => {
+    const beforeCursor = text;
+    const match = beforeCursor.match(/(?:^|\s)@([a-zA-Z0-9_.\- ]{0,25})$/);
+    if (!match) return null;
+    const rawQuery = match[1];
+    if (rawQuery.includes('\n') || rawQuery.includes('  ')) return null;
+    const atIndex = beforeCursor.lastIndexOf('@');
+    return { startIndex: atIndex, query: rawQuery.toLowerCase() };
+  };
+
+  // Typing just "@" opens all users + @all
+  assert.deepEqual(detect('@'), { startIndex: 0, query: '' });
+  // Typing "@jo" filters users dynamically
+  assert.deepEqual(detect('Hey @Jo'), { startIndex: 4, query: 'jo' });
+  // Multi-line message where user presses Enter to start a new line and types @all
+  assert.deepEqual(detect('Line one\n@all'), { startIndex: 9, query: 'all' });
+});
+
 

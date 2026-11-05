@@ -50,6 +50,7 @@ import {
   ensurePublicUserProfile,
   buildFallbackBuilderProfile,
   isSuperAdminUser,
+  isApprovedStudentMember,
   BuilderProfile,
   User,
 } from './firebase.ts';
@@ -66,11 +67,23 @@ import {
   detectStandaloneAppLaunch,
   setStandaloneAppSession,
 } from './utils/usePWAInstall.ts';
+import { NotificationPromptModal } from './components/NotificationPromptModal.tsx';
+import {
+  isBrowserNotificationSupported,
+  getBrowserNotificationPermission,
+  hasDismissedNotificationPromptThisSession,
+  registerNotificationServiceWorker,
+  loadNotificationPreferences,
+  dispatchMessageBrowserNotification,
+  triggerSystemDesktopNotification,
+} from './utils/notifications.ts';
+import { resolveBuilderAvatarUrl } from './utils/avatars.ts';
 
 // Types
 import { ProjectItem, DiscussionPost, ChallengeItem } from './types/index.ts';
 
 const HUB_OPEN_STORAGE_KEY = 'buildbuds_hub_open';
+const FIRST_TIME_AUTH_PROMPTED_KEY = 'buildbuds_first_auth_prompted_session';
 
 function BuildBudsApp() {
   const { isDark } = useTheme();
@@ -163,6 +176,12 @@ function BuildBudsApp() {
   const [activeChallengeModal, setActiveChallengeModal] = useState<ChallengeItem | null>(null);
   const [isGuidelinesOpen, setIsGuidelinesOpen] = useState(false);
   const [isShareProjectOpen, setIsShareProjectOpen] = useState(false);
+  const [isNotifPromptOpen, setIsNotifPromptOpen] = useState(false);
+
+  const initialPostsSnapshotSeenRef = useRef(false);
+  const knownPostIdsRef = useRef<Set<string>>(new Set());
+  const initialGlobalMessagesSeenRef = useRef(false);
+  const knownGlobalMessageIdsRef = useRef<Set<string>>(new Set());
 
   const navigateTo = useCallback((path: string) => {
     if (path.startsWith('/#')) {
@@ -284,21 +303,191 @@ function BuildBudsApp() {
     };
   }, [currentUser?.uid]);
 
+  // First-time sign-in prompt & Push Notification Prompt Modal on App Open
+  useEffect(() => {
+    if (isAuthChecking) return;
+
+    // If notifications are already granted, ensure Service Worker is active
+    if (isBrowserNotificationSupported() && getBrowserNotificationPermission() === 'granted') {
+      registerNotificationServiceWorker();
+    }
+
+    // If user is not signed in yet when opening the app for the first time, request Sign In / Login
+    if (!currentUser && !isStandaloneAppMode) {
+      let alreadyPrompted = false;
+      try {
+        alreadyPrompted = window.sessionStorage.getItem(FIRST_TIME_AUTH_PROMPTED_KEY) === '1';
+      } catch {
+        // Ignore
+      }
+      if (!alreadyPrompted) {
+        try {
+          window.sessionStorage.setItem(FIRST_TIME_AUTH_PROMPTED_KEY, '1');
+        } catch {
+          // Ignore
+        }
+        setPublicAuthMode('signin');
+        setPublicAuthDescription(
+          'sign in to your Build Buds account (or create one if this is your first time)'
+        );
+        setIsPublicAuthOpen(true);
+      }
+    }
+
+    // Show "Do you want to receive notifications from Build Buds?" modal once user is in the app
+    // and browser notification permission is still 'default'
+    if (
+      isBrowserNotificationSupported() &&
+      getBrowserNotificationPermission() === 'default' &&
+      !hasDismissedNotificationPromptThisSession()
+    ) {
+      const timer = window.setTimeout(() => {
+        setIsNotifPromptOpen(true);
+      }, 900);
+      return () => window.clearTimeout(timer);
+    }
+  }, [isAuthChecking, currentUser, isStandaloneAppMode]);
+
+  // Listen for Service Worker notification clicks to navigate to the target channel or post
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'BUILDBUDS_NOTIFICATION_CLICK') {
+        if (event.data.channelId) {
+          setHubChannelId(event.data.channelId);
+          navigateTo(`/hub?channel=${encodeURIComponent(event.data.channelId)}`);
+        } else if (event.data.actionUrl) {
+          navigateTo(event.data.actionUrl);
+        }
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+  }, [navigateTo]);
+
+  // Global real-time desktop/PC notification listener for:
+  // 1) New Public Community Posts / Updates (`publicPosts`)
+  // 2) New Chat Messages (`messages`) when user is outside `/hub`
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // 1. Listen for new community posts/updates
+    initialPostsSnapshotSeenRef.current = false;
+    knownPostIdsRef.current.clear();
+    const postsQ = query(collection(db, 'publicPosts'), orderBy('createdAt', 'desc'), limit(30));
+    const unsubPosts = onSnapshot(
+      postsQ,
+      (snap) => {
+        if (!initialPostsSnapshotSeenRef.current) {
+          snap.docs.forEach((d) => knownPostIdsRef.current.add(d.id));
+          initialPostsSnapshotSeenRef.current = true;
+          return;
+        }
+        snap.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const postId = change.doc.id;
+          if (knownPostIdsRef.current.has(postId)) return;
+          knownPostIdsRef.current.add(postId);
+
+          const post = change.doc.data() as PublicPost;
+          if (post.authorId === currentUser.uid) return;
+          if (post.status && post.status !== 'published') return;
+          const createdMs = post.createdAt ? new Date(post.createdAt).getTime() : Date.now();
+          if (Date.now() - createdMs > 120000) return;
+
+          const prefs = loadNotificationPreferences();
+          if (prefs.explicitlyDisabled) return;
+
+          triggerSystemDesktopNotification({
+            title: `🚀 New on Build Buds: ${post.title}`,
+            body: `${post.authorName} published in ${post.categoryName || 'Community'}: ${
+              post.summary || post.body || ''
+            }`,
+            tag: `buildbuds-post-${postId}`,
+            iconUrl: resolveBuilderAvatarUrl(post.authorAvatar, post.authorId),
+            actionUrl: `/community/posts/${postId}`,
+            onClick: () => navigateTo(`/community/posts/${postId}`),
+          });
+        });
+      },
+      () => {}
+    );
+
+    // 2. Listen for new chat messages when user is not currently on `/hub` (since `/hub` has its own listener)
+    const isOnHubPage = currentPath.split('?')[0] === '/hub';
+    let unsubMsgs = () => {};
+    if (!isOnHubPage) {
+      initialGlobalMessagesSeenRef.current = false;
+      knownGlobalMessageIdsRef.current.clear();
+      const msgsQ = query(collection(db, 'messages'), limit(80));
+      unsubMsgs = onSnapshot(
+        msgsQ,
+        (snap) => {
+          if (!initialGlobalMessagesSeenRef.current) {
+            snap.docs.forEach((d) => knownGlobalMessageIdsRef.current.add(d.id));
+            initialGlobalMessagesSeenRef.current = true;
+            return;
+          }
+          snap.docChanges().forEach((change) => {
+            if (change.type !== 'added') return;
+            const msgId = change.doc.id;
+            if (knownGlobalMessageIdsRef.current.has(msgId)) return;
+            knownGlobalMessageIdsRef.current.add(msgId);
+
+            const data = change.doc.data();
+            const createdMs = data.createdAt?.toMillis
+              ? data.createdAt.toMillis()
+              : Number(data.createdAtMillis || Date.now());
+            if (Date.now() - createdMs > 60000) return;
+
+            const baseChannelId = String(data.channelId || 'general-chat').split('__group__')[0];
+            dispatchMessageBrowserNotification({
+              messageId: msgId,
+              channelId: String(data.channelId || 'general-chat'),
+              channelName: baseChannelId,
+              authorId: String(data.authorId || ''),
+              authorName: String(data.authorName || 'Builder'),
+              authorAvatarUrl: resolveBuilderAvatarUrl(
+                data.authorAvatar,
+                String(data.authorId || 'builder')
+              ),
+              text: String(data.text || ''),
+              currentUserId: currentUser.uid,
+              currentUserDisplayName: builderProfile?.displayName,
+              preferences: loadNotificationPreferences(),
+              onNavigateToChannel: (targetCh) => {
+                setHubChannelId(targetCh);
+                navigateTo(`/hub?channel=${encodeURIComponent(targetCh)}`);
+              },
+            });
+          });
+        },
+        () => {}
+      );
+    }
+
+    return () => {
+      unsubPosts();
+      unsubMsgs();
+    };
+  }, [currentUser?.uid, builderProfile?.displayName, currentPath, navigateTo]);
+
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
 
-  // Strict Student Hub Approval Gate:
-  // Only approved students (`communityMemberships/{uid}.status === 'approved'`) or Admins can enter `/hub`
-  const isApprovedForHub = Boolean(
-    isAdmin || (membership && membership.status === 'approved')
-  );
+  // Student Hub Approval Gate:
+  // Approved students (`communityMemberships/{uid}.status === 'approved'`), pre-existing Student Hub builders, or Admins can enter `/hub`
+  const isApprovedForHub = isApprovedStudentMember({
+    user: currentUser,
+    profile: builderProfile,
+    membership,
+    studentRequest,
+  });
 
-  const studentAccessStatus: StudentAccessStatus = isAdmin
+  const studentAccessStatus: StudentAccessStatus = isApprovedForHub
     ? 'approved'
-    : membership?.status === 'approved'
-      ? 'approved'
-      : membership?.status === 'suspended' || studentRequest?.status === 'suspended'
-        ? 'suspended'
-        : studentRequest?.status || 'not_requested';
+    : membership?.status === 'suspended' || studentRequest?.status === 'suspended'
+      ? 'suspended'
+      : studentRequest?.status || 'not_requested';
 
   const handleRequirePublicAuth = (
     description: string,
@@ -367,8 +556,8 @@ function BuildBudsApp() {
   const handleLaunchStandaloneApp = () => {
     setStandaloneAppSession(true);
     setIsStandaloneAppMode(true);
-    if (currentUser && builderProfile && isApprovedForHub) {
-      navigateTo('/hub');
+    if (currentUser) {
+      navigateTo('/community');
     } else {
       setJoinModalMode('signin');
     }
@@ -390,35 +579,97 @@ function BuildBudsApp() {
     setActiveProjectModal(newProject);
   };
 
-  // Global Public Auth Modal (rendered across all routes)
+  // Global Public Auth Modal + Push Notification Prompt Modal (rendered across all routes)
   const publicAuthModalElement = (
-    <PublicAuthModal
-      isOpen={isPublicAuthOpen || currentPath === '/login'}
-      initialMode={publicAuthMode}
-      actionDescription={publicAuthDescription}
-      onClose={() => {
-        setIsPublicAuthOpen(false);
-        afterPublicAuthCallbackRef.current = null;
-        if (currentPath === '/login') {
-          navigateTo('/community');
-        }
-      }}
-      onSuccess={(profile, user) => {
-        setCurrentUser(user);
-        setBuilderProfile(profile);
-        setIsPublicAuthOpen(false);
-        if (currentPath === '/login') {
-          navigateTo('/community');
-        }
-        const cb = afterPublicAuthCallbackRef.current;
-        afterPublicAuthCallbackRef.current = null;
-        cb?.();
-      }}
-    />
+    <>
+      <PublicAuthModal
+        isOpen={isPublicAuthOpen || currentPath === '/login'}
+        initialMode={publicAuthMode}
+        actionDescription={publicAuthDescription}
+        onClose={() => {
+          setIsPublicAuthOpen(false);
+          afterPublicAuthCallbackRef.current = null;
+          if (currentPath === '/login') {
+            navigateTo('/community');
+          }
+        }}
+        onSuccess={(profile, user) => {
+          setCurrentUser(user);
+          setBuilderProfile(profile);
+          setIsPublicAuthOpen(false);
+          if (currentPath === '/login') {
+            navigateTo('/community');
+          }
+          const cb = afterPublicAuthCallbackRef.current;
+          afterPublicAuthCallbackRef.current = null;
+          cb?.();
+        }}
+      />
+      <NotificationPromptModal
+        isOpen={isNotifPromptOpen && !isPublicAuthOpen && currentPath !== '/login'}
+        onClose={() => setIsNotifPromptOpen(false)}
+      />
+    </>
   );
 
   const cleanPathname = currentPath.split('?')[0];
   const queryString = currentPath.includes('?') ? currentPath.split('?')[1] : '';
+
+  // STANDALONE DOWNLOADED WEB APP FIRST-TIME SIGN-IN GATE:
+  // When opened as a downloaded/installed Web App, if the user is not signed in yet,
+  // prompt them with the dedicated Sign-In / Sign-Up screen first; once signed in (and on all
+  // subsequent launches), take them directly to the Community Main Page (`/community`).
+  if (isStandaloneAppMode && cleanPathname !== '/hub' && !cleanPathname.startsWith('/student-access') && !cleanPathname.startsWith('/admin')) {
+    if (isAuthChecking) {
+      return (
+        <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
+          <img
+            src="/assets/aistudio/images/aurora-logo.png"
+            alt="Build Buds App"
+            className="w-16 h-16 rounded-3xl object-contain drop-shadow-2xl mb-4 animate-pulse"
+          />
+          <div className="font-chewy text-2xl text-[#FFF025] tracking-wide">Build Buds</div>
+          <div className="text-xs font-mono text-white/60 mt-1">
+            Restoring your Build Buds session...
+          </div>
+          <OfflineIndicator />
+        </div>
+      );
+    }
+
+    if (!currentUser) {
+      return (
+        <div className="min-h-screen bg-[#06060c] text-white relative">
+          <SpaceBackdrop />
+          <JoinModal
+            key={`standalone-${joinModalMode}`}
+            isOpen={true}
+            initialMode={joinModalMode}
+            isStandaloneAppScreen={true}
+            onBrowseWebsite={() => {
+              setStandaloneAppSession(false);
+              setIsStandaloneAppMode(false);
+              navigateTo('/community');
+            }}
+            onAuthBusyChange={(busy) => {
+              isAuthModalBusyRef.current = busy;
+            }}
+            onClose={() => {
+              setStandaloneAppSession(false);
+              setIsStandaloneAppMode(false);
+              navigateTo('/community');
+            }}
+            onSuccess={(profile, user) => {
+              setCurrentUser(user);
+              setBuilderProfile(profile);
+              navigateTo('/community');
+            }}
+          />
+          <OfflineIndicator />
+        </div>
+      );
+    }
+  }
 
   // ROUTE 1: ADMIN STUDENT VERIFICATION DASHBOARD (/admin/student-access)
   if (cleanPathname.startsWith('/admin/student-access')) {
@@ -457,8 +708,109 @@ function BuildBudsApp() {
     );
   }
 
-  // ROUTE 3: PUBLIC COMMUNITY DISCOVERY PAGES (/community, /community/creations, /community/updates, /community/challenges, /community/posts/:id, /login)
-  if (cleanPathname.startsWith('/community') || cleanPathname === '/login') {
+  // ROUTE 3: PRIVATE REAL-TIME STUDENT HUB (/hub)
+  if (cleanPathname === '/hub') {
+    if (isAuthChecking) {
+      return (
+        <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
+          <img
+            src="/assets/aistudio/images/aurora-logo.png"
+            alt="Build Buds App"
+            className="w-16 h-16 rounded-3xl object-contain drop-shadow-2xl mb-4 animate-pulse"
+          />
+          <div className="font-chewy text-2xl text-[#FFF025] tracking-wide">Build Buds</div>
+          <div className="text-xs font-mono text-white/60 mt-1">
+            Verifying your account & student membership...
+          </div>
+          <OfflineIndicator />
+        </div>
+      );
+    }
+
+    // Only approved students or admins can enter the private CommunityHub
+    if (currentUser && builderProfile && isApprovedForHub) {
+      return (
+        <>
+          <CommunityHub
+            currentUser={currentUser}
+            builderProfile={builderProfile}
+            initialChannelId={hubChannelId}
+            isStandaloneApp={false}
+            onBackToLanding={() => {
+              try {
+                localStorage.setItem(HUB_OPEN_STORAGE_KEY, '0');
+              } catch {
+                // Ignore
+              }
+              navigateTo('/community');
+            }}
+            onOpenAuthModal={(mode) => {
+              setJoinModalMode(mode);
+              setIsJoinModalOpen(true);
+            }}
+            onProfileUpdated={(profile) => setBuilderProfile(profile)}
+          />
+          {publicAuthModalElement}
+          <OfflineIndicator />
+        </>
+      );
+    }
+
+    // If signed in, but NOT yet an approved Jaystarbliss Studios student -> show the Student Verification Page
+    if (currentUser) {
+      return (
+        <>
+          <StudentAccessPage
+            currentUser={currentUser}
+            builderProfile={builderProfile}
+            accessStatus={studentAccessStatus}
+            existingRequest={studentRequest}
+            isApprovedForHub={false}
+            viewMode={studentAccessStatus === 'not_requested' ? 'form' : 'status'}
+            onNavigate={navigateTo}
+            onRequireAuth={(desc) => handleRequirePublicAuth(desc)}
+            onRequestSubmitted={(req) => setStudentRequest(req)}
+          />
+          {publicAuthModalElement}
+          <OfflineIndicator />
+        </>
+      );
+    }
+
+    // If not signed in on `/hub` -> show Sign-In / Sign-Up screen
+    return (
+      <div className="min-h-screen bg-[#06060c] text-white relative">
+        <SpaceBackdrop />
+        <JoinModal
+          key={`standalone-${joinModalMode}`}
+          isOpen={true}
+          initialMode={joinModalMode}
+          isStandaloneAppScreen={true}
+          onBrowseWebsite={() => {
+            navigateTo('/community');
+          }}
+          onAuthBusyChange={(busy) => {
+            isAuthModalBusyRef.current = busy;
+          }}
+          onClose={() => {
+            navigateTo('/community');
+          }}
+          onSuccess={(profile, user) => {
+            setCurrentUser(user);
+            setBuilderProfile(profile);
+          }}
+        />
+        <OfflineIndicator />
+      </div>
+    );
+  }
+
+  // ROUTE 4 (DEFAULT APP ENTRY): PUBLIC COMMUNITY DISCOVERY MAIN PAGE (`/`, `/community`, `/community/*`, `/login`)
+  if (
+    cleanPathname === '/' ||
+    cleanPathname.startsWith('/community') ||
+    cleanPathname === '/login'
+  ) {
     let initialTab: PublicCommunityTab = 'all';
     let initialPostId: string | null = null;
 
@@ -499,113 +851,6 @@ function BuildBudsApp() {
         {publicAuthModalElement}
         <OfflineIndicator />
       </>
-    );
-  }
-
-  // ROUTE 4: PRIVATE REAL-TIME STUDENT HUB (/hub) OR STANDALONE DOWNLOADED WEB APP
-  if (cleanPathname === '/hub' || isStandaloneAppMode) {
-    if (isAuthChecking) {
-      return (
-        <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
-          <img
-            src="/assets/aistudio/images/aurora-logo.png"
-            alt="Build Buds App"
-            className="w-16 h-16 rounded-3xl object-contain drop-shadow-2xl mb-4 animate-pulse"
-          />
-          <div className="font-chewy text-2xl text-[#FFF025] tracking-wide">Build Buds</div>
-          <div className="text-xs font-mono text-white/60 mt-1">
-            Verifying your account & student membership...
-          </div>
-          <OfflineIndicator />
-        </div>
-      );
-    }
-
-    // Only approved students or admins can enter the private CommunityHub
-    if (currentUser && builderProfile && isApprovedForHub) {
-      return (
-        <>
-          <CommunityHub
-            currentUser={currentUser}
-            builderProfile={builderProfile}
-            initialChannelId={hubChannelId}
-            isStandaloneApp={isStandaloneAppMode}
-            onBackToLanding={() => {
-              setStandaloneAppSession(false);
-              setIsStandaloneAppMode(false);
-              try {
-                localStorage.setItem(HUB_OPEN_STORAGE_KEY, '0');
-              } catch {
-                // Ignore
-              }
-              navigateTo('/community');
-            }}
-            onOpenAuthModal={(mode) => {
-              setJoinModalMode(mode);
-              setIsJoinModalOpen(true);
-            }}
-            onProfileUpdated={(profile) => setBuilderProfile(profile)}
-          />
-          {publicAuthModalElement}
-          <OfflineIndicator />
-        </>
-      );
-    }
-
-    // If signed in, but NOT yet an approved Jaystarbliss Studios student -> show the Student Verification Page
-    if (currentUser) {
-      return (
-        <>
-          <StudentAccessPage
-            currentUser={currentUser}
-            builderProfile={builderProfile}
-            accessStatus={studentAccessStatus}
-            existingRequest={studentRequest}
-            isApprovedForHub={false}
-            viewMode={studentAccessStatus === 'not_requested' ? 'form' : 'status'}
-            onNavigate={(path) => {
-              if (path === '/' || path === '/community') {
-                setStandaloneAppSession(false);
-                setIsStandaloneAppMode(false);
-              }
-              navigateTo(path);
-            }}
-            onRequireAuth={(desc) => handleRequirePublicAuth(desc)}
-            onRequestSubmitted={(req) => setStudentRequest(req)}
-          />
-          {publicAuthModalElement}
-          <OfflineIndicator />
-        </>
-      );
-    }
-
-    // If not signed in on `/hub` or standalone app -> show Sign-In / Sign-Up screen
-    return (
-      <div className="min-h-screen bg-[#06060c] text-white relative">
-        <SpaceBackdrop />
-        <JoinModal
-          key={`standalone-${joinModalMode}`}
-          isOpen={true}
-          initialMode={joinModalMode}
-          isStandaloneAppScreen={true}
-          onBrowseWebsite={() => {
-            setStandaloneAppSession(false);
-            setIsStandaloneAppMode(false);
-            navigateTo('/community');
-          }}
-          onAuthBusyChange={(busy) => {
-            isAuthModalBusyRef.current = busy;
-          }}
-          onClose={() => {
-            navigateTo('/community');
-          }}
-          onSuccess={(profile, user) => {
-            setCurrentUser(user);
-            setBuilderProfile(profile);
-          }}
-        />
-        <OfflineIndicator />
-      </div>
     );
   }
 

@@ -65,6 +65,63 @@ export function toggleReaction(
 }
 
 /**
+ * Toggle reaction on a chat message ensuring each user can react at most ONCE per emoji (pure transform)
+ */
+export interface ToggleMessageReactionParams {
+  reactions?: Record<string, number>;
+  userReactions?: Record<string, string[]>;
+  emoji: string;
+  userId: string;
+}
+
+export interface ToggleMessageReactionResult {
+  reactions: Record<string, number>;
+  userReactions: Record<string, string[]>;
+  hasReacted: boolean;
+}
+
+export function toggleMessageReaction({
+  reactions = {},
+  userReactions = {},
+  emoji,
+  userId,
+}: ToggleMessageReactionParams): ToggleMessageReactionResult {
+  const nextReactions: Record<string, number> = { ...reactions };
+  const nextUserReactions: Record<string, string[]> = { ...userReactions };
+  const userList = [...(nextUserReactions[emoji] || [])];
+
+  const userIdx = userList.indexOf(userId);
+  let hasReacted = false;
+
+  if (userIdx >= 0) {
+    // Already reacted -> remove reaction (toggle OFF)
+    userList.splice(userIdx, 1);
+    nextReactions[emoji] = Math.max(0, (nextReactions[emoji] || 1) - 1);
+    if (nextReactions[emoji] === 0) {
+      delete nextReactions[emoji];
+    }
+    hasReacted = false;
+  } else {
+    // Not reacted yet -> add reaction (toggle ON)
+    userList.push(userId);
+    nextReactions[emoji] = (nextReactions[emoji] || 0) + 1;
+    hasReacted = true;
+  }
+
+  if (userList.length > 0) {
+    nextUserReactions[emoji] = userList;
+  } else {
+    delete nextUserReactions[emoji];
+  }
+
+  return {
+    reactions: nextReactions,
+    userReactions: nextUserReactions,
+    hasReacted,
+  };
+}
+
+/**
  * Add a reply to a discussion post
  */
 export function addReplyToPost(

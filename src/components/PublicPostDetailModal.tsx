@@ -47,6 +47,13 @@ import {
   deleteOrRemovePublicComment,
 } from '../utils/communityService.ts';
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
+import {
+  VerifiedAvatarFrame,
+  AnimatedEmoteButton,
+  MentionAutocompletePopover,
+  renderTextWithMentions,
+  useMentionableUsers,
+} from './MentionAndEmotes.tsx';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface PublicPostDetailModalProps {
@@ -91,6 +98,16 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
   const isOwner = Boolean(currentUser && post && currentUser.uid === post.authorId);
+  const directoryUsers = useMentionableUsers();
+  const verifiedUserIds = React.useMemo(() => {
+    const s = new Set<string>();
+    directoryUsers.forEach((u) => {
+      if (u.isVerifiedStudent || u.role === 'admin' || u.role === 'moderator') {
+        s.add(u.uid);
+      }
+    });
+    return s;
+  }, [directoryUsers]);
 
   useEffect(() => {
     setActiveImageIndex(0);
@@ -466,11 +483,17 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
               }`}
             >
               <div className="flex items-center gap-3">
-                <img
+                <VerifiedAvatarFrame
                   src={resolveBuilderAvatarUrl(post.authorAvatar, post.authorId)}
                   alt={post.authorName}
-                  className="w-11 h-11 rounded-full border-2 border-black object-cover"
-                  style={{ backgroundColor: post.authorColor || '#FFF025' }}
+                  isVerified={
+                    post.authorRole === 'admin' ||
+                    post.authorRole === 'moderator' ||
+                    verifiedUserIds.has(post.authorId) ||
+                    !post.authorId.startsWith('seed-')
+                  }
+                  sizeClass="w-11 h-11"
+                  ringPaddingClass="p-[2.5px]"
                 />
                 <div>
                   <div className="flex items-center gap-2">
@@ -658,7 +681,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
               isDark ? 'text-slate-100' : 'text-slate-900'
             }`}
           >
-            {post.body}
+            {renderTextWithMentions(post.body, builderProfile?.displayName, directoryUsers)}
           </div>
 
           {/* Tags */}
@@ -677,7 +700,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
             </div>
           )}
 
-          {/* Persistent Reactions Bar */}
+          {/* Persistent Reactions Bar (3D Animated Emote Pack) */}
           <div
             className={`pt-4 border-t-2 flex flex-wrap items-center justify-between gap-4 ${
               isDark ? 'border-white/15' : 'border-black/10'
@@ -688,26 +711,16 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 const count = post.reactionCounts?.[opt.type] || 0;
                 const active = userReactions.includes(opt.type);
                 return (
-                  <button
+                  <AnimatedEmoteButton
                     key={opt.type}
-                    type="button"
+                    emote={opt.type}
+                    count={count}
+                    active={active}
+                    title={opt.label}
+                    size="md"
+                    variant={isDark ? 'dark' : 'light'}
                     onClick={() => handleReact(opt.type)}
-                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border-2 border-black text-xs font-black cursor-pointer transition-transform active:scale-95 ${
-                      active
-                        ? 'bg-[#FFF025] text-black brand-shadow-sm'
-                        : isDark
-                        ? 'bg-[#1b1b2f] hover:bg-white/10 text-white'
-                        : 'bg-white hover:bg-slate-100 text-black'
-                    }`}
-                  >
-                    <span className="text-base">{opt.emoji}</span>
-                    <span>{opt.label}</span>
-                    {count > 0 && (
-                      <span className="ml-0.5 px-1.5 py-0.2 rounded-md bg-black text-white text-[11px]">
-                        {count}
-                      </span>
-                    )}
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -730,20 +743,29 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
               Community Discussion ({comments.length})
             </h3>
 
-            {/* Comment Composer */}
+            {/* Comment Composer with Multi-Line Support & @Mention Autocomplete */}
             {currentUser && builderProfile ? (
               <form onSubmit={handleAddTopLevelComment} className="space-y-2.5">
-                <textarea
-                  rows={3}
-                  value={newCommentText}
-                  onChange={(e) => setNewCommentText(e.target.value)}
-                  placeholder="Share constructive feedback, ask a question, or encourage the creator..."
-                  className={`w-full px-4 py-3 text-sm rounded-2xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
-                    isDark
-                      ? 'bg-[#1b1b2f] text-white placeholder:text-slate-400'
-                      : 'bg-white text-black placeholder:text-slate-400'
-                  }`}
-                />
+                <div className="relative">
+                  <MentionAutocompletePopover
+                    inputValue={newCommentText}
+                    onSelectMention={(nextVal) => setNewCommentText(nextVal)}
+                    overrideUsers={directoryUsers}
+                    position="above"
+                    variant={isDark ? 'dark' : 'light'}
+                  />
+                  <textarea
+                    rows={3}
+                    value={newCommentText}
+                    onChange={(e) => setNewCommentText(e.target.value)}
+                    placeholder="Share constructive feedback, type @ to tag a builder or @all, or press Enter for a new line..."
+                    className={`w-full px-4 py-3 text-sm rounded-2xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
+                      isDark
+                        ? 'bg-[#1b1b2f] text-white placeholder:text-slate-400'
+                        : 'bg-white text-black placeholder:text-slate-400'
+                    }`}
+                  />
+                </div>
                 <div className="flex justify-end">
                   <button
                     type="submit"
@@ -801,11 +823,16 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-2.5">
-                          <img
+                          <VerifiedAvatarFrame
                             src={resolveBuilderAvatarUrl(comment.authorAvatar, comment.authorId)}
                             alt={comment.authorName}
-                            className="w-8 h-8 rounded-full border border-black object-cover"
-                            style={{ backgroundColor: comment.authorColor || '#FFF025' }}
+                            isVerified={
+                              comment.authorRole === 'admin' ||
+                              comment.authorRole === 'moderator' ||
+                              verifiedUserIds.has(comment.authorId)
+                            }
+                            sizeClass="w-8 h-8"
+                            ringPaddingClass="p-[2px]"
                           />
                           <div>
                             <div className="flex items-center gap-1.5">
@@ -897,14 +924,23 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
 
                       {editingCommentId === comment.id ? (
                         <div className="space-y-2">
-                          <textarea
-                            rows={2}
-                            value={editingCommentText}
-                            onChange={(e) => setEditingCommentText(e.target.value)}
-                            className={`w-full px-3 py-2 text-sm rounded-xl border-2 border-black ${
-                              isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
-                            }`}
-                          />
+                          <div className="relative">
+                            <MentionAutocompletePopover
+                              inputValue={editingCommentText}
+                              onSelectMention={(nextVal) => setEditingCommentText(nextVal)}
+                              overrideUsers={directoryUsers}
+                              position="above"
+                              variant={isDark ? 'dark' : 'light'}
+                            />
+                            <textarea
+                              rows={2}
+                              value={editingCommentText}
+                              onChange={(e) => setEditingCommentText(e.target.value)}
+                              className={`w-full px-3 py-2 text-sm rounded-xl border-2 border-black ${
+                                isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
+                              }`}
+                            />
+                          </div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -926,30 +962,43 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                         </div>
                       ) : (
                         <p
-                          className={`text-sm whitespace-pre-line leading-relaxed ${
+                          className={`text-sm whitespace-pre-wrap leading-relaxed ${
                             isDark ? 'text-slate-100' : 'text-slate-900'
                           }`}
                         >
-                          {comment.text}
+                          {renderTextWithMentions(
+                            comment.text,
+                            builderProfile?.displayName,
+                            directoryUsers
+                          )}
                         </p>
                       )}
 
-                      {/* Inline Reply Box */}
+                      {/* Inline Reply Box with @Mention Autocomplete */}
                       {replyingToId === comment.id && (
                         <div
                           className={`pl-4 border-l-2 pt-2 space-y-2 ${
                             isDark ? 'border-white/20' : 'border-black/20'
                           }`}
                         >
-                          <textarea
-                            rows={2}
-                            value={replyText}
-                            onChange={(e) => setReplyText(e.target.value)}
-                            placeholder={`Reply to ${comment.authorName}...`}
-                            className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${
-                              isDark ? 'bg-[#121222] text-white' : 'bg-slate-50 text-black'
-                            }`}
-                          />
+                          <div className="relative">
+                            <MentionAutocompletePopover
+                              inputValue={replyText}
+                              onSelectMention={(nextVal) => setReplyText(nextVal)}
+                              overrideUsers={directoryUsers}
+                              position="above"
+                              variant={isDark ? 'dark' : 'light'}
+                            />
+                            <textarea
+                              rows={2}
+                              value={replyText}
+                              onChange={(e) => setReplyText(e.target.value)}
+                              placeholder={`Reply to ${comment.authorName} (type @ to tag, Enter for new line)...`}
+                              className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${
+                                isDark ? 'bg-[#121222] text-white' : 'bg-slate-50 text-black'
+                              }`}
+                            />
+                          </div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -989,14 +1038,19 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                               >
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="flex items-center gap-2">
-                                    <img
+                                    <VerifiedAvatarFrame
                                       src={resolveBuilderAvatarUrl(
                                         reply.authorAvatar,
                                         reply.authorId
                                       )}
                                       alt={reply.authorName}
-                                      className="w-6 h-6 rounded-full border border-black object-cover"
-                                      style={{ backgroundColor: reply.authorColor || '#FFF025' }}
+                                      isVerified={
+                                        reply.authorRole === 'admin' ||
+                                        reply.authorRole === 'moderator' ||
+                                        verifiedUserIds.has(reply.authorId)
+                                      }
+                                      sizeClass="w-6 h-6"
+                                      ringPaddingClass="p-[1.5px]"
                                     />
                                     <span className="text-xs font-black">
                                       {reply.authorName}
@@ -1021,11 +1075,15 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                   )}
                                 </div>
                                 <p
-                                  className={`text-xs sm:text-sm whitespace-pre-line ${
+                                  className={`text-xs sm:text-sm whitespace-pre-wrap ${
                                     isDark ? 'text-slate-200' : 'text-slate-800'
                                   }`}
                                 >
-                                  {reply.text}
+                                  {renderTextWithMentions(
+                                    reply.text,
+                                    builderProfile?.displayName,
+                                    directoryUsers
+                                  )}
                                 </p>
                               </div>
                             );

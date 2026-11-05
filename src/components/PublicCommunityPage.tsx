@@ -86,6 +86,11 @@ import {
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 import { PublicPostComposer } from './PublicPostComposer.tsx';
 import { PublicPostDetailModal } from './PublicPostDetailModal.tsx';
+import {
+  VerifiedAvatarFrame,
+  AnimatedEmoteButton,
+  useMentionableUsers,
+} from './MentionAndEmotes.tsx';
 
 export type PublicCommunityTab =
   | 'all'
@@ -207,6 +212,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
+  const directoryUsers = useMentionableUsers();
+  const verifiedUserIds = useMemo(() => {
+    const s = new Set<string>();
+    directoryUsers.forEach((u) => {
+      if (u.isVerifiedStudent || u.role === 'admin' || u.role === 'moderator') {
+        s.add(u.uid);
+      }
+    });
+    return s;
+  }, [directoryUsers]);
   const canPublish = canUserPublishPublicContent({
     isAuthenticated: Boolean(currentUser),
     isApprovedForHub,
@@ -826,7 +841,8 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
           <div className="flex items-center gap-4 min-w-0">
             <button
               type="button"
-              onClick={() => onNavigate('/')}
+              onClick={() => onNavigate('/home')}
+              title="Visit Build Buds Website Home"
               className="focus:outline-none cursor-pointer text-left shrink-0"
             >
               <BrandLogo size="sm" />
@@ -998,13 +1014,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 type="button"
                 onClick={() => {
                   setIsMobileNavOpen(false);
-                  onNavigate('/');
+                  onNavigate('/home');
                 }}
                 className={`py-2 px-3 rounded-xl border-2 border-black text-xs font-black text-left ${
                   isDark ? 'bg-[#1a1a2e] text-white' : 'bg-white text-black'
                 }`}
               >
-                Home
+                Website Home
               </button>
               <button
                 type="button"
@@ -1557,16 +1573,20 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
                       <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
                         <div className="flex items-center gap-2.5">
-                          <img
+                          <VerifiedAvatarFrame
                             src={resolveBuilderAvatarUrl(
                               featuredBannerPost.authorAvatar,
                               featuredBannerPost.authorId
                             )}
                             alt={featuredBannerPost.authorName}
-                            className="w-9 h-9 rounded-full border-2 border-black object-cover"
-                            style={{
-                              backgroundColor: featuredBannerPost.authorColor || '#FFF025',
-                            }}
+                            isVerified={
+                              featuredBannerPost.authorRole === 'admin' ||
+                              featuredBannerPost.authorRole === 'moderator' ||
+                              verifiedUserIds.has(featuredBannerPost.authorId) ||
+                              !featuredBannerPost.authorId.startsWith('seed-')
+                            }
+                            sizeClass="w-9 h-9"
+                            ringPaddingClass="p-[2.5px]"
                           />
                           <div>
                             <div
@@ -2040,11 +2060,17 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                             }`}
                           >
                             <div className="flex items-center gap-2.5">
-                              <img
+                              <VerifiedAvatarFrame
                                 src={resolveBuilderAvatarUrl(post.authorAvatar, post.authorId)}
                                 alt={post.authorName}
-                                className="w-9 h-9 rounded-full border-2 border-black object-cover"
-                                style={{ backgroundColor: post.authorColor || '#FFF025' }}
+                                isVerified={
+                                  post.authorRole === 'admin' ||
+                                  post.authorRole === 'moderator' ||
+                                  verifiedUserIds.has(post.authorId) ||
+                                  !post.authorId.startsWith('seed-')
+                                }
+                                sizeClass="w-9 h-9"
+                                ringPaddingClass="p-[2.5px]"
                               />
                               <div>
                                 <div
@@ -2069,21 +2095,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                 const count = post.reactionCounts?.[opt.type] || 0;
                                 const active = myPostReactions.includes(opt.type);
                                 return (
-                                  <button
+                                  <AnimatedEmoteButton
                                     key={opt.type}
-                                    type="button"
+                                    emote={opt.type}
+                                    count={count}
+                                    active={active}
+                                    title={opt.label}
+                                    size="md"
+                                    variant={isDark ? 'dark' : 'light'}
                                     onClick={() => handleQuickReact(post.id, opt.type)}
-                                    className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer ${
-                                      active
-                                        ? 'bg-[#FFF025] text-black'
-                                        : isDark
-                                        ? 'bg-[#1b1b2f] hover:bg-white/10 text-white'
-                                        : 'bg-white hover:bg-slate-100 text-black'
-                                    }`}
-                                  >
-                                    <span>{opt.emoji}</span>
-                                    {count > 0 && <span>{count}</span>}
-                                  </button>
+                                  />
                                 );
                               })}
 
