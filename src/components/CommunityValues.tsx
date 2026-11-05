@@ -1,5 +1,5 @@
 import React from 'react';
-import { HeartHandshake, ShieldCheck, MessageCircleHeart, Award, HelpCircle, Sparkles } from 'lucide-react';
+import { HeartHandshake, ShieldCheck, MessageCircleHeart, Award, HelpCircle, Trophy } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 export const CommunityValues: React.FC = () => {
@@ -39,7 +39,7 @@ export const CommunityValues: React.FC = () => {
     {
       title: 'Celebrate Every Milestone',
       desc: 'Fixing your first bug is just as worthy of applause as deploying a full game. We celebrate the journey of building.',
-      icon: <Sparkles className="w-5 h-5 stroke-[2.5]" />,
+      icon: <Trophy className="w-5 h-5 stroke-[2.5]" />,
       accent: '#C15D00',
     },
   ];

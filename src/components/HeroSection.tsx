@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, Compass, Sparkles } from 'lucide-react';
+import { ArrowRight, Compass, FolderGit2 } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface HeroSectionProps {
@@ -125,7 +125,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
                 >
                   <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1.5 text-[#B11469] font-black">
-                      <Sparkles className="w-3.5 h-3.5 fill-current" />
+                      <FolderGit2 className="w-3.5 h-3.5" />
                       Youth Creator Showcase
                     </span>
                     <span className="hidden sm:inline text-gray-400">•</span>

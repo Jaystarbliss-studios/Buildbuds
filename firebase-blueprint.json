@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Public builder profile for community members",
+      "description": "Public or student builder profile for community members",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "description": "Firebase Auth UID" },
@@ -10,10 +10,13 @@
         "schoolName": { "type": "string", "description": "School or learning community name" },
         "gradeLevel": { "type": "string", "description": "Student grade level" },
         "primaryInterest": { "type": "string", "description": "Primary building interest" },
-        "avatarUrl": { "type": "string", "description": "Optional avatar photo URL" },
+        "avatarUrl": { "type": "string", "description": "Optional avatar photo URL or preset ID" },
         "avatarColor": { "type": "string", "description": "Brand accent badge color" },
         "role": { "type": "string", "enum": ["member", "moderator", "admin"], "description": "Community role" },
         "status": { "type": "string", "enum": ["active", "suspended", "banned"], "description": "Account moderation status" },
+        "accountType": { "type": "string", "enum": ["public", "student"], "description": "Account tier" },
+        "publishingDisabled": { "type": "boolean", "description": "Whether public post publishing is disabled for this user" },
+        "bookmarkedPostIds": { "type": "array", "description": "List of bookmarked publicPost IDs" },
         "acceptedGuidelines": { "type": "boolean", "description": "Whether the user agreed to community safety guidelines" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
@@ -31,18 +34,138 @@
       },
       "required": ["uid", "email", "createdAt"]
     },
+    "StudentAccessRequest": {
+      "title": "StudentAccessRequest",
+      "description": "Student verification application for private Student Hub access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Applicant Firebase UID" },
+        "fullName": { "type": "string", "description": "Student full name" },
+        "email": { "type": "string", "format": "email", "description": "Authenticated Google email" },
+        "schoolName": { "type": "string", "description": "School name" },
+        "gradeLevel": { "type": "string", "description": "Current class or grade" },
+        "programme": { "type": "string", "description": "Registered Jaystarbliss Studios programme" },
+        "studentReference": { "type": "string", "description": "Optional student registration or reference number" },
+        "confirmedDeclaration": { "type": "boolean", "description": "Applicant accuracy declaration" },
+        "status": {
+          "type": "string",
+          "enum": ["not_requested", "pending", "approved", "rejected", "more_information_required", "suspended"]
+        },
+        "verifiedAgainstOfficialRecords": { "type": "boolean", "description": "Whether verified against official Jaystarbliss Studios student records" },
+        "reviewedBy": { "type": "string", "description": "Reviewer admin UID" },
+        "reviewedAt": { "type": "string", "format": "date-time", "description": "Review timestamp" },
+        "publicStatusNote": { "type": "string", "description": "Status message visible to the applicant" },
+        "emailNotificationStatus": { "type": "string", "enum": ["idle", "sent", "failed", "skipped"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "email", "schoolName", "gradeLevel", "programme", "confirmedDeclaration", "status", "createdAt", "updatedAt"]
+    },
+    "CommunityMembership": {
+      "title": "CommunityMembership",
+      "description": "Approved student membership record granting private Student Hub access",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "status": { "type": "string", "enum": ["approved", "suspended", "revoked"] },
+        "approvedBy": { "type": "string" },
+        "approvedAt": { "type": "string", "format": "date-time" },
+        "programme": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "gradeLevel": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "status", "approvedBy", "approvedAt", "updatedAt"]
+    },
+    "PublicPost": {
+      "title": "PublicPost",
+      "description": "Public community showcase post, game, website, tutorial, or announcement",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "body": { "type": "string" },
+        "categoryId": { "type": "string" },
+        "categoryName": { "type": "string" },
+        "tags": { "type": "array" },
+        "media": { "type": "array" },
+        "websiteUrl": { "type": "string" },
+        "gameUrl": { "type": "string" },
+        "githubUrl": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorAvatar": { "type": "string" },
+        "authorColor": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "pending_review", "published", "hidden", "removed"] },
+        "isFeatured": { "type": "boolean" },
+        "reactionCounts": { "type": "object" },
+        "totalReactions": { "type": "integer" },
+        "commentCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "body", "categoryId", "categoryName", "authorId", "authorName", "status", "createdAt", "updatedAt"]
+    },
+    "PublicComment": {
+      "title": "PublicComment",
+      "description": "Comment or nested reply on a public post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "postId": { "type": "string" },
+        "parentCommentId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorColor": { "type": "string" },
+        "text": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "removed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "postId", "authorId", "authorName", "text", "status", "createdAt"]
+    },
+    "PublicReaction": {
+      "title": "PublicReaction",
+      "description": "Authenticated user reactions on a public post",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "postId": { "type": "string" },
+        "types": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "postId", "types", "updatedAt"]
+    },
+    "PublicCategory": {
+      "title": "PublicCategory",
+      "description": "Public community content category",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "slug": { "type": "string" },
+        "description": { "type": "string" },
+        "emoji": { "type": "string" },
+        "order": { "type": "integer" },
+        "isActive": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "slug", "emoji", "order", "isActive", "updatedAt"]
+    },
     "Presence": {
       "title": "Presence",
       "description": "Real-time online presence and typing status in channels",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID" },
-        "displayName": { "type": "string", "description": "Builder display name" },
-        "avatarColor": { "type": "string", "description": "Avatar badge color" },
-        "avatarUrl": { "type": "string", "description": "Selected predefined avatar ID or URL" },
-        "activeChannelId": { "type": "string", "description": "Currently open channel ID" },
-        "isTyping": { "type": "boolean", "description": "Whether user is actively typing" },
-        "lastSeen": { "type": "string", "format": "date-time", "description": "Heartbeat timestamp" }
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "activeChannelId": { "type": "string" },
+        "isTyping": { "type": "boolean" },
+        "lastSeen": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "activeChannelId", "isTyping", "lastSeen"]
     },
@@ -51,13 +174,13 @@
       "description": "Global community administration settings controlled by the Super Admin",
       "type": "object",
       "properties": {
-        "cooldownSeconds": { "type": "integer", "description": "Global slow-mode cooldown in seconds" },
-        "disableCooldown": { "type": "boolean", "description": "Whether message cooldown is completely disabled" },
-        "banLinks": { "type": "boolean", "description": "Whether external links are banned globally" },
-        "enableLinkPreviews": { "type": "boolean", "description": "Whether OpenGraph/creation link previews are rendered" },
-        "globalChatLocked": { "type": "boolean", "description": "Whether all community channels are locked to read-only for regular members" },
-        "updatedBy": { "type": "string", "description": "UID of administrator who updated settings" },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "cooldownSeconds": { "type": "integer" },
+        "disableCooldown": { "type": "boolean" },
+        "banLinks": { "type": "boolean" },
+        "enableLinkPreviews": { "type": "boolean" },
+        "globalChatLocked": { "type": "boolean" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["cooldownSeconds", "disableCooldown", "banLinks", "enableLinkPreviews", "globalChatLocked", "updatedBy", "updatedAt"]
     },
@@ -66,23 +189,23 @@
       "description": "Channel definition, moderator assignments, and per-channel member permissions",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Channel slug ID" },
-        "name": { "type": "string", "description": "Channel display name" },
-        "category": { "type": "string", "enum": ["INFORMATION", "CREATOR SHOWCASES", "SOCIAL"], "description": "Sidebar category" },
-        "emoji": { "type": "string", "description": "Channel icon emoji" },
-        "description": { "type": "string", "description": "Channel topic description" },
-        "defaultCreationCategory": { "type": "string", "enum": ["game", "website", "video", "novel", "other"], "description": "Optional default showcase link type" },
-        "isCustom": { "type": "boolean", "description": "Whether created dynamically by admin" },
-        "isLocked": { "type": "boolean", "description": "Whether channel is locked by admin/moderator" },
-        "banLinks": { "type": "boolean", "description": "Whether links are banned in this channel" },
-        "enableLinkPreviews": { "type": "boolean", "description": "Whether link previews are enabled in this channel" },
-        "cooldownSeconds": { "type": "integer", "description": "Channel-specific cooldown override (-1 uses global default)" },
-        "allowMemberMessages": { "type": "boolean", "description": "Whether regular members can send messages in this channel" },
-        "allowMemberGroups": { "type": "boolean", "description": "Whether regular members can create sub-groups in this channel" },
-        "allowMemberInvites": { "type": "boolean", "description": "Whether regular members can add others to sub-groups in this channel" },
-        "moderatorIds": { "type": "array", "description": "List of user UIDs appointed as Channel Moderators" },
-        "kickedUserIds": { "type": "array", "description": "List of user UIDs removed/kicked from this channel" },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["INFORMATION", "CREATOR SHOWCASES", "SOCIAL"] },
+        "emoji": { "type": "string" },
+        "description": { "type": "string" },
+        "defaultCreationCategory": { "type": "string", "enum": ["game", "website", "video", "novel", "other"] },
+        "isCustom": { "type": "boolean" },
+        "isLocked": { "type": "boolean" },
+        "banLinks": { "type": "boolean" },
+        "enableLinkPreviews": { "type": "boolean" },
+        "cooldownSeconds": { "type": "integer" },
+        "allowMemberMessages": { "type": "boolean" },
+        "allowMemberGroups": { "type": "boolean" },
+        "allowMemberInvites": { "type": "boolean" },
+        "moderatorIds": { "type": "array" },
+        "kickedUserIds": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": [
         "id", "name", "category", "emoji", "description", "isCustom", "isLocked",
@@ -95,15 +218,15 @@
       "description": "Sub-group or private room nested inside a community channel",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Sub-group ID" },
-        "channelId": { "type": "string", "description": "Parent channel ID" },
-        "name": { "type": "string", "description": "Sub-group display name" },
-        "description": { "type": "string", "description": "Sub-group purpose or topic" },
-        "isPrivate": { "type": "boolean", "description": "Whether only invited members can view and chat" },
-        "createdBy": { "type": "string", "description": "Creator user UID" },
-        "memberIds": { "type": "array", "description": "List of member UIDs in this sub-group" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "id": { "type": "string" },
+        "channelId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "isPrivate": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "memberIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "channelId", "name", "description", "isPrivate", "createdBy", "memberIds", "createdAt", "updatedAt"]
     },
@@ -112,29 +235,29 @@
       "description": "Community message or creation link showcase in a channel or sub-group",
       "type": "object",
       "properties": {
-        "channelId": { "type": "string", "description": "Target channel or sub-group stream ID" },
-        "authorId": { "type": "string", "description": "Firebase Auth UID of author" },
-        "authorName": { "type": "string", "description": "Author display name" },
-        "authorAvatar": { "type": "string", "description": "Author avatar URL or empty string" },
-        "authorColor": { "type": "string", "description": "Author badge color" },
-        "authorRole": { "type": "string", "description": "Author community role" },
-        "text": { "type": "string", "description": "Filtered message text" },
-        "hadProfanity": { "type": "boolean", "description": "Whether profanity was masked with asterisks" },
-        "replyToId": { "type": "string", "description": "Optional parent message ID for inline curved reply" },
-        "replyToAuthor": { "type": "string", "description": "Optional parent message author name" },
-        "replyToColor": { "type": "string", "description": "Optional parent message author color" },
-        "replyToSnippet": { "type": "string", "description": "Optional parent message snippet" },
-        "linkUrl": { "type": "string", "description": "Optional attached creation URL" },
-        "linkTitle": { "type": "string", "description": "Optional link preview title" },
-        "linkDescription": { "type": "string", "description": "Optional link preview description" },
-        "linkCategory": { "type": "string", "description": "Optional creation category (game, website, video, novel)" },
-        "linkDomain": { "type": "string", "description": "Optional domain name for preview" },
-        "coverImageUrl": { "type": "string", "description": "Optional uploaded cover image data URL or preview image" },
-        "reactions": { "type": "object", "description": "Map of emoji keys to count numbers" },
-        "threadCount": { "type": "integer", "description": "Number of thread replies" },
-        "isEdited": { "type": "boolean", "description": "Whether the message text was edited by the author" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Message creation timestamp" },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "channelId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorAvatar": { "type": "string" },
+        "authorColor": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "text": { "type": "string" },
+        "hadProfanity": { "type": "boolean" },
+        "replyToId": { "type": "string" },
+        "replyToAuthor": { "type": "string" },
+        "replyToColor": { "type": "string" },
+        "replyToSnippet": { "type": "string" },
+        "linkUrl": { "type": "string" },
+        "linkTitle": { "type": "string" },
+        "linkDescription": { "type": "string" },
+        "linkCategory": { "type": "string" },
+        "linkDomain": { "type": "string" },
+        "coverImageUrl": { "type": "string" },
+        "reactions": { "type": "object" },
+        "threadCount": { "type": "integer" },
+        "isEdited": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["channelId", "authorId", "authorName", "authorColor", "text", "threadCount", "createdAt"]
     },
@@ -143,40 +266,121 @@
       "description": "Reply inside a message discussion thread",
       "type": "object",
       "properties": {
-        "messageId": { "type": "string", "description": "Parent message ID" },
-        "authorId": { "type": "string", "description": "Firebase Auth UID of author" },
-        "authorName": { "type": "string", "description": "Author display name" },
-        "authorColor": { "type": "string", "description": "Author badge color" },
-        "text": { "type": "string", "description": "Filtered reply text" },
-        "isEdited": { "type": "boolean", "description": "Whether the reply text was edited by the author" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Reply creation timestamp" },
-        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "messageId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorColor": { "type": "string" },
+        "text": { "type": "string" },
+        "isEdited": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["messageId", "authorId", "authorName", "authorColor", "text", "createdAt"]
     },
     "ModerationReport": {
       "title": "ModerationReport",
-      "description": "User report for a community message",
+      "description": "User report for a community message or public post",
       "type": "object",
       "properties": {
-        "messageId": { "type": "string", "description": "Reported message ID" },
-        "channelId": { "type": "string", "description": "Channel ID of reported message" },
-        "reporterId": { "type": "string", "description": "UID of reporting user" },
-        "reason": { "type": "string", "description": "Report reason" },
-        "status": { "type": "string", "enum": ["open", "resolved"], "description": "Moderation status" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Report timestamp" }
+        "messageId": { "type": "string" },
+        "channelId": { "type": "string" },
+        "reporterId": { "type": "string" },
+        "reason": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "resolved"] },
+        "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["messageId", "channelId", "reporterId", "reason", "status", "createdAt"]
+    },
+    "CommunityChallenge": {
+      "title": "CommunityChallenge",
+      "description": "Administrator-managed community challenge for young builders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "categoryId": { "type": "string" },
+        "learnerGroup": { "type": "string" },
+        "skillLevel": { "type": "string", "enum": ["All Levels", "Beginner", "Intermediate", "Advanced"] },
+        "programme": { "type": "string" },
+        "instructions": { "type": "string" },
+        "resources": { "type": "array" },
+        "startDate": { "type": "string" },
+        "deadline": { "type": "string" },
+        "challengeStatus": { "type": "string", "enum": ["upcoming", "active", "completed"] },
+        "publishStatus": { "type": "string", "enum": ["draft", "published", "archived"] },
+        "accentColor": { "type": "string" },
+        "coverImageUrl": { "type": "string" },
+        "featured": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "description", "category", "categoryId", "learnerGroup", "skillLevel", "instructions", "challengeStatus", "publishStatus", "createdBy", "createdAt", "updatedAt"]
+    },
+    "ShowcaseSubmission": {
+      "title": "ShowcaseSubmission",
+      "description": "Student creation submitted from private hub for public showcase curation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sourceMessageId": { "type": "string" },
+        "channelId": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "creatorName": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "linkUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "more_information_required"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "creatorId", "creatorName", "title", "linkUrl", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
-      "description": "Public builder profiles"
+      "description": "Public and student builder profiles"
     },
     "/users_private/{userId}": {
       "schema": { "$ref": "#/entities/UserPrivate" },
       "description": "Private user PII restricted to owner"
+    },
+    "/studentAccessRequests/{userId}": {
+      "schema": { "$ref": "#/entities/StudentAccessRequest" },
+      "description": "Student verification applications for private Student Hub access"
+    },
+    "/communityMemberships/{userId}": {
+      "schema": { "$ref": "#/entities/CommunityMembership" },
+      "description": "Approved student membership records"
+    },
+    "/publicPosts/{postId}": {
+      "schema": { "$ref": "#/entities/PublicPost" },
+      "description": "Public community posts, games, websites, tutorials, and announcements"
+    },
+    "/publicPosts/{postId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/PublicComment" },
+      "description": "Comments and nested replies on public posts"
+    },
+    "/publicPosts/{postId}/reactions/{userId}": {
+      "schema": { "$ref": "#/entities/PublicReaction" },
+      "description": "UID-bound reactions on public posts"
+    },
+    "/publicCategories/{categoryId}": {
+      "schema": { "$ref": "#/entities/PublicCategory" },
+      "description": "Public community categories"
+    },
+    "/communityChallenges/{challengeId}": {
+      "schema": { "$ref": "#/entities/CommunityChallenge" },
+      "description": "Administrator-managed community challenges"
+    },
+    "/showcaseSubmissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/ShowcaseSubmission" },
+      "description": "Private hub showcase submissions for admin curation"
     },
     "/presence/{userId}": {
       "schema": { "$ref": "#/entities/Presence" },

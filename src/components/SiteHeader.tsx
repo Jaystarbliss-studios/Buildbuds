@@ -1,55 +1,44 @@
 import React, { useState, useEffect } from 'react';
 import { BrandLogo } from './BrandLogo.tsx';
-import { Menu, X, ArrowRight, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
-import { BuilderProfile } from '../firebase.ts';
-import { PWAInstallButton } from './PWAInstallButton.tsx';
+import { BuilderProfile, User } from '../firebase.ts';
+import { StudentAccessStatus } from '../types/community.ts';
+import { UserAccountMenu } from './UserAccountMenu.tsx';
 
 interface SiteHeaderProps {
-  onJoinClick: () => void;
-  onSignInClick: () => void;
-  onLaunchAppMode?: () => void;
+  currentUser?: User | null;
   builderProfile?: BuilderProfile | null;
+  isAuthChecking?: boolean;
+  studentAccessStatus?: StudentAccessStatus;
+  isApprovedForHub?: boolean;
+  onSignInClick: () => void;
+  onJoinClick?: () => void;
+  onLaunchAppMode?: () => void;
+  onSignOut?: () => void;
+  onNavigate?: (path: string) => void;
 }
 
 export const SiteHeader: React.FC<SiteHeaderProps> = ({
-  onJoinClick,
+  currentUser = null,
+  builderProfile = null,
+  isAuthChecking = false,
+  studentAccessStatus = 'not_requested',
+  isApprovedForHub = false,
   onSignInClick,
-  onLaunchAppMode,
-  builderProfile,
+  onJoinClick,
+  onSignOut = () => {},
+  onNavigate = () => {},
 }) => {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const [activeSection, setActiveSection] = useState('discover');
-  const { isDark, toggleTheme } = useTheme();
+  const { isDark } = useTheme();
 
   useEffect(() => {
     const handleScroll = () => {
       setScrolled(window.scrollY > 20);
-      
-      const sections = ['discover', 'community', 'challenges', 'how-it-works'];
-      for (const section of sections) {
-        const el = document.getElementById(section);
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          if (rect.top <= 120 && rect.bottom >= 120) {
-            setActiveSection(section);
-            break;
-          }
-        }
-      }
     };
-
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
-
-  const navLinks = [
-    { label: 'Discover', href: '#discover', id: 'discover' },
-    { label: 'Community', href: '#community', id: 'community' },
-    { label: 'Challenges', href: '#challenges', id: 'challenges' },
-    { label: 'How It Works', href: '#how-it-works', id: 'how-it-works' },
-  ];
 
   return (
     <header
@@ -65,185 +54,37 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-20 gap-4">
-          
-          {/* Brand Wordmark Zone */}
+          {/* Brand Logo on the Left — clickable and leads to homepage */}
           <div className="flex items-center">
-            <a href="#" className="focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded-xl p-1">
+            <a
+              href="/"
+              onClick={(e) => {
+                e.preventDefault();
+                onNavigate('/');
+              }}
+              className="focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded-xl p-1 cursor-pointer"
+              aria-label="Build Buds Home"
+            >
               <BrandLogo size="md" />
             </a>
           </div>
 
-          {/* Desktop Navigation Links */}
-          <nav
-            className={`hidden md:flex items-center gap-6 text-sm font-semibold transition-colors ${
-              isDark ? 'text-white' : 'text-slate-800'
-            }`}
-            aria-label="Main Navigation"
-          >
-            {navLinks.map((link) => {
-              const isActive = activeSection === link.id;
-              return (
-                <a
-                  key={link.id}
-                  href={link.href}
-                  className={`relative py-1.5 px-1 transition-colors duration-150 whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded ${
-                    isActive
-                      ? isDark
-                        ? 'text-[#FFF025] font-bold'
-                        : 'text-[#B11469] font-bold'
-                      : isDark
-                        ? 'text-white/85 hover:text-[#FFF025]'
-                        : 'text-slate-700 hover:text-[#B11469]'
-                  }`}
-                >
-                  {link.label}
-                  {isActive && (
-                    <span
-                      className="absolute bottom-0 left-0 right-0 h-1 rounded-full"
-                      style={{ backgroundColor: isDark ? '#FFF025' : '#B11469' }}
-                    />
-                  )}
-                </a>
-              );
-            })}
-          </nav>
-
-          {/* Action Zone: Download App + Day/Night Theme Toggle + Sign In + Join Build Buds CTA */}
-          <div className="hidden md:flex items-center gap-3">
-            <PWAInstallButton variant="header" onLaunchAppMode={onLaunchAppMode} />
-
-            {/* Day / Cosmic Night Theme Toggle */}
-            <button
-              onClick={toggleTheme}
-              className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-xl border-2 transition-all cursor-pointer active:scale-95 ${
-                isDark
-                  ? 'bg-white/10 hover:bg-white/15 border-white/20 text-white'
-                  : 'bg-amber-100/70 hover:bg-amber-100 border-black/15 text-slate-900 brand-shadow-sm'
-              }`}
-              title={`Switch to ${isDark ? 'Day/Light mode' : 'Cosmic Space mode'} (currently ${isDark ? 'Night' : 'Day'})`}
-              aria-label="Toggle theme mode"
-            >
-              {isDark ? (
-                <>
-                  <Moon className="w-4 h-4 text-[#FFF025]" />
-                  <span>Cosmic Night</span>
-                </>
-              ) : (
-                <>
-                  <Sun className="w-4 h-4 text-[#C15D00]" />
-                  <span>Day Mode</span>
-                </>
-              )}
-            </button>
-
-            <button
-              onClick={onSignInClick}
-              className={`px-3.5 py-2 text-sm font-bold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] rounded-lg cursor-pointer ${
-                isDark ? 'text-white hover:text-[#FFF025]' : 'text-slate-800 hover:text-[#B11469]'
-              }`}
-            >
-              {builderProfile ? `Signed in (${builderProfile.displayName})` : 'Sign In'}
-            </button>
-
-            <button
-              onClick={onJoinClick}
-              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow transition-transform active:translate-x-0.5 active:translate-y-0.5 hover:-translate-y-0.5 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025]"
-              style={{ backgroundColor: '#FFF025' }}
-            >
-              <span>Join Build Buds</span>
-              <ArrowRight className="w-4 h-4 stroke-[2.5]" />
-            </button>
+          {/* Clean User Account / Profile Control on the Far Right */}
+          <div className="flex items-center gap-3">
+            <UserAccountMenu
+              currentUser={currentUser}
+              builderProfile={builderProfile}
+              isAuthChecking={isAuthChecking}
+              studentAccessStatus={studentAccessStatus}
+              isApprovedForHub={isApprovedForHub}
+              onSignInClick={onSignInClick}
+              onJoinClick={onJoinClick}
+              onSignOut={onSignOut}
+              onNavigate={onNavigate}
+            />
           </div>
-
-          {/* Mobile Actions */}
-          <div className="flex items-center md:hidden gap-2">
-            <PWAInstallButton variant="header" onLaunchAppMode={onLaunchAppMode} />
-
-            <button
-              onClick={toggleTheme}
-              className={`p-2 rounded-lg border transition-all ${
-                isDark ? 'border-white/20 text-white' : 'border-black/20 text-slate-800'
-              }`}
-              aria-label="Toggle theme mode"
-            >
-              {isDark ? <Moon className="w-4 h-4 text-[#FFF025]" /> : <Sun className="w-4 h-4 text-[#C15D00]" />}
-            </button>
-
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className={`p-2 rounded-lg border focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFF025] ${
-                isDark ? 'text-white border-white/20 hover:bg-white/10' : 'text-slate-800 border-black/20 hover:bg-black/5'
-              }`}
-              aria-expanded={mobileMenuOpen}
-              aria-label="Toggle navigation menu"
-            >
-              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
-          </div>
-
         </div>
       </div>
-
-      {/* Mobile Navigation Drawer */}
-      {mobileMenuOpen && (
-        <div
-          className={`md:hidden border-b px-4 pt-3 pb-6 space-y-3 ${
-            isDark ? 'bg-[#0c0c16] border-white/15' : 'bg-white border-black/10'
-          }`}
-        >
-          <nav className="flex flex-col space-y-2" aria-label="Mobile Navigation">
-            {navLinks.map((link) => (
-              <a
-                key={link.id}
-                href={link.href}
-                onClick={() => setMobileMenuOpen(false)}
-                className={`py-2 px-3 rounded-xl font-bold text-sm transition-colors ${
-                  activeSection === link.id
-                    ? isDark
-                      ? 'bg-white/10 text-[#FFF025]'
-                      : 'bg-amber-100 text-[#B11469]'
-                    : isDark
-                      ? 'text-white/80 hover:bg-white/5'
-                      : 'text-slate-700 hover:bg-black/5'
-                }`}
-              >
-                {link.label}
-              </a>
-            ))}
-          </nav>
-
-          <div className="pt-3 border-t border-white/10 flex flex-col gap-2">
-            <PWAInstallButton
-              variant="mobile"
-              onLaunchAppMode={() => {
-                setMobileMenuOpen(false);
-                onLaunchAppMode?.();
-              }}
-            />
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                onSignInClick();
-              }}
-              className={`w-full py-2.5 text-sm font-bold text-center rounded-xl border ${
-                isDark ? 'border-white/20 text-white' : 'border-black/20 text-slate-800'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              onClick={() => {
-                setMobileMenuOpen(false);
-                onJoinClick();
-              }}
-              className="w-full py-2.5 text-sm font-black text-black rounded-xl border-2 border-black brand-shadow text-center"
-              style={{ backgroundColor: '#FFF025' }}
-            >
-              Join Build Buds
-            </button>
-          </div>
-        </div>
-      )}
     </header>
   );
 };

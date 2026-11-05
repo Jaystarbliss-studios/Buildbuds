@@ -1,250 +1,451 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Default deny catch-all
-    match /{document=**} {
-      allow read, write: if false;
-    }
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
 
-    // Core Helpers
-    function isSignedIn() {
+    function isAuthenticated() {
       return request.auth != null;
     }
 
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return isAuthenticated() && request.auth.uid == userId;
     }
 
     function isAdmin() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email == "johnrufai242@gmail.com" && request.auth.token.email_verified == true)
-      );
+      return isAuthenticated() &&
+        (
+          request.auth.token.get('admin', false) == true ||
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+          (request.auth.token.email == "johnrufai242@gmail.com" &&
+            request.auth.token.email_verified == true)
+        );
     }
 
-    // Entity Validators
+    function isApprovedStudent() {
+      return isAuthenticated() &&
+        (
+          isAdmin() ||
+          (exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved')
+        );
+    }
+
+    function isActiveUser() {
+      return isAuthenticated() &&
+        (
+          isAdmin() ||
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') == 'active'
+        );
+    }
+
+    function isNotBanned() {
+      return isAuthenticated() &&
+        (
+          isAdmin() ||
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') != 'banned'
+        );
+    }
+
+    function isPublishingEnabled() {
+      return isAuthenticated() &&
+        (
+          isAdmin() ||
+          !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('publishingDisabled', false) == false
+        );
+    }
+
+    function isChannelModerator(channelId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/community_channels/$(channelId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.moderatorIds;
+    }
+
+    function isNotKickedFromChannel(channelId) {
+      return isAdmin() ||
+        !exists(/databases/$(database)/documents/community_channels/$(channelId)) ||
+        !(request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.kickedUserIds);
+    }
+
     function isValidUserProfile(data, userId) {
-      return data.keys().hasAll(['uid', 'displayName', 'avatarColor', 'role', 'acceptedGuidelines', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['uid', 'displayName', 'schoolName', 'gradeLevel', 'primaryInterest', 'avatarUrl', 'avatarColor', 'role', 'acceptedGuidelines', 'createdAt', 'updatedAt']) &&
-             data.uid == userId &&
-             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
-             (!('schoolName' in data) || (data.schoolName is string && data.schoolName.size() <= 100)) &&
-             (!('gradeLevel' in data) || (data.gradeLevel is string && data.gradeLevel.size() <= 40)) &&
-             (!('primaryInterest' in data) || (data.primaryInterest is string && data.primaryInterest.size() <= 60)) &&
-             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 2000)) &&
-             data.avatarColor is string && data.avatarColor.size() >= 1 && data.avatarColor.size() <= 30 &&
-             data.role in ['member', 'moderator', 'admin'] &&
-             data.acceptedGuidelines is bool &&
-             data.createdAt is timestamp &&
-             data.updatedAt is timestamp;
+      return data.uid is string && data.uid == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        (!('schoolName' in data) || (data.schoolName is string && data.schoolName.size() <= 120)) &&
+        (!('gradeLevel' in data) || (data.gradeLevel is string && data.gradeLevel.size() <= 50)) &&
+        (!('primaryInterest' in data) || (data.primaryInterest is string && data.primaryInterest.size() <= 80)) &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 350000)) &&
+        data.avatarColor is string && data.avatarColor.size() <= 30 &&
+        data.role in ['member', 'moderator', 'admin'] &&
+        (!('status' in data) || data.status in ['active', 'suspended', 'banned']) &&
+        data.acceptedGuidelines == true &&
+        data.createdAt is string && data.createdAt.size() <= 50;
     }
 
-    function isValidUserPrivate(data, userId) {
-      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
-             data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
-             data.uid == userId &&
-             data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
-             data.createdAt is timestamp;
+    function isValidMessage(data) {
+      return data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 120 &&
+        data.authorId is string && data.authorId == request.auth.uid &&
+        data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+        data.authorColor is string && data.authorColor.size() <= 30 &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 2500 &&
+        data.threadCount is int && data.threadCount >= 0 &&
+        data.createdAt is string && data.createdAt.size() <= 50 &&
+        (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 600000)) &&
+        (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 1000));
     }
 
-    function isValidPresence(data, userId) {
-      return data.keys().hasAll(['uid', 'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen']) &&
-             data.keys().hasOnly(['uid', 'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen']) &&
-             data.uid == userId &&
-             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
-             data.avatarColor is string && data.avatarColor.size() >= 1 && data.avatarColor.size() <= 30 &&
-             data.activeChannelId is string && data.activeChannelId.size() >= 1 && data.activeChannelId.size() <= 64 &&
-             data.isTyping is bool &&
-             data.lastSeen is timestamp;
-    }
-
-    function isValidChatMessage(data) {
-      return data.keys().hasAll(['channelId', 'authorId', 'authorName', 'authorColor', 'text', 'threadCount', 'createdAt']) &&
-             data.keys().hasOnly([
-               'channelId', 'authorId', 'authorName', 'authorAvatar', 'authorColor', 'authorRole',
-               'text', 'hadProfanity', 'replyToId', 'replyToAuthor', 'replyToColor', 'replyToSnippet',
-               'linkUrl', 'linkTitle', 'linkDescription', 'linkCategory', 'linkDomain', 'coverImageUrl',
-               'reactions', 'threadCount', 'createdAt', 'updatedAt'
-             ]) &&
-             data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 64 &&
-             data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
-             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
-             (!('authorAvatar' in data) || (data.authorAvatar is string && data.authorAvatar.size() <= 2000)) &&
-             data.authorColor is string && data.authorColor.size() >= 1 && data.authorColor.size() <= 30 &&
-             (!('authorRole' in data) || (data.authorRole in ['member', 'moderator', 'admin'])) &&
-             data.text is string && data.text.size() <= 2000 &&
-             (!('hadProfanity' in data) || data.hadProfanity is bool) &&
-             (!('replyToId' in data) || (data.replyToId is string && data.replyToId.size() <= 128)) &&
-             (!('replyToAuthor' in data) || (data.replyToAuthor is string && data.replyToAuthor.size() <= 60)) &&
-             (!('replyToColor' in data) || (data.replyToColor is string && data.replyToColor.size() <= 30)) &&
-             (!('replyToSnippet' in data) || (data.replyToSnippet is string && data.replyToSnippet.size() <= 300)) &&
-             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 2000)) &&
-             (!('linkTitle' in data) || (data.linkTitle is string && data.linkTitle.size() <= 160)) &&
-             (!('linkDescription' in data) || (data.linkDescription is string && data.linkDescription.size() <= 600)) &&
-             (!('linkCategory' in data) || (data.linkCategory in ['game', 'website', 'video', 'novel', 'other'])) &&
-             (!('linkDomain' in data) || (data.linkDomain is string && data.linkDomain.size() <= 120)) &&
-             (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 350000)) &&
-             (!('reactions' in data) || (data.reactions is map && data.reactions.keys().size() <= 20)) &&
-             data.threadCount is int && data.threadCount >= 0 && data.threadCount <= 10000 &&
-             data.createdAt is timestamp &&
-             (!('updatedAt' in data) || data.updatedAt is timestamp);
-    }
-
-    function isValidThreadReply(data, messageId) {
-      return data.keys().hasAll(['messageId', 'authorId', 'authorName', 'authorColor', 'text', 'createdAt']) &&
-             data.keys().hasOnly(['messageId', 'authorId', 'authorName', 'authorColor', 'text', 'createdAt']) &&
-             data.messageId == messageId &&
-             data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 &&
-             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
-             data.authorColor is string && data.authorColor.size() >= 1 && data.authorColor.size() <= 30 &&
-             data.text is string && data.text.size() >= 1 && data.text.size() <= 1500 &&
-             data.createdAt is timestamp;
-    }
-
-    function isValidReport(data) {
-      return data.keys().hasAll(['messageId', 'channelId', 'reporterId', 'reason', 'status', 'createdAt']) &&
-             data.keys().hasOnly(['messageId', 'channelId', 'reporterId', 'reason', 'status', 'createdAt']) &&
-             data.messageId is string && data.messageId.size() >= 1 && data.messageId.size() <= 128 &&
-             data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 64 &&
-             data.reporterId == request.auth.uid &&
-             data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 500 &&
-             data.status in ['open', 'resolved'] &&
-             data.createdAt is timestamp;
-    }
-
-    // Boot connection check path
-    match /test/{docId} {
-      allow get: if isValidId(docId);
-      allow list, write: if false;
-    }
-
-    // Admins lookup collection
-    match /admins/{adminId} {
-      allow get: if isOwner(adminId) || isAdmin();
-      allow list: if isAdmin();
-      allow create, update, delete: if isAdmin() && isValidId(adminId);
-    }
-
-    // Public Builder Profiles
+    // ===============================================================
+    // Public Builder Profiles (/users/{userId})
+    // ===============================================================
     match /users/{userId} {
-      allow get: if isValidId(userId);
-      allow list: if resource.data.uid is string && resource.data.uid.size() <= 128;
+      allow read: if true;
+
       allow create: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidUserProfile(request.resource.data, userId) &&
-                    request.resource.data.createdAt == request.time &&
-                    request.resource.data.updatedAt == request.time &&
-                    (request.resource.data.role == 'member' || isAdmin());
-      allow update: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidUserProfile(request.resource.data, userId) &&
-                    request.resource.data.uid == resource.data.uid &&
-                    request.resource.data.createdAt == resource.data.createdAt &&
-                    request.resource.data.updatedAt == request.time &&
-                    (request.resource.data.role == resource.data.role || isAdmin()) &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                      'displayName', 'schoolName', 'gradeLevel', 'primaryInterest',
-                      'avatarUrl', 'avatarColor', 'acceptedGuidelines', 'role', 'updatedAt'
-                    ]);
-      allow delete: if isOwner(userId) || isAdmin();
+        isValidUserProfile(request.resource.data, userId) &&
+        (!('status' in request.resource.data) || request.resource.data.status == 'active') &&
+        (request.resource.data.role == 'member' || isAdmin());
+
+      allow update: if (isOwner(userId) &&
+        isValidUserProfile(request.resource.data, userId) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.get('status', 'active') == resource.data.get('status', 'active') &&
+        request.resource.data.get('publishingDisabled', false) == resource.data.get('publishingDisabled', false)) ||
+        isAdmin();
+
+      allow delete: if isAdmin();
     }
 
-    // Private PII Profiles
+    // ===============================================================
+    // Private User PII (/users_private/{userId})
+    // ===============================================================
     match /users_private/{userId} {
-      allow get: if isOwner(userId) || isAdmin();
-      allow list: if isAdmin();
-      allow create: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidUserPrivate(request.resource.data, userId) &&
-                    request.resource.data.createdAt == request.time;
-      allow update: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidUserPrivate(request.resource.data, userId) &&
-                    request.resource.data.uid == resource.data.uid &&
-                    request.resource.data.createdAt == resource.data.createdAt &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['email']);
+      allow read: if isOwner(userId) || isAdmin();
+      allow create, update: if isOwner(userId) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.email is string &&
+        request.resource.data.email.size() <= 160;
+      allow delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Admins Registry (/admins/{adminUid})
+    // ===============================================================
+    match /admins/{adminUid} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // ===============================================================
+    // Student Access Requests (/studentAccessRequests/{userId})
+    // ===============================================================
+    match /studentAccessRequests/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+
+      allow create: if (isOwner(userId) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.fullName is string && request.resource.data.fullName.size() >= 1 && request.resource.data.fullName.size() <= 120 &&
+        request.resource.data.email is string && request.resource.data.email.size() >= 3 && request.resource.data.email.size() <= 160 &&
+        request.resource.data.schoolName is string && request.resource.data.schoolName.size() >= 1 && request.resource.data.schoolName.size() <= 160 &&
+        request.resource.data.gradeLevel is string && request.resource.data.gradeLevel.size() >= 1 && request.resource.data.gradeLevel.size() <= 80 &&
+        request.resource.data.programme is string && request.resource.data.programme.size() >= 1 && request.resource.data.programme.size() <= 160 &&
+        request.resource.data.confirmedDeclaration == true &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.verifiedAgainstOfficialRecords == false) ||
+        isAdmin();
+
+      allow update: if (isOwner(userId) &&
+        resource.data.status in ['not_requested', 'pending', 'rejected', 'more_information_required'] &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.confirmedDeclaration == true &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.verifiedAgainstOfficialRecords == false) ||
+        isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Private Admin Review Notes (/studentAccessAdminNotes/{userId})
+    // ===============================================================
+    match /studentAccessAdminNotes/{userId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ===============================================================
+    // Approved Student Memberships (/communityMemberships/{userId})
+    // ===============================================================
+    match /communityMemberships/{userId} {
+      allow read: if isOwner(userId) || isApprovedStudent() || isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // In-App User Notifications (/userNotifications/{userId}/items/{notificationId})
+    // ===============================================================
+    match /userNotifications/{userId}/items/{notificationId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) || isAdmin();
+      allow update: if (isOwner(userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
+        isAdmin();
       allow delete: if isOwner(userId) || isAdmin();
     }
 
-    // Live Channel Presence & Typing Indicators
-    match /presence/{userId} {
-      allow get: if isValidId(userId);
-      allow list: if resource.data.uid is string && resource.data.uid.size() <= 128;
-      allow create: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidPresence(request.resource.data, userId) &&
-                    request.resource.data.lastSeen == request.time;
-      allow update: if isOwner(userId) &&
-                    isValidId(userId) &&
-                    isValidPresence(request.resource.data, userId) &&
-                    request.resource.data.uid == resource.data.uid &&
-                    request.resource.data.lastSeen == request.time &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                      'displayName', 'avatarColor', 'activeChannelId', 'isTyping', 'lastSeen'
-                    ]);
-      allow delete: if isOwner(userId) || isAdmin();
+    // ===============================================================
+    // Admin Audit Logs (/adminAuditLogs/{logId})
+    // ===============================================================
+    match /adminAuditLogs/{logId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
     }
 
-    // Community Messages & Creation Link Showcases
-    match /messages/{messageId} {
-      allow get: if isValidId(messageId);
-      allow list: if resource.data.channelId is string && resource.data.channelId.size() <= 64;
-      allow create: if isSignedIn() &&
-                    isValidId(messageId) &&
-                    isValidChatMessage(request.resource.data) &&
-                    request.resource.data.authorId == request.auth.uid &&
-                    request.resource.data.threadCount == 0 &&
-                    request.resource.data.createdAt == request.time;
-      allow update: if isSignedIn() &&
-                    isValidId(messageId) &&
-                    isValidChatMessage(request.resource.data) &&
-                    request.resource.data.channelId == resource.data.channelId &&
-                    request.resource.data.authorId == resource.data.authorId &&
-                    request.resource.data.createdAt == resource.data.createdAt &&
-                    (
-                      // Case 1: Any signed-in member toggling emoji reactions or incrementing threadCount
-                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'threadCount', 'updatedAt']) ||
-                      // Case 2: Author editing their own message text
-                      (request.auth.uid == resource.data.authorId &&
-                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'hadProfanity', 'reactions', 'threadCount', 'updatedAt']))
-                    );
-      allow delete: if isSignedIn() && (request.auth.uid == resource.data.authorId || isAdmin());
+    // ===============================================================
+    // Public Community Posts (/publicPosts/{postId})
+    // ===============================================================
+    match /publicPosts/{postId} {
+      allow read: if resource.data.status == 'published' ||
+        (isAuthenticated() && resource.data.authorId == request.auth.uid) ||
+        isAdmin();
 
-      // Thread Replies Subcollection
-      match /threadReplies/{replyId} {
-        allow get: if isValidId(replyId);
-        allow list: if resource.data.messageId is string && resource.data.messageId.size() <= 128;
-        allow create: if isSignedIn() &&
-                      isValidId(messageId) &&
-                      isValidId(replyId) &&
-                      isValidThreadReply(request.resource.data, messageId) &&
-                      request.resource.data.authorId == request.auth.uid &&
-                      request.resource.data.createdAt == request.time;
-        allow update: if false;
-        allow delete: if isSignedIn() && (request.auth.uid == resource.data.authorId || isAdmin());
+      allow create: if isAuthenticated() &&
+        isNotBanned() &&
+        isPublishingEnabled() &&
+        (
+          (request.resource.data.authorId == request.auth.uid &&
+            request.resource.data.title is string && request.resource.data.title.size() >= 1 && request.resource.data.title.size() <= 200 &&
+            request.resource.data.body is string && request.resource.data.body.size() >= 1 && request.resource.data.body.size() <= 20000 &&
+            request.resource.data.status in ['draft', 'pending_review', 'published'] &&
+            (request.resource.data.get('isFeatured', false) == false || isAdmin())) ||
+          // Allow first-time transaction initialization of official seed posts when reacting/commenting
+          (postId.matches('^seed-.*') && request.resource.data.status == 'published') ||
+          isAdmin()
+        );
+
+      allow update: if (isAuthenticated() &&
+        isNotBanned() &&
+        resource.data.authorId == request.auth.uid &&
+        request.resource.data.authorId == resource.data.authorId &&
+        request.resource.data.status in ['draft', 'pending_review', 'published'] &&
+        (request.resource.data.get('isFeatured', false) == resource.data.get('isFeatured', false) || isAdmin())) ||
+        // Allow authenticated users to update reactionCounts, totalReactions, commentCount, updatedAt
+        (isAuthenticated() &&
+          isNotBanned() &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactionCounts', 'totalReactions', 'commentCount', 'updatedAt'])) ||
+        isAdmin();
+
+      allow delete: if (isAuthenticated() && resource.data.authorId == request.auth.uid) || isAdmin();
+
+      // Nested Public Comments (/publicPosts/{postId}/comments/{commentId})
+      match /comments/{commentId} {
+        allow read: if true;
+
+        allow create: if isAuthenticated() &&
+          isNotBanned() &&
+          request.resource.data.postId == postId &&
+          request.resource.data.authorId == request.auth.uid &&
+          request.resource.data.text is string &&
+          request.resource.data.text.size() >= 1 &&
+          request.resource.data.text.size() <= 4000 &&
+          request.resource.data.status == 'active';
+
+        allow update: if (isAuthenticated() &&
+          isNotBanned() &&
+          resource.data.authorId == request.auth.uid &&
+          request.resource.data.authorId == resource.data.authorId &&
+          request.resource.data.postId == resource.data.postId &&
+          request.resource.data.text is string &&
+          request.resource.data.text.size() >= 1 &&
+          request.resource.data.text.size() <= 4000) ||
+          isAdmin();
+
+        allow delete: if (isAuthenticated() && resource.data.authorId == request.auth.uid) || isAdmin();
+      }
+
+      // UID-Bound Public Reactions (/publicPosts/{postId}/reactions/{userId})
+      match /reactions/{userId} {
+        allow read: if true;
+
+        allow create, update: if isOwner(userId) &&
+          isNotBanned() &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.postId == postId &&
+          request.resource.data.types is list &&
+          request.resource.data.types.size() <= 10;
+
+        allow delete: if isOwner(userId) || isAdmin();
       }
     }
 
-    // Moderation Reports
+    // ===============================================================
+    // Public Community Categories (/publicCategories/{categoryId})
+    // ===============================================================
+    match /publicCategories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Real-Time Presence & Typing (/presence/{userId}) — Student Hub Only
+    // ===============================================================
+    match /presence/{userId} {
+      allow read: if isApprovedStudent();
+      allow create, update: if isOwner(userId) &&
+        isApprovedStudent() &&
+        isNotBanned() &&
+        request.resource.data.uid == userId &&
+        request.resource.data.displayName is string &&
+        request.resource.data.displayName.size() <= 80 &&
+        request.resource.data.activeChannelId is string &&
+        request.resource.data.activeChannelId.size() <= 120 &&
+        request.resource.data.isTyping is bool &&
+        (!('avatarUrl' in request.resource.data) || (request.resource.data.avatarUrl is string && request.resource.data.avatarUrl.size() <= 350000));
+      allow delete: if isOwner(userId) || isAdmin();
+    }
+
+    // ===============================================================
+    // Global Community Settings (/community_settings/{settingId})
+    // ===============================================================
+    match /community_settings/{settingId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // Community Channels (/community_channels/{channelId})
+    // ===============================================================
+    match /community_channels/{channelId} {
+      allow read: if isApprovedStudent();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() ||
+        (isApprovedStudent() &&
+          isChannelModerator(channelId) &&
+          request.resource.data.id == resource.data.id &&
+          request.resource.data.moderatorIds == resource.data.moderatorIds);
+    }
+
+    // ===============================================================
+    // Channel Sub-Groups & Private Rooms (/community_groups/{groupId})
+    // ===============================================================
+    match /community_groups/{groupId} {
+      allow read: if isApprovedStudent() &&
+        (
+          !resource.data.isPrivate ||
+          isAdmin() ||
+          isChannelModerator(resource.data.channelId) ||
+          (isAuthenticated() && request.auth.uid in resource.data.memberIds)
+        );
+
+      allow create: if isApprovedStudent() &&
+        isActiveUser() &&
+        isNotKickedFromChannel(request.resource.data.channelId) &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.name is string &&
+        request.resource.data.name.size() >= 1 &&
+        request.resource.data.name.size() <= 80 &&
+        request.resource.data.memberIds is list;
+
+      allow update: if isApprovedStudent() &&
+        isActiveUser() &&
+        (
+          isAdmin() ||
+          isChannelModerator(resource.data.channelId) ||
+          resource.data.createdBy == request.auth.uid ||
+          request.auth.uid in resource.data.memberIds
+        );
+
+      allow delete: if isAdmin() ||
+        (isApprovedStudent() && isChannelModerator(resource.data.channelId)) ||
+        (isApprovedStudent() && resource.data.createdBy == request.auth.uid);
+    }
+
+    // ===============================================================
+    // Private Student Hub Chat Messages (/messages/{messageId})
+    // ===============================================================
+    match /messages/{messageId} {
+      allow read: if isApprovedStudent() && isNotBanned();
+
+      allow create: if isApprovedStudent() &&
+        isActiveUser() &&
+        isValidMessage(request.resource.data);
+
+      allow update: if isApprovedStudent() &&
+        isActiveUser() &&
+        request.resource.data.authorId == resource.data.authorId &&
+        request.resource.data.channelId == resource.data.channelId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        (
+          (request.resource.data.text == resource.data.text &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'threadCount'])) ||
+          (resource.data.authorId == request.auth.uid &&
+            request.resource.data.text is string &&
+            request.resource.data.text.size() >= 1 &&
+            request.resource.data.text.size() <= 2500 &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt', 'hadProfanity'])) ||
+          isAdmin() ||
+          isChannelModerator(resource.data.channelId)
+        );
+
+      allow delete: if isApprovedStudent() &&
+        (resource.data.authorId == request.auth.uid ||
+          isAdmin() ||
+          isChannelModerator(resource.data.channelId));
+
+      // Nested Thread Replies
+      match /threadReplies/{replyId} {
+        allow read: if isApprovedStudent() && isNotBanned();
+
+        allow create: if isApprovedStudent() &&
+          isActiveUser() &&
+          request.resource.data.messageId == messageId &&
+          request.resource.data.authorId == request.auth.uid &&
+          request.resource.data.authorName is string &&
+          request.resource.data.authorName.size() >= 1 &&
+          request.resource.data.authorName.size() <= 80 &&
+          request.resource.data.text is string &&
+          request.resource.data.text.size() >= 1 &&
+          request.resource.data.text.size() <= 1500 &&
+          request.resource.data.createdAt is string;
+
+        allow update: if isApprovedStudent() &&
+          isActiveUser() &&
+          resource.data.authorId == request.auth.uid &&
+          request.resource.data.authorId == resource.data.authorId &&
+          request.resource.data.messageId == resource.data.messageId &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.text is string &&
+          request.resource.data.text.size() >= 1 &&
+          request.resource.data.text.size() <= 1500 &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt']);
+
+        allow delete: if isApprovedStudent() &&
+          (resource.data.authorId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // ===============================================================
+    // Moderation Reports (/reports/{reportId})
+    // ===============================================================
     match /reports/{reportId} {
-      allow get, list: if isAdmin();
-      allow create: if isSignedIn() &&
-                    isValidId(reportId) &&
-                    isValidReport(request.resource.data) &&
-                    request.resource.data.status == 'open' &&
-                    request.resource.data.createdAt == request.time;
-      allow update: if isAdmin() &&
-                    isValidId(reportId) &&
-                    isValidReport(request.resource.data) &&
-                    request.resource.data.messageId == resource.data.messageId &&
-                    request.resource.data.createdAt == resource.data.createdAt &&
-                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
-      allow delete: if isAdmin();
+      allow read: if isAdmin();
+      allow create: if isAuthenticated() &&
+        isNotBanned() &&
+        request.resource.data.reporterId == request.auth.uid &&
+        request.resource.data.messageId is string &&
+        request.resource.data.channelId is string &&
+        request.resource.data.reason is string &&
+        request.resource.data.reason.size() >= 1 &&
+        request.resource.data.reason.size() <= 500 &&
+        request.resource.data.status == 'open';
+      allow update, delete: if isAdmin();
     }
   }
 }

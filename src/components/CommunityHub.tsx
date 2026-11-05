@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ChevronLeft,
   Send,
@@ -14,7 +14,7 @@ import {
   X,
   LogOut,
   LogIn,
-  Sparkles,
+  FolderGit2,
   Gamepad2,
   Globe,
   Video,
@@ -40,12 +40,13 @@ import {
   Crown,
   Bell,
   BellOff,
-  Sparkle,
+  UserCog,
   Camera,
   Pencil,
   Check,
   Menu,
   MoreHorizontal,
+  Clock,
 } from 'lucide-react';
 import {
   db,
@@ -108,6 +109,10 @@ import {
   registerBuildBudsServiceWorker,
   dispatchMessageBrowserNotification,
 } from '../utils/notifications.ts';
+import {
+  submitCreationForPublicShowcase,
+  adminCurateShowcaseSubmission,
+} from '../utils/communityService.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 
 export interface ChannelItem {
@@ -242,6 +247,8 @@ export interface HubMessage {
   linkCategory?: CreationCategory;
   linkDomain?: string;
   coverImageUrl?: string;
+  showcaseStatus?: 'pending' | 'approved' | 'rejected';
+  publicPostId?: string;
   reactions?: Record<string, number>;
   threadCount: number;
   createdAtMillis: number;
@@ -340,6 +347,31 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Real-time Firestore state (100% real data, zero seed/demo users)
   const [firestoreMessages, setFirestoreMessages] = useState<HubMessage[]>([]);
   const [allShowcaseMessages, setAllShowcaseMessages] = useState<HubMessage[]>([]);
+  const [lastViewedShowcaseTime, setLastViewedShowcaseTime] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('buildbuds_last_viewed_showcase');
+      return stored ? Number(stored) : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  // Showcase Curation Modal for Admin
+  const [curatingMessage, setCuratingMessage] = useState<HubMessage | null>(null);
+  const [curateTitle, setCurateTitle] = useState('');
+  const [curateSummary, setCurateSummary] = useState('');
+  const [curateCategory, setCurateCategory] = useState('project-showcases');
+  const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
+
+  const unreadShowcaseCount = useMemo(() => {
+    if (viewMode === 'showcase') return 0;
+    return allShowcaseMessages.filter(
+      (m) =>
+        m.createdAtMillis > lastViewedShowcaseTime &&
+        m.authorId !== currentUser?.uid
+    ).length;
+  }, [allShowcaseMessages, lastViewedShowcaseTime, viewMode, currentUser?.uid]);
+
   const [onlineMembers, setOnlineMembers] = useState<PresenceItem[]>([]);
   const [registeredUsers, setRegisteredUsers] = useState<BuilderProfile[]>([]);
   const [globalSettings, setGlobalSettings] = useState<CommunityGlobalSettings>(DEFAULT_GLOBAL_SETTINGS);
@@ -814,10 +846,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [activeStreamId]);
 
-  // Real-time listener for Showcase Creations when viewing Showcase mode
+  // Real-time listener for Showcase Creations — continuously active across channels
   useEffect(() => {
-    if (viewMode !== 'showcase') return;
-    const q = query(collection(db, 'messages'), limit(100));
+    const q = query(collection(db, 'messages'), limit(150));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -842,6 +873,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             linkCategory: data.linkCategory,
             linkDomain: data.linkDomain,
             coverImageUrl: data.coverImageUrl,
+            showcaseStatus: data.showcaseStatus,
+            publicPostId: data.publicPostId,
             reactions: data.reactions || {},
             threadCount: Number(data.threadCount || 0),
             createdAtMillis: createdMillis,
@@ -853,9 +886,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         items.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
         setAllShowcaseMessages(items);
       },
-      () => {}
+      (error) => {
+        console.error('Error listening to showcase creations:', error);
+      }
     );
     return () => unsubscribe();
+  }, []);
+
+  // Mark showcase creations viewed and clear unread badge when entering showcase view
+  useEffect(() => {
+    if (viewMode === 'showcase') {
+      const now = Date.now();
+      setLastViewedShowcaseTime(now);
+      try {
+        localStorage.setItem('buildbuds_last_viewed_showcase', String(now));
+      } catch {
+        // Storage disabled
+      }
+    }
   }, [viewMode]);
 
   // Real-time listener for incoming messages across all channels to power Browser Push Notifications
@@ -1595,6 +1643,81 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
+    }
+  };
+
+  // Submit link for public community showcase
+  const handleRequestPublicShowcase = async (msg: HubMessage) => {
+    if (!currentUser || !builderProfile || !msg.linkUrl) return;
+    try {
+      await submitCreationForPublicShowcase({
+        messageId: msg.id,
+        channelId: msg.channelId,
+        creatorId: currentUser.uid,
+        creatorName: builderProfile.displayName,
+        creatorAvatar: builderProfile.avatarUrl,
+        creatorColor: builderProfile.avatarColor,
+        title: msg.linkTitle || `${builderProfile.displayName}'s Creation`,
+        description: msg.linkDescription || msg.text || 'Built by a Build Buds student creator.',
+        linkUrl: msg.linkUrl,
+        linkCategory: msg.linkCategory || 'projects',
+        linkDomain: msg.linkDomain,
+        coverImageUrl: msg.coverImageUrl,
+      });
+      setComposerNotice('Showcase request submitted! Our mentors will review and feature it publicly.');
+      setTimeout(() => setComposerNotice(null), 5000);
+    } catch (err: unknown) {
+      console.error(err);
+      setComposerError('Failed to submit showcase request. Please try again.');
+    }
+  };
+
+  const handleStartCuratingMessage = (msg: HubMessage) => {
+    setCuratingMessage(msg);
+    setCurateTitle(msg.linkTitle || `${msg.authorName}'s Creation`);
+    setCurateSummary(msg.linkDescription || msg.text || '');
+    setCurateCategory(
+      msg.linkCategory === 'game'
+        ? 'games'
+        : msg.linkCategory === 'website'
+        ? 'websites'
+        : 'project-showcases'
+    );
+  };
+
+  const handleExecuteCuration = async (approved: boolean) => {
+    if (!curatingMessage) return;
+    setIsSubmittingCuration(true);
+    try {
+      const catMap: Record<string, string> = {
+        games: 'Games',
+        websites: 'Websites',
+        'project-showcases': 'Project Showcases',
+      };
+      await adminCurateShowcaseSubmission(curatingMessage.id, {
+        title: curateTitle.trim() || curatingMessage.linkTitle || 'Student Creation',
+        summary: curateSummary.trim() || curateTitle.trim(),
+        body: curateSummary.trim() || curateTitle.trim(),
+        categoryId: curateCategory,
+        categoryName: catMap[curateCategory] || 'Project Showcases',
+        tags: [curatingMessage.linkCategory || 'Student Builder', 'Showcase'],
+        status: approved ? 'approved' : 'rejected',
+        adminNotes: approved
+          ? 'Curated and published to public showcase.'
+          : 'Submission not selected for public showcase at this time.',
+      });
+      setCuratingMessage(null);
+      setComposerNotice(
+        approved
+          ? 'Creation successfully published to public showcase!'
+          : 'Submission review recorded.'
+      );
+      setTimeout(() => setComposerNotice(null), 4000);
+    } catch (err) {
+      console.error(err);
+      setComposerError('Failed to curate submission.');
+    } finally {
+      setIsSubmittingCuration(false);
     }
   };
 
@@ -2509,9 +2632,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 className="w-7 h-7 rounded-lg object-contain bg-black/40 p-0.5 border border-white/15"
               />
               <div>
-                <div className="text-xs font-black tracking-wide text-white flex items-center gap-1">
+                <div className="text-xs font-black tracking-wide text-white">
                   <span>BUILD BUDS HUB</span>
-                  <Sparkles className="w-3 h-3 text-[#FFF025]" />
                 </div>
                 <div className="text-[10px] text-white/50">Real-Time Community</div>
               </div>
@@ -2644,9 +2766,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           <LayoutGrid className="w-3.5 h-3.5 text-[#FFF025] shrink-0" />
                           <span className="truncate">All Shared Links</span>
                         </div>
-                        <span className="text-[10px] font-mono text-white/45">
-                          {allShowcaseMessages.length}
-                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {unreadShowcaseCount > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[9px] font-black animate-pulse">
+                              {unreadShowcaseCount}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono text-white/45">
+                            {allShowcaseMessages.length}
+                          </span>
+                        </div>
                       </button>
                     )}
                   </div>
@@ -2782,7 +2911,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
               {filteredCreations.length === 0 ? (
                 <div className="rounded-3xl bg-[#101115] border border-white/10 p-12 text-center space-y-3">
-                  <Sparkles className="w-8 h-8 text-[#FFF025] mx-auto" />
+                  <FolderGit2 className="w-8 h-8 text-[#FFF025] mx-auto" />
                   <h3 className="text-base font-bold text-white">No creation links shared yet</h3>
                   <p className="text-xs text-white/60 max-w-md mx-auto">
                     When community members upload links to their games, websites, videos, or novels in the channels, they will appear right here.
@@ -3250,6 +3379,36 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                           >
                                             Feedback Thread ({effectiveReplyCount})
                                           </button>
+
+                                          {msg.showcaseStatus === 'approved' ? (
+                                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold">
+                                              <CheckCircle2 className="w-3 h-3" />
+                                              <span>Featured in Showcase</span>
+                                            </span>
+                                          ) : msg.showcaseStatus === 'pending' ? (
+                                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
+                                              <Clock className="w-3 h-3" />
+                                              <span>Showcase Under Review</span>
+                                            </span>
+                                          ) : currentUser && currentUser.uid === msg.authorId ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleRequestPublicShowcase(msg)}
+                                              className="px-2.5 py-1 rounded-lg bg-[#B11469]/20 hover:bg-[#B11469]/30 text-[#ff75bc] border border-[#B11469]/40 text-xs font-bold cursor-pointer transition-colors"
+                                            >
+                                              Request Public Showcase
+                                            </button>
+                                          ) : null}
+
+                                          {isSuperAdmin && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleStartCuratingMessage(msg)}
+                                              className="px-2.5 py-1 rounded-lg bg-[#FFF025]/20 hover:bg-[#FFF025]/30 text-[#FFF025] border border-[#FFF025]/40 text-xs font-bold cursor-pointer transition-colors"
+                                            >
+                                              Curate for Showcase
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -5129,7 +5288,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div>
                 <div className="flex items-center gap-2 text-[#FFF025] font-black text-xs uppercase tracking-wider">
-                  <Sparkles className="w-4 h-4" />
+                  <UserCog className="w-4 h-4" />
                   <span>Account & Profile Settings</span>
                 </div>
                 <h3 className="font-chewy text-xl sm:text-2xl text-white mt-0.5">
@@ -5633,6 +5792,116 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   Sign In to Join the Conversation
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN SHOWCASE CURATION MODAL */}
+      {curatingMessage && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Curate Project for Public Showcase"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-lg rounded-3xl bg-[#14161f] border-2 border-[#FFF025] p-6 space-y-4 shadow-2xl text-white">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <span className="text-[10px] font-black uppercase text-[#FFF025] tracking-wider">
+                  Admin Showcase Curation
+                </span>
+                <h3 className="font-chewy text-2xl text-white mt-0.5">
+                  Publish to Community Showcase
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCuratingMessage(null)}
+                className="p-1 rounded-lg text-white/60 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-white/70 font-bold mb-1">Creator</label>
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center gap-2">
+                  <span
+                    className="w-5 h-5 rounded-full flex items-center justify-center font-bold text-[10px] text-black"
+                    style={{ backgroundColor: curatingMessage.authorColor }}
+                  >
+                    {curatingMessage.authorName.charAt(0)}
+                  </span>
+                  <span className="font-bold text-white">{curatingMessage.authorName}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-white/70 font-bold mb-1">Project Link</label>
+                <a
+                  href={curatingMessage.linkUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-sky-400 font-mono text-[11px] block truncate hover:underline"
+                >
+                  {curatingMessage.linkUrl}
+                </a>
+              </div>
+
+              <div>
+                <label className="block text-white/70 font-bold mb-1">Public Title</label>
+                <input
+                  type="text"
+                  value={curateTitle}
+                  onChange={(e) => setCurateTitle(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/20 text-white font-medium focus:outline-none focus:border-[#FFF025]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/70 font-bold mb-1">Public Summary / Description</label>
+                <textarea
+                  rows={3}
+                  value={curateSummary}
+                  onChange={(e) => setCurateSummary(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/20 text-white font-medium focus:outline-none focus:border-[#FFF025]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-white/70 font-bold mb-1">Showcase Category</label>
+                <select
+                  value={curateCategory}
+                  onChange={(e) => setCurateCategory(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/20 text-white font-medium focus:outline-none focus:border-[#FFF025]"
+                >
+                  <option value="games">🎮 Games</option>
+                  <option value="websites">🌐 Websites</option>
+                  <option value="project-showcases">🚀 Project Showcases</option>
+                  <option value="creative-experiments">🎨 Creative Experiments</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2 border-t border-white/10">
+              <button
+                type="button"
+                disabled={isSubmittingCuration}
+                onClick={() => handleExecuteCuration(false)}
+                className="px-4 py-2 rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 font-bold text-xs cursor-pointer"
+              >
+                Reject / Needs Work
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingCuration}
+                onClick={() => handleExecuteCuration(true)}
+                className="px-5 py-2 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer transition-transform active:scale-95"
+              >
+                {isSubmittingCuration ? 'Publishing...' : 'Approve & Publish to Showcase'}
+              </button>
             </div>
           </div>
         </div>

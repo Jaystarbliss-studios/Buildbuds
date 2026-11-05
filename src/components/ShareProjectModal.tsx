@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Sparkles, Check, Upload } from 'lucide-react';
+import { X, Check, Upload } from 'lucide-react';
 import { ProjectItem } from '../types/index.ts';
 
 interface ShareProjectModalProps {

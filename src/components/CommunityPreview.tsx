@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { DiscussionPost } from '../types/index.ts';
 import { toggleReaction, addReplyToPost } from '../utils/communityLogic.ts';
-import { MessageSquare, Heart, Send, Plus, ArrowRight, Sparkles } from 'lucide-react';
+import { MessageSquare, Heart, Send, Plus, ArrowRight } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface CommunityPreviewProps {

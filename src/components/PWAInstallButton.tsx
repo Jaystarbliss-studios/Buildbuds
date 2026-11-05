@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, Smartphone, Monitor, X, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Download, Smartphone, Monitor, X, CheckCircle2 } from 'lucide-react';
 import { usePWAInstall, useOnlineStatus } from '../utils/usePWAInstall.ts';
 
 interface PWAInstallButtonProps {
@@ -142,7 +142,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
                   }}
                   className="flex-1 py-3 px-4 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs border-2 border-black brand-shadow flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <Sparkles className="w-4 h-4" />
+                  <Monitor className="w-4 h-4" />
                   <span>Launch Web App Mode Now</span>
                 </button>
               )}

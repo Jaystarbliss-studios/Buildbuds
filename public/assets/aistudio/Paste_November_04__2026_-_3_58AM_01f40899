@@ -1,0 +1,1477 @@
+# BUILDBUDS — PUBLIC COMMUNITY, STUDENT VERIFICATION, CONTENT PUBLISHING AND CLOUDINARY INTEGRATION
+
+## PROJECT CONTEXT
+
+You are working on the existing Build Buds application:
+
+GitHub repository:
+https://github.com/Jaystarbliss-studios/Buildbuds.git
+
+Live deployment:
+https://buildbuds.vercel.app
+
+Build Buds is a community platform created by the Smart Techies Group from JW Studios, under Jaystarbliss Studios.
+
+It connects young creators across schools, enabling them to share projects, publish ideas, ask questions, discover other people's creations, collaborate and learn together.
+
+The current application uses:
+
+- React.
+- TypeScript.
+- Vite.
+- Firebase Authentication.
+- Cloud Firestore.
+- Vercel deployment.
+- Progressive Web App functionality.
+
+The project already has a working visual identity, homepage, authentication implementation, profile system, and a Discord-inspired Community Hub.
+
+**This is an enhancement and integration project, NOT a ground-up rebuild.**
+
+Before making changes, inspect the actual repository, understand its current architecture, database collections, Firebase security rules, existing components, authentication flows and deployment configuration.
+
+Preserve the existing implementation wherever possible.
+
+Do not introduce Supabase, Haven, a second authentication platform or another database. Firebase remains the existing application backend.
+
+---
+
+# PART A — OVERALL PLATFORM STRUCTURE
+
+## 1. Introduce two distinct community environments
+
+Build Buds should have two related but independently controlled environments.
+
+### Environment 1: Public Community
+
+This is the public-facing community discovery experience.
+
+Anyone should be able to open the website and browse published content without signing in.
+
+Visitors should be able to:
+
+- Discover public posts.
+- Explore games and websites created by young builders.
+- Read public announcements.
+- Discover new digital tools and creative projects.
+- Read tutorials, discussions and articles.
+- Explore project screenshots and previews.
+- View comments and public replies.
+- Browse categories and discover popular content.
+
+However, visitors must authenticate with Google before performing actions such as:
+
+- Reacting to a post.
+- Commenting.
+- Replying to comments.
+- Creating a post.
+- Publishing a project.
+- Bookmarking content.
+- Participating in other interactive public-community activities.
+
+Public account authentication must not automatically grant access to the private student chat.
+
+### Environment 2: Private Student Community
+
+This is the existing Discord-style Community Hub.
+
+It contains the established:
+
+- General Chat.
+- Announcements.
+- Updates.
+- Help.
+- Project channels.
+- Existing community conversations.
+- Member presence.
+- Message threads.
+- Reactions.
+- Existing messaging interactions.
+- Other current Community Hub functionality.
+
+This environment must only be available to students whose registration under Jaystarbliss Studios has been verified and approved by an authorised administrator.
+
+Parents, ordinary website visitors and unverified public accounts must not gain access.
+
+### Absolute separation requirement
+
+Public posts and private chat messages are separate systems.
+
+Never expose private General Chat messages, private Updates, internal announcements, student-only resource links or private channel histories in the public feed.
+
+Do not copy private chat content into public posts automatically.
+
+The public community can display announcements deliberately published for public viewing, but private Community Hub content must remain private.
+
+---
+
+# PART B — PUBLIC COMMUNITY DISCOVERY PAGE
+
+## 2. Create a dedicated Community Discovery page
+
+Create a new dedicated page for the public community.
+
+Suggested route:
+
+`/community`
+
+The page should be accessible to logged-out visitors.
+
+Do not replace or unnecessarily redesign the existing homepage.
+
+Add a suitable Community or Explore Community link to the existing public navigation.
+
+The page should use the **Community Discovery design direction**, not the Discord interface and not a generic Reddit clone.
+
+I specifically prefer the clean, creative community-discovery visual direction previously discussed.
+
+The page should feel like a beautiful digital destination where visitors can discover what young creators are making.
+
+### Visual direction
+
+Use the existing Build Buds visual identity:
+
+- Yellow: #FFF025
+- Pink: #B11469
+- Orange: #C15D00
+- White: #FFFFFF
+- Black: #000000
+
+Use Chewy for expressive display headings, consistent with the existing brand identity, and a clean sans-serif font for readable interface content.
+
+Do not introduce unrelated colour palettes.
+
+The public page should be primarily clean and bright, using white backgrounds, black text and carefully applied brand-coloured highlights.
+
+The design should feel:
+
+- Creative.
+- Friendly.
+- Modern.
+- Youthful.
+- Professional.
+- Visually organised.
+- Exciting to explore.
+- Suitable for students across different schools.
+
+Avoid excessive cards, repetitive layouts, unnecessary decorative icons and excessive whitespace.
+
+Do not change the existing Community Hub's current visual styling to match this new page.
+
+### Public page layout
+
+Build a well-organised discovery experience with these main areas.
+
+#### A. Public navigation
+
+Include:
+
+- Build Buds logo.
+- Home.
+- Community.
+- Explore Creations.
+- Latest Updates.
+- Challenges.
+- Search.
+- Sign In.
+- User profile menu when signed in.
+
+Include a prominent but tasteful entry point to the private Student Hub.
+
+The navigation should remain responsive.
+
+#### B. Featured community content
+
+At the top, introduce a featured section.
+
+Suggested heading:
+
+**Discover what young minds are building.**
+
+Supporting copy:
+
+"Games, websites, ideas, experiments and discoveries from a growing community of young creators."
+
+Display one featured post or project with a strong image, title, short description, author information and a clear action to explore it.
+
+The featured content should be selected through the existing content-management or admin functionality.
+
+Do not manufacture engagement statistics.
+
+#### C. Community discovery feed
+
+Create a central feed containing published community posts.
+
+Use visually varied but consistent post layouts.
+
+Posts should support:
+
+- Text.
+- Titles.
+- Descriptions.
+- Rich text where practical.
+- Cover images.
+- Multiple images.
+- Website links.
+- GitHub repository links.
+- Game links.
+- Embedded project previews where supported.
+- Categories.
+- Tags.
+- Author information.
+- Publication dates.
+- Reactions.
+- Comment counts.
+
+The feed should offer sorting options such as:
+
+- Latest.
+- Popular.
+- Featured.
+
+Ensure that filtering and sorting actually change the displayed content.
+
+Do not display fabricated likes, comments or views as though they represent real community activity.
+
+#### D. Content categories
+
+Introduce a visually attractive category-navigation area.
+
+Suggested categories:
+
+1. Games.
+2. Websites.
+3. Project Showcases.
+4. Technology Discoveries.
+5. Tutorials and Learning.
+6. Community Questions.
+7. Announcements.
+8. Creative Experiments.
+
+Categories must be manageable and extensible.
+
+Administrators should be able to create, edit, activate and deactivate categories.
+
+#### E. Discovery sidebar
+
+Where desktop screen space permits, introduce a secondary information area containing:
+
+- Trending topics.
+- Featured creations.
+- Recently published projects.
+- Popular categories.
+- Community announcements.
+- A Student Hub access card.
+
+Do not make the sidebar unnecessarily wide.
+
+On smaller screens, reorganise it into suitable sections below the feed or behind a compact expandable interface.
+
+#### F. Community call to action
+
+Include a dedicated invitation to students who belong to Jaystarbliss Studios.
+
+Suggested heading:
+
+**Are you a Jaystarbliss Studios student?**
+
+Supporting copy:
+
+"Join your fellow builders in the private Build Buds Student Hub. Share resources, join conversations and collaborate with verified student creators."
+
+CTA:
+
+**Request Student Hub Access**
+
+This action must begin the verification workflow described later.
+
+---
+
+# PART C — PUBLIC POSTS AND DISCUSSION SYSTEM
+
+## 3. Build a proper public publishing system
+
+The public community should be more than a static collection of sample cards.
+
+Implement a real publishing system backed by Firestore.
+
+Signed-in users should be able to create public posts without first obtaining private Student Hub approval.
+
+This is separate from student verification.
+
+### Post creation
+
+Create an intuitive publishing experience.
+
+A signed-in user should be able to:
+
+- Enter a post title.
+- Write a description or body.
+- Select a category.
+- Add relevant tags.
+- Attach one or more images.
+- Add a website URL.
+- Add a game URL.
+- Add a GitHub repository URL.
+- Preview their post.
+- Publish or submit it.
+
+Use a professional post composer with a clear upload-progress state.
+
+Preserve drafts locally or in Firestore where practical.
+
+Clearly communicate failed uploads and incomplete submissions.
+
+Avoid losing a user's written content when an upload fails.
+
+### Comments and nested replies
+
+Every published post should support comments.
+
+Comments should support replies, and replies should support further replies.
+
+Display these discussions in a clean, readable threaded format.
+
+Ensure that:
+
+- Authors are identifiable.
+- Timestamps are visible.
+- Reply indentation is consistent.
+- Long conversations remain readable.
+- Users can edit or delete their own permitted contributions.
+- Administrators can moderate content.
+- Users can report inappropriate comments.
+
+Do not create an entirely separate chat interface for public post discussions.
+
+This should feel like a polished community discussion and article-commenting experience.
+
+### Reactions
+
+Implement persistent reactions.
+
+Users should be able to react to posts and comments.
+
+Each reaction should be associated with the authenticated user's UID.
+
+Prevent duplicate reactions from the same account for the same reaction type.
+
+Update reaction totals in real time or through reliable database subscriptions.
+
+When users remove their reactions, update the counts correctly.
+
+### Search and discovery
+
+Implement meaningful public search across:
+
+- Post titles.
+- Post content.
+- Categories.
+- Tags.
+- Project titles.
+- Creator display names where appropriate.
+
+Provide empty states and useful search feedback.
+
+Do not expose private Student Hub conversations through public search.
+
+### Moderation
+
+Create appropriate content-management controls.
+
+Administrators should be able to:
+
+- Remove posts.
+- Hide posts.
+- Restore posts.
+- Pin featured posts.
+- Edit official announcements.
+- Remove inappropriate comments.
+- Review reported content.
+- Disable publishing privileges for accounts where necessary.
+
+Introduce clear moderation statuses such as:
+
+- Draft.
+- Pending review.
+- Published.
+- Hidden.
+- Removed.
+
+For the initial public rollout, allow administrators to configure how new accounts' submissions are reviewed. Do not assume that every unverified public account should automatically receive unrestricted publishing privileges.
+
+Ensure the moderation system does not prevent legitimate students from participating unnecessarily.
+
+---
+
+# PART D — PUBLIC GOOGLE AUTHENTICATION
+
+## 4. Separate ordinary account creation from student registration
+
+This is a critical change.
+
+The current application has registration flows that collect student details and create a BuilderProfile before entering the Community Hub.
+
+That behaviour must be adjusted.
+
+A person should not have to complete the full student-registration form just to browse, react to or comment on a public post.
+
+### Public account flow
+
+When a visitor attempts to interact with public content:
+
+1. Display the existing appropriate authentication interface.
+2. Allow Google sign-in.
+3. Authenticate through Firebase Authentication.
+4. Create or retrieve the user's basic public profile.
+5. Return the user to the action they originally attempted.
+6. Allow the user to perform their permitted public-community action.
+
+The basic public account can contain:
+
+- Firebase UID.
+- Display name.
+- Email address stored privately.
+- Basic avatar reference or existing preset avatar.
+- Account creation date.
+- Account status.
+
+Do not force public users to provide their school or class during ordinary public account creation.
+
+Do not force ordinary public users into the Student Hub.
+
+Do not automatically send authenticated public users into CommunityHub.
+
+### Authentication compatibility
+
+Preserve the existing authentication methods and account compatibility wherever practical.
+
+Do not break existing Firebase users.
+
+For users with existing accounts, provide a safe migration path.
+
+A user who signs in successfully must remain authenticated even when they have not yet submitted a Student Hub application.
+
+Do not sign them out simply because they are not yet registered as an approved student.
+
+---
+
+# PART E — STUDENT ACCESS REQUEST AND ADMIN APPROVAL
+
+## 5. Introduce the Student Hub verification process
+
+Only students officially registered under Jaystarbliss Studios are eligible for private community membership.
+
+The access system must be individual, account-bound and controlled by an administrator.
+
+Do not use a permanent shared passcode distributed to students.
+
+### Student access entry point
+
+Create a dedicated Student Hub access page or modal.
+
+Suggested route:
+
+`/student-access`
+
+If the user has not signed in, request Google authentication first.
+
+After authentication, display the student verification form.
+
+### Student verification form
+
+Collect the following information:
+
+1. Full name.
+2. School name.
+3. Current class or grade.
+4. Registered Jaystarbliss Studios programme or class.
+5. Student registration/reference number, only if an existing identifier is used by the organisation.
+
+Display the authenticated account email automatically.
+
+Do not allow users to substitute a different Google account email without a new authenticated session.
+
+Include an explicit declaration:
+
+"I confirm that I am currently registered as a student under Jaystarbliss Studios and that the information provided is accurate."
+
+Explain that access is subject to administrative verification.
+
+Do not collect unnecessary sensitive information such as home addresses, dates of birth, passwords or private parent information.
+
+### Submission behaviour
+
+When the student submits the form:
+
+- Validate all required fields.
+- Check whether an application already exists.
+- Prevent duplicate pending applications.
+- Save the application securely to Firestore.
+- Associate the application with the authenticated UID.
+- Assign the initial status `pending`.
+- Record the submission timestamp.
+- Notify the administrator that a new application needs review.
+
+After submission, display a clear confirmation:
+
+**Your request has been submitted!**
+
+"Your student details are being reviewed by the Build Buds administration team. You will receive a notification when a decision has been made."
+
+Show the current application status whenever the student signs in.
+
+### Application statuses
+
+Support:
+
+- `not_requested`
+- `pending`
+- `approved`
+- `rejected`
+- `more_information_required`
+- `suspended`
+
+Do not grant private chat permissions while an application is pending or rejected.
+
+A student who has been asked for more information should be able to update their application through an appropriate process.
+
+---
+
+## 6. Administrative student-verification dashboard
+
+Integrate a Student Access Requests section into the existing authorised administration experience.
+
+Suggested route:
+
+`/admin/student-access`
+
+Do not create an administrator interface that can be accessed merely by typing the URL.
+
+Only authorised administrators should be able to use it.
+
+### Pending requests
+
+Display a manageable list of applications.
+
+Each application should show:
+
+- Student full name.
+- Google account email.
+- School.
+- Class or grade.
+- Registered programme.
+- Student reference, if provided.
+- Application date.
+- Current status.
+
+### Verification workflow
+
+The administrator should be able to open an application and cross-check the supplied information against the official Jaystarbliss Studios student records.
+
+For the initial implementation, support manual verification.
+
+Provide a clear way for the administrator to record that they have checked the student against the official records.
+
+Do not automatically approve students just because they entered a school name.
+
+Do not treat a Google sign-in as proof of registration.
+
+### Administrative actions
+
+Provide:
+
+- Approve.
+- Reject.
+- Request additional information.
+- Suspend access, where applicable.
+- Add a private administrative review note.
+- View previous application decisions.
+
+Require confirmation before approval or rejection.
+
+Record:
+
+- Administrator UID.
+- Decision.
+- Decision timestamp.
+- Administrative note.
+- Notification delivery result.
+
+Keep administrative review notes private.
+
+### Approval behaviour
+
+When an administrator approves a student:
+
+1. Update the student's application status.
+2. Create or update the trusted student membership record.
+3. Associate that membership with the student's Firebase UID.
+4. Grant access to the existing Community Hub.
+5. Refresh or update the authenticated session's access state.
+6. Create an in-app notification/status update.
+7. Send an approval email to the authenticated student's email address.
+8. Record the notification outcome.
+9. Display the student as an approved member in the application.
+
+The user should not have to fill in the registration form again.
+
+Do not require a second account or a separate registration.
+
+### Rejection behaviour
+
+When an application is rejected:
+
+- Preserve the user's ordinary public account.
+- Do not grant Student Hub access.
+- Display the updated status.
+- Notify the user appropriately.
+- Allow them to submit a corrected application only through the permitted reapplication process.
+
+### Suspension
+
+Administrators must be able to revoke a previously granted private membership.
+
+When suspended, the user must immediately lose permission to access protected chat data according to the backend security rules.
+
+---
+
+# PART F — CONNECTION TO THE JAYSTARBLISS STUDIOS PORTAL
+
+## 7. Prepare for existing student-record integration
+
+The long-term intention is to connect Build Buds to the existing Jaystarbliss Studios student management system.
+
+The purpose is to allow the administrator to verify applications against official student records.
+
+For now, manual verification is acceptable.
+
+However, structure the integration so that an authenticated, documented backend connection can be added later.
+
+### Important security requirements
+
+A website domain alone is not sufficient to connect securely to another system's database.
+
+Do not assume you can access the existing student database merely because its website is known.
+
+Do not expose database credentials or service-account keys in the browser.
+
+Do not guess Firebase project identifiers, endpoints, API tokens, collection paths or portal database structures.
+
+If an existing approved API or backend integration is already documented in the project, inspect it before creating another connection.
+
+Otherwise:
+
+- Implement a clear `StudentRecordVerificationProvider` integration boundary.
+- Keep manual verification operational.
+- Document the exact credentials, API endpoint and response contract that would be needed for future automation.
+- Do not pretend that automated record matching has been completed.
+
+If student-record integration is eventually enabled, it must be server-to-server and properly authenticated.
+
+The administrator should remain responsible for final access decisions unless the organisation explicitly authorises automated approval.
+
+---
+
+# PART G — APPROVAL NOTIFICATIONS
+
+## 8. Email notifications as the initial delivery method
+
+Implement student approval notifications through email.
+
+Use Resend as the initial email service, called securely from a Vercel serverless function.
+
+This avoids coupling the current approval workflow to an external portal whose API details have not yet been supplied.
+
+Prepare a clean notification service so that another notification provider can be integrated later.
+
+### Required email events
+
+Send an appropriate email when:
+
+1. A student submits an access request.
+2. An administrator approves the request.
+3. An administrator rejects the request.
+4. An administrator requests additional information.
+
+The most important notification is the successful approval email.
+
+### Approval email design
+
+Subject:
+
+**You're approved! Welcome to the Build Buds Student Hub.**
+
+Suggested message:
+
+"Your student access request has been approved. You can now sign in to Build Buds and enter the private Student Hub to connect with fellow builders, participate in discussions, share resources and collaborate on projects.
+
+Welcome to the community!"
+
+Include a button:
+
+**Enter Build Buds**
+
+The button should link to the actual deployed Build Buds application and open the appropriate private Hub entry point after authentication.
+
+Use a clean, responsive email template that reflects Build Buds' official logo and colours.
+
+Do not include unnecessary sensitive student information in the email.
+
+### Email delivery requirements
+
+- Verify the student's authenticated email address.
+- Send approval messages only after successful administrative approval.
+- Avoid duplicate emails when an administrator clicks an action repeatedly.
+- Implement idempotency or notification-state tracking.
+- If email delivery fails, do not silently lose the approved membership.
+- Show the administrator that access was granted but notification delivery failed.
+- Provide an option to retry the notification.
+- Log delivery attempts without storing unnecessary sensitive information.
+
+### Future JW Studios portal notification
+
+Keep the notification implementation modular.
+
+A future portal notification provider may be added if the existing Jaystarbliss Studios portal exposes an authorised notification API.
+
+Do not invent or guess that API.
+
+For this implementation, email is the actual delivery method. An internal Build Buds notification should also show the updated approval status.
+
+---
+
+# PART H — CLOUDINARY IMAGE UPLOAD INTEGRATION
+
+## 9. Use Cloudinary for public image hosting
+
+The application currently needs a reliable image-hosting solution for public community posts and project showcases.
+
+Integrate Cloudinary so uploaded images are stored and delivered through Cloudinary rather than local project assets or Firebase Storage.
+
+The application should support image uploads when users:
+
+- Create public posts.
+- Add images to project showcases.
+- Publish tutorials containing images.
+- Attach screenshots to public project descriptions.
+
+Do not redesign the existing private chat attachment system as part of this task unless an existing shared upload implementation must be reused safely.
+
+Do not add user-uploaded profile-picture functionality if the current application uses predefined avatars.
+
+Cloudinary is for public content media in this implementation.
+
+### Cloudinary upload architecture
+
+Use authenticated, signed uploads.
+
+The upload process should work as follows:
+
+1. A signed-in user selects an image.
+2. The frontend validates its type and size.
+3. The frontend requests an upload signature from a secure Vercel API endpoint.
+4. The Vercel endpoint verifies the user's Firebase ID token.
+5. The server generates a Cloudinary upload signature using the private API secret.
+6. The browser uploads the image directly to Cloudinary using the signed request.
+7. Cloudinary returns the image's secure URL and asset metadata.
+8. The application saves the relevant media metadata to Firestore alongside the public post.
+9. The image appears in the public post.
+
+Do not route large image files unnecessarily through the Vercel server.
+
+### Cloudinary preset
+
+Use a dedicated signed upload preset.
+
+Suggested preset name:
+
+`buildbuds-public-posts`
+
+Suggested asset folder:
+
+`buildbuds/public-posts`
+
+Configure the preset with suitable restrictions:
+
+- Signed uploads only.
+- Image resource type only.
+- Restricted accepted formats.
+- JPEG, JPG, PNG, WebP and AVIF where supported.
+- Unique asset identifiers.
+- No automatic overwriting of existing user uploads.
+- Appropriate image optimisation.
+- Reasonable maximum dimensions through incoming transformations.
+- No arbitrary user-controlled folder names.
+
+Do not enable unrestricted anonymous image uploads.
+
+### Frontend validation
+
+For the initial public image uploader:
+
+- Allow a maximum of five images per post.
+- Use a configurable size limit, initially 5 MB per image.
+- Validate MIME type and file extension.
+- Show image previews before publication.
+- Allow users to remove images before publishing.
+- Display upload progress.
+- Handle individual upload failures.
+- Preserve the post draft when an image upload fails.
+
+Client-side checks are not sufficient security controls. Enforce supported formats and upload restrictions through the signed preset and server-side upload flow. Where a strict byte-size limit must be enforced against malicious clients, use an appropriate server-enforced upload or account-level limit rather than trusting the browser alone.
+
+### Cloudinary metadata
+
+Store useful metadata in Firestore:
+
+- Secure image URL.
+- Public ID.
+- Asset owner UID.
+- Width.
+- Height.
+- File format.
+- File size.
+- Creation timestamp.
+- Associated post or project ID.
+
+Use `secure_url` delivery.
+
+Never store the API secret in Firestore or client-side code.
+
+### Image delivery
+
+Use Cloudinary's optimisation and responsive image transformations where appropriate.
+
+Ensure images load efficiently on:
+
+- Desktop.
+- Tablet.
+- Mobile.
+
+Provide deliberate fallbacks when an image fails to load.
+
+Do not use random image URLs or placeholders that do not exist.
+
+### Image deletion
+
+When a user deletes an uploaded public post, handle associated Cloudinary assets appropriately.
+
+A server-side deletion function must verify ownership or administrator authority before deleting an asset.
+
+Never allow a user to submit arbitrary Cloudinary public IDs and destroy somebody else's assets.
+
+Where immediate deletion is not appropriate, mark the asset for controlled cleanup.
+
+---
+
+# PART I — FIREBASE AND DATABASE SECURITY
+
+## 10. Preserve and strengthen the existing Firebase architecture
+
+Firebase Authentication and Firestore must remain the authoritative backend.
+
+Inspect the existing Firestore collections and security rules before introducing new collections.
+
+Do not create parallel collections that duplicate existing user profiles or current chat data unnecessarily.
+
+### Suggested data structures
+
+Adapt these to the existing schema rather than blindly duplicating fields.
+
+**Public user profiles**
+
+`users/{uid}`
+
+Store basic profile information and public account status.
+
+**Private user information**
+
+`users_private/{uid}`
+
+Keep private email and sensitive account-related information separate.
+
+**Public posts**
+
+`publicPosts/{postId}`
+
+Store post title, body, author, category, tags, image metadata, published status and timestamps.
+
+**Public comments**
+
+`publicPosts/{postId}/comments/{commentId}`
+
+Store comments and optional parent/reply references.
+
+**Public reactions**
+
+`publicPosts/{postId}/reactions/{uid}`
+
+Use the authenticated UID to prevent duplicated reactions.
+
+**Student access requests**
+
+`studentAccessRequests/{uid}`
+
+Store the applicant's private student-registration details and review status.
+
+Use the authenticated Firebase UID as the application identity to prevent multiple competing requests from the same account.
+
+**Trusted student memberships**
+
+`communityMemberships/{uid}`
+
+Store approved membership status and relevant audit information.
+
+**User notifications**
+
+`userNotifications/{uid}/items/{notificationId}`
+
+Store internal Build Buds notification records and read status.
+
+**Administrative audit records**
+
+`adminAuditLogs/{logId}`
+
+Record sensitive administrative decisions.
+
+Do not expose private student verification information through public profile queries.
+
+### Firestore Security Rules
+
+This is one of the most important parts of the implementation.
+
+Review and update the actual deployed Firestore security rules.
+
+Do not rely on frontend conditionals to protect data.
+
+Implement the following access model:
+
+| Resource | Public visitor | Signed-in public user | Approved student | Admin |
+|---|---|---|---|---|
+| Published public posts | Read | Read | Read | Manage |
+| Public comments | Read | Read/write as permitted | Read/write | Manage |
+| Public reactions | Read | Read/write | Read/write | Manage |
+| Student access requests | No | Own request only | Own request/status | Review |
+| Private chat | No | No | Yes, subject to channel permissions | Yes |
+| Private chat attachments | No | No | Existing permissions | Existing permissions |
+| Admin dashboard | No | No | No | Yes |
+| Other students' private records | No | No | No | Authorised admin only |
+
+### Membership enforcement
+
+The approval process must create a trusted membership record through privileged backend logic.
+
+Only the trusted backend or authorised administrator operations may create, approve, suspend or revoke membership.
+
+A user must never be able to modify their own membership document to become approved.
+
+Update the Firestore rules for the existing Community Hub collection paths so that private chat data requires an approved membership.
+
+The existing channel-specific permissions must remain in force as additional restrictions.
+
+An approved student should still obey existing moderator roles, channel locks and other Community Hub permissions.
+
+A pending or rejected user must not be able to retrieve private chat messages by:
+
+- Opening a direct channel URL.
+- Calling Firestore directly.
+- Reusing an old local-storage value.
+- Editing their browser state.
+- Calling a client-side function.
+- Modifying their profile document.
+
+Do not trust `localStorage` as evidence of membership.
+
+### Admin authority
+
+Review the existing administrator implementation.
+
+Do not rely solely on a client-side email constant or a user-editable profile role to grant administrative permissions.
+
+Use trusted Firebase Admin SDK custom claims or an equivalent secure server-side admin-authorisation mechanism.
+
+Administrator claims must only be assigned from a privileged trusted environment.
+
+Verify administrative permissions both in the API layer and Firestore rules.
+
+Do not allow users to change their own `role`, `communityAccessStatus` or approval fields.
+
+### Existing user migration
+
+This project already has users and chat history.
+
+Do not delete existing profiles or message data.
+
+Prepare a migration approach for users who registered under the previous system.
+
+Do not automatically assume every old account has verified student status.
+
+Provide an administrative migration or review mechanism so legitimate existing students can retain their access after their records are checked.
+
+Preserve existing admin and moderator privileges through secure migration.
+
+---
+
+# PART J — EXISTING COMMUNITY HUB PRESERVATION
+
+## 11. Do not redesign the Discord-style chat interface
+
+The current `CommunityHub.tsx` has already been designed and refined.
+
+It is working as the main private chat workspace and its visual layout is approved.
+
+**Do not rebuild, redesign, replace, simplify or change the visual layout of the existing CommunityHub.**
+
+Do not modify its:
+
+- Sidebar layout.
+- Channel presentation.
+- Conversation layout.
+- Message composer.
+- Member panel.
+- Message grouping.
+- Typing indicators.
+- Presence indicators.
+- Reactions.
+- Existing thread interactions.
+- Existing responsive chat layout.
+- Existing theme and visual styling.
+
+The task is to integrate the new public/private access architecture into the existing application.
+
+Only make changes within the Community Hub where required to:
+
+- Verify the authenticated user's private membership.
+- Prevent unapproved users from entering.
+- Preserve existing channel-level permissions.
+- Refresh membership status after approval.
+- Redirect users appropriately when access is revoked.
+
+The existing chat data must remain intact.
+
+### Correct entry behaviour
+
+When a user clicks the Student Hub or existing community-chat entry point:
+
+**If not signed in:**
+
+Ask them to sign in with Google.
+
+**If signed in but no student application exists:**
+
+Display the Student Hub access-request page.
+
+**If the application is pending:**
+
+Show the pending-review status page.
+
+**If the application is approved:**
+
+Open the existing CommunityHub.
+
+**If the application is rejected:**
+
+Keep them in the public environment and show their application status.
+
+**If the membership is suspended or revoked:**
+
+Block private chat access and show an appropriate explanation.
+
+Ensure the same behaviour applies when the installed PWA launches directly into the Student Hub.
+
+Do not allow standalone/PWA mode to bypass student verification.
+
+The current `buildbuds_hub_open` local-storage value must never override backend membership permissions.
+
+---
+
+# PART K — USER EXPERIENCE AND PAGE NAVIGATION
+
+## 12. Create a coherent transition between public and private environments
+
+The transition should feel natural.
+
+The public visitor should not feel as though they are being sent to an unrelated application.
+
+Use consistent branding, navigation and profile identity across both environments.
+
+### Public user menu
+
+When signed in, show:
+
+- User profile.
+- Public posts.
+- Saved content, if implemented.
+- Student Hub access status.
+- Request Student Hub access.
+- Notification status.
+- Sign out.
+
+### Student access status
+
+Display the correct current state:
+
+**Not requested:** Invite the user to apply.
+
+**Pending:** Explain that the application is under review.
+
+**Approved:** Provide an option to enter the Student Hub.
+
+**Rejected:** Explain the status and permitted reapplication process.
+
+**Suspended:** Explain that private access is currently unavailable and provide an appropriate contact path.
+
+Do not show private student data to the public.
+
+### Suggested routes
+
+Adapt these to the existing application's route system:
+
+- `/community` — public discovery feed.
+- `/community/posts/:id` — individual public post.
+- `/community/creations` — project discovery.
+- `/community/updates` — public announcements.
+- `/login` — authentication.
+- `/student-access` — student application.
+- `/student-access/status` — application status.
+- `/hub` — existing CommunityHub entry point.
+- `/admin/student-access` — administrator review dashboard.
+
+Do not introduce unnecessary routing dependencies if the current architecture already provides an appropriate solution.
+
+Ensure all routes work after a direct browser refresh on Vercel.
+
+Ensure the existing SPA rewrites do not swallow serverless `/api/*` endpoints.
+
+---
+
+# PART L — EMAIL AND CLOUDINARY BACKEND IMPLEMENTATION
+
+## 13. Create secure Vercel serverless endpoints
+
+Use the existing Vercel deployment to host the necessary server-side integration endpoints.
+
+Suggested endpoints:
+
+`POST /api/cloudinary/signature`
+
+Authenticates the Firebase user and generates a restricted Cloudinary upload signature.
+
+`POST /api/student-access/submit`
+
+Validates and records a student access request if a trusted server endpoint is needed by the implementation.
+
+`POST /api/student-access/approve`
+
+Verifies the administrator's Firebase ID token and approves a specific application.
+
+`POST /api/student-access/reject`
+
+Verifies administrator authority and processes a rejection.
+
+`POST /api/student-access/notify`
+
+Handles legitimate notification retries where appropriate.
+
+These are suggested logical endpoints. Adjust them to the existing Vercel project structure.
+
+### Firebase ID token verification
+
+For protected serverless functions:
+
+- Obtain the current Firebase ID token from the authenticated client.
+- Send it over HTTPS using an Authorization Bearer header.
+- Verify it using the Firebase Admin SDK.
+- Identify the user from the verified token UID.
+- Validate administrator claims where required.
+- Reject unauthenticated or unauthorised requests.
+
+Never trust a UID, role or email supplied only in the request body.
+
+Do not place Firebase Admin service-account credentials in browser code.
+
+### Server-side dependencies
+
+Inspect the existing dependencies first.
+
+Add only necessary backend dependencies, pin compatible versions and update the lockfile.
+
+If Firebase Admin, Cloudinary or Resend packages are required, add them appropriately.
+
+Do not introduce an unnecessary server framework merely to create simple API endpoints.
+
+### Environment variable security
+
+The current Vite configuration exposes variables using `VITE_` and also `FIREBASE_` prefixes.
+
+Be particularly careful not to place new private Firebase service-account credentials under a variable name that could be exposed through the current Vite `FIREBASE_` prefix.
+
+Use a server-only environment-variable name such as:
+
+`FB_ADMIN_SERVICE_ACCOUNT_JSON`
+
+Keep all backend secrets outside the client bundle.
+
+Never prefix the following private variables with `VITE_` or `FIREBASE_`.
+
+---
+
+# PART M — CONFIGURATION GUIDE FOR THE OWNER
+
+## 14. Create an implementation and configuration guide
+
+After completing the code, produce a clear setup document named:
+
+`BUILDBUDS-INTEGRATION-SETUP.md`
+
+It must explain precisely how to configure the external services.
+
+### Cloudinary setup
+
+Document these steps:
+
+1. Create or sign in to a Cloudinary account.
+2. Open the Cloudinary dashboard.
+3. Locate the Cloud Name, API Key and API Secret.
+4. Open Settings.
+5. Navigate to Upload Presets.
+6. Create a new upload preset named `buildbuds-public-posts`.
+7. Set the preset to Signed.
+8. Restrict the preset to the required image formats.
+9. Set the appropriate Build Buds public media folder.
+10. Save the preset.
+
+Explain why the API Secret must never be placed in frontend code.
+
+### Vercel configuration
+
+Document the exact environment variable names required:
+
+| Variable | Purpose | Exposure |
+|---|---|---|
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud identifier | Server-side in this implementation |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | Server-side |
+| `CLOUDINARY_API_SECRET` | Cloudinary signing secret | Secret |
+| `FB_ADMIN_SERVICE_ACCOUNT_JSON` | Firebase Admin service-account JSON | Secret |
+| `RESEND_API_KEY` | Email delivery API key | Secret |
+| `BUILDBUDS_FROM_EMAIL` | Verified sender address | Server configuration |
+| `BUILDBUDS_APP_URL` | Public Build Buds URL | Configuration |
+
+Do not create fake values or claim that integrations are active before credentials are configured.
+
+Explain where each value is obtained and how to paste it into Vercel.
+
+### Email configuration
+
+Document how to:
+
+1. Create or access a Resend account.
+2. Verify an appropriate sending domain.
+3. Create an API key.
+4. Copy the key securely.
+5. Add the API key and verified sender address to Vercel.
+6. Configure the production URL.
+7. Test a student approval email.
+
+Do not invent a sender email address or assume an unverified domain can deliver production emails.
+
+### Vercel environment handling
+
+Explain how to:
+
+1. Open Vercel.
+2. Select the Build Buds project.
+3. Open Settings.
+4. Open Environment Variables.
+5. Add each required variable.
+6. Select the relevant environments: Production, Preview and Development.
+7. Save the changes.
+8. Redeploy the application so the new values become available.
+
+Also include local-development instructions using `.env.local`.
+
+Ensure `.env.local` and other secret-bearing files are excluded from Git.
+
+The `.env.example` file should contain variable names and empty placeholders only.
+
+---
+
+# PART N — RESPONSIVE DESIGN AND ACCESSIBILITY
+
+## 15. Maintain quality across devices
+
+The public Community Discovery page must be fully responsive.
+
+Test at:
+
+- Large desktop.
+- Standard laptop.
+- Tablet.
+- Mobile phone.
+- Narrow mobile screens.
+
+Ensure:
+
+- No horizontal overflow.
+- No broken image layouts.
+- No clipped post content.
+- No inaccessible dropdowns.
+- No hover-only controls.
+- No overlapping sticky elements.
+- No buttons with inadequate touch targets.
+- No unreadable text.
+- No inaccessible comment threads.
+
+Maintain the existing Community Hub's current responsive behaviour.
+
+Use semantic HTML, keyboard-accessible controls and clear loading, error, success and empty states.
+
+Respect reduced-motion preferences.
+
+---
+
+# PART O — TESTING AND VERIFICATION
+
+## 16. Perform proper end-to-end testing
+
+Do not consider this project completed merely because the page looks correct.
+
+Test real Firebase authentication, Firestore access, Cloudinary uploads, administrator approval and email delivery.
+
+### Public visitor tests
+
+1. Open Build Buds without signing in.
+2. Visit `/community`.
+3. Browse published posts.
+4. Open individual posts.
+5. Read comments and replies.
+6. Explore project images and links.
+7. Confirm that private chat content is inaccessible.
+
+### Public account tests
+
+1. Attempt to comment while signed out.
+2. Complete Google sign-in.
+3. Return to the intended comment action.
+4. Create a comment.
+5. React to a post.
+6. Publish a public post if permitted.
+7. Refresh the page.
+8. Confirm content and reactions persist.
+9. Confirm that the user has not automatically received private chat access.
+
+### Student application tests
+
+1. Sign in with Google.
+2. Request Student Hub access.
+3. Complete the student details form.
+4. Submit the request.
+5. Confirm the pending status.
+6. Confirm that the Student Hub remains inaccessible.
+7. Attempt to access the Hub using its direct URL.
+8. Confirm that Firestore security rules still block access.
+
+### Administrator tests
+
+1. Open the administration dashboard as an authorised administrator.
+2. View pending applications.
+3. Open an application.
+4. Record that the student has been verified against the organisation's records.
+5. Approve the student.
+6. Confirm that the backend grants the correct membership.
+7. Confirm that the student becomes eligible for CommunityHub access.
+8. Confirm that an approval email is sent.
+9. Test a rejected application.
+10. Test a suspended student account.
+11. Test failed email delivery and notification retry.
+
+### Cloudinary tests
+
+1. Upload a supported image.
+2. Confirm that a server-generated signature is used.
+3. Confirm that the image appears in Cloudinary.
+4. Confirm that the secure URL is stored in Firestore.
+5. Confirm that the image appears in the public post.
+6. Test an unsupported file type.
+7. Test an image exceeding the configured size limit.
+8. Test a failed upload.
+9. Confirm that the post draft is not lost.
+10. Confirm that users cannot delete other users' assets.
+
+### Private Community Hub tests
+
+1. Open the existing Hub as an approved student.
+2. Confirm that all previous chat functions still work.
+3. Confirm that channels and message histories are preserved.
+4. Open the Hub as an unapproved account.
+5. Confirm that access is denied.
+6. Attempt direct Firestore reads from an unapproved session.
+7. Confirm the security rules block private chat data.
+8. Test direct PWA launch and refresh behaviour.
+
+### Build and deployment
+
+Run the existing build and lint commands.
+
+Resolve new TypeScript errors, runtime errors, broken imports, failed requests and security-rule problems.
+
+Test the deployed Vercel application, not just the local development server.
+
+Verify that:
+
+- Public pages work after refresh.
+- API endpoints resolve correctly.
+- Cloudinary signed uploads work.
+- Firebase authentication redirects correctly.
+- Email delivery works.
+- Existing CommunityHub access remains intact for approved members.
+
+Do not claim that deployment is complete or that credentials are valid unless the corresponding tests have actually succeeded.
+
+---
+
+# PART P — FINAL INSTRUCTIONS
+
+## 17. Protect the existing project
+
+These instructions take priority over any temptation to rebuild or simplify the existing application.
+
+1. Do not redesign the existing Discord-style CommunityHub.
+2. Do not delete existing Firebase users.
+3. Do not delete existing chat messages.
+4. Do not replace Firebase with Supabase.
+5. Do not introduce Haven as a replacement for the existing Hub.
+6. Do not automatically grant private access to every authenticated Google account.
+7. Do not expose private student records.
+8. Do not use frontend-only checks as the access-control mechanism.
+9. Do not expose service-account credentials or API secrets.
+10. Do not break the existing PWA installation and standalone launch flows.
+11. Do not replace the official Build Buds logo or colours.
+12. Do not break existing working functionality to implement new features.
+
+Work incrementally.
+
+First inspect the repository, then implement the public discovery page, public accounts, access-request system, secure approval process, Cloudinary integration and notification delivery.
+
+Keep changes modular and maintainable.
+
+Reuse existing components and services where sensible.
+
+After completion, produce a concise implementation report containing:
+
+- New components and pages created.
+- Existing components modified.
+- Firestore collections added or changed.
+- Security rules updated.
+- Serverless API endpoints created.
+- Cloudinary integration status.
+- Email integration status.
+- Environment variables still requiring owner configuration.
+- Firebase and Vercel deployment actions still required.
+- Tests performed and their results.
+- Any remaining blockers.
+
+**The end result should be one connected Build Buds platform: a beautiful public community where people discover and discuss creations, and a securely controlled private Student Hub where verified Jaystarbliss Studios students communicate and collaborate using the existing chat experience.**
+
+Build on what already exists. Do not start over.

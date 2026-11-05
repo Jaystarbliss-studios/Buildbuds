@@ -1,0 +1,1023 @@
+# BUILDBUDS — NAVIGATION REFINEMENT, COMMUNITY DISCOVERY, CONTENT MANAGEMENT AND PUBLIC SHOWCASE INTEGRATION
+
+## PROJECT INSTRUCTIONS
+
+We are refining the existing Build Buds application.
+
+The current application already has a main marketing homepage, a public community experience, a Discord-style private chat workspace, user profiles, authentication and administrative functionality.
+
+The objective is to simplify the navigation, remove unnecessary visual elements, improve the separation between the main website and public community, and properly connect content shared inside the private chat to the public project showcase.
+
+**IMPORTANT: This is an existing application. Do not rebuild it, replace its architecture or redesign working components unnecessarily. Inspect the existing repository and modify the appropriate components in place.**
+
+Repository:
+https://github.com/Jaystarbliss-studios/Buildbuds.git
+
+Preserve the existing Firebase Authentication, Firestore database, Vercel deployment, PWA functionality, Build Buds logo and established brand identity.
+
+The newly attached reference image should be used as the structural and layout reference for the public Community Discovery page. Reproduce its general composition, content organisation, visual hierarchy and discovery experience, but apply the official Build Buds identity.
+
+Do not simply reproduce the reference image as a static screenshot.
+
+Build a genuinely functional, responsive page.
+
+---
+
+# PART 1 — SIMPLIFY THE MAIN WEBSITE NAVIGATION
+
+## 1. Main marketing homepage navigation
+
+The main Build Buds homepage currently has too many navigation items and actions.
+
+I want the main navigation significantly simplified.
+
+### Remove the following from the main homepage navigation:
+
+- Community navigation item.
+- Explore Creations.
+- Latest Updates.
+- Challenges.
+- Open Student Hub button.
+- Download App button.
+- The large Day Mode / Cosmic Night theme toggle.
+- Any unnecessary decorative sparkle icons.
+
+Do not display public community navigation links across the top of the marketing homepage.
+
+The purpose of this change is to prevent duplication and visual clutter.
+
+### Main homepage header layout
+
+Keep the Build Buds logo on the left.
+
+The logo should remain clickable and lead to the main website homepage.
+
+On the right, retain a clean account/profile control.
+
+The main homepage header should be minimal, with no unnecessary navigation links or oversized action buttons.
+
+Do not remove the existing homepage content, hero section, project introduction or relevant calls to action.
+
+The existing homepage CTA for exploring the community can remain within the actual page content. However, do not duplicate it as another navigation item.
+
+The homepage should introduce Build Buds, while the actual community experience should have its own dedicated navigation.
+
+---
+
+# PART 2 — COMMUNITY NAVIGATION AND PAGE STRUCTURE
+
+## 2. Separate the public community from the marketing homepage
+
+When a visitor enters the public community through the existing Explore Community action, the experience should transition into a dedicated Community Discovery environment.
+
+The marketing homepage navigation should no longer be displayed in this environment.
+
+The public community should have its own compact navigation structure.
+
+### Public community header
+
+On the left:
+
+- Build Buds logo.
+
+The logo itself should serve as the home navigation.
+
+Do not add a separate Home navigation item.
+
+Do not add a separate Community navigation item.
+
+The logo should provide the way back to the main Build Buds homepage.
+
+### Main community navigation
+
+Immediately after the logo, display:
+
+1. Explore Creations.
+2. Latest Updates.
+3. Challenges.
+
+These should be the main public-community navigation items.
+
+Each item must navigate to its correct page or content section.
+
+Do not include the word Community in the navigation simply to indicate that the user is already within the community.
+
+### Right-hand action area
+
+On the far right, arrange these controls:
+
+1. Share Creation / Post.
+2. Notification Bell.
+3. User Account/Profile.
+
+The account/profile control must sit at the extreme right.
+
+Make the controls appropriately spaced and visually balanced.
+
+### Remove the following from the community navigation:
+
+- Community navigation button.
+- Home navigation button.
+- Open Student Hub button.
+- Download App button.
+- Separate Day Mode / Cosmic Night toggle.
+- Sparkle icons.
+- Any duplicated community entry point.
+
+The public community header should feel clean, modern and purposeful.
+
+---
+
+# PART 3 — ACCOUNT DROPDOWN AND USER PROFILE
+
+## 3. Make the profile menu the central account-control area
+
+Move secondary account controls into the profile dropdown instead of displaying them independently across the navigation.
+
+The account control should be positioned at the extreme right of the header.
+
+Use the user's actual profile avatar where available.
+
+Do not display a misleading Student label for someone who has not yet been verified.
+
+### Logged-out visitor
+
+When someone has not signed in:
+
+- Display a generic account label such as Guest or User.
+- Use an appropriate generic account icon or existing default avatar.
+- Do not show a username that does not exist.
+- Clicking the profile control opens the account dropdown.
+
+The dropdown should include:
+
+- Sign In.
+- Appearance settings.
+
+Do not show Sign Out to someone who is not authenticated.
+
+### Authenticated public user
+
+When a user has signed in, show their actual display name and profile avatar.
+
+The dropdown may include:
+
+- My Profile.
+- My Public Posts.
+- Saved Creations, if implemented.
+- Private Chat Access.
+- Appearance.
+- Sign Out.
+
+The private-chat option must reflect the user's actual student-membership status.
+
+### Approved student
+
+For a student whose private membership has been approved, display:
+
+**Enter Private Chats**
+
+This is the new user-facing name for accessing the existing Discord-style Community Hub.
+
+Do not call the button Open Student Hub.
+
+Do not display a separate green Student Hub button anywhere else.
+
+Clicking Enter Private Chats should open the existing CommunityHub without changing its design.
+
+### Unapproved user
+
+If an authenticated user has not yet applied for private access, show:
+
+**Request Private Chat Access**
+
+If the request is pending, display:
+
+**Access Request Pending**
+
+If approved, display:
+
+**Enter Private Chats**
+
+If rejected or suspended, display an appropriate status and explanation.
+
+Do not allow this menu item to bypass the existing verification and approval system.
+
+### Administrator account
+
+Administrators should see their additional management options within the profile dropdown.
+
+These should include:
+
+- Verify Student Membership.
+- My Public Posts.
+- Manage Categories.
+- Review Mode.
+- Relevant content-management tools already available in the application.
+
+The student-verification tool must be accessible through the account menu rather than appearing as a prominent navigation button.
+
+Do not display administrator tools to ordinary users.
+
+Do not expose admin functions through frontend-only role checks.
+
+All administrative actions must retain their existing backend authorisation requirements.
+
+---
+
+## 4. Appearance settings
+
+Remove the separate Day Mode / Cosmic Night control from the navigation bar.
+
+Instead, place the appearance control inside the profile dropdown.
+
+Use a single compact icon rather than a large labelled navigation button.
+
+The control should allow users to switch between:
+
+- Day Mode.
+- Cosmic Night / Dark Mode.
+
+Use the existing theme implementation.
+
+When clicked, the theme should change immediately.
+
+Display the correct icon and state to indicate the active or available appearance option.
+
+Persist the user's chosen preference so that it remains consistent after refreshing the page.
+
+For logged-out visitors, the appearance control must remain accessible through the generic account dropdown.
+
+Do not create a new theme system or break the existing light/dark theme implementation.
+
+---
+
+## 5. Dropdown closing behaviour
+
+Improve the account dropdown interaction.
+
+Currently, the dropdown requires users to click the profile button again to close it.
+
+Change this.
+
+The dropdown must close when:
+
+- The user clicks anywhere outside the dropdown.
+- The user clicks the profile button again.
+- The user presses Escape.
+- The user selects a navigation action.
+- The user navigates to another page.
+
+Clicking inside the dropdown should not accidentally close it before an action has been completed.
+
+Implement proper event handling, accessible focus management and appropriate keyboard behaviour.
+
+Ensure the functionality works on desktop and mobile.
+
+---
+
+# PART 4 — REMOVE SPARKLE ICONS AND UNNECESSARY DECORATION
+
+## 6. Eliminate sparkle-related visual elements
+
+I do not want sparkle icons appearing anywhere in the Build Buds interface.
+
+Remove all instances of:
+
+- Sparkles icons.
+- Sparkle icons.
+- Sparkle decorations.
+- Sparkle cursor effects.
+- Decorative sparkle symbols beside headings.
+- Sparkle icons beside Build Buds Hub branding.
+- Sparkle icons in buttons.
+- Sparkle icons in navigation menus.
+- Sparkle icons in sidebars.
+- Any other variations of the same decorative symbol.
+
+Pay particular attention to the left sidebar of the existing private Community Hub.
+
+If the current interface displays the Build Buds Hub branding with a sparkle icon, remove that sparkle icon.
+
+Keep the actual branding and text intact.
+
+Do not replace every removed sparkle icon with another decorative icon.
+
+Where an icon is necessary, use the existing appropriate Lucide icon.
+
+Maintain the current design quality without introducing unrelated decoration.
+
+Do not change the underlying functionality of the sections where these icons are removed.
+
+---
+
+# PART 5 — PUBLIC COMMUNITY DISCOVERY PAGE
+
+## 7. Follow the attached visual reference
+
+The attached image is the preferred layout reference for the public community experience.
+
+I specifically prefer the Community Discovery direction previously discussed.
+
+Use that structure.
+
+The page should feel like a modern community discovery platform with a visually appealing content feed, organised navigation, featured creations and clear discovery categories.
+
+Do not make it look like the existing Discord-style chat interface.
+
+The public community and private chat are two different experiences.
+
+### Design identity
+
+Use the official Build Buds palette:
+
+- Yellow: #FFF025.
+- Pink: #B11469.
+- Orange: #C15D00.
+- Black: #000000.
+- White: #FFFFFF.
+
+Use Chewy for expressive headings and a clean sans-serif for normal interface text.
+
+Retain the existing brand identity.
+
+Use the attached image as a structural reference, while adapting the interface to the official Build Buds colours.
+
+Avoid excessive cards, unnecessary whitespace, repeated icon containers and generic template layouts.
+
+The page should feel like an actual creative community.
+
+### Public community navigation
+
+The public navigation should include:
+
+- Build Buds logo, serving as home navigation.
+- Explore Creations.
+- Latest Updates.
+- Challenges.
+
+On the right:
+
+- Share Creation / Post.
+- Notifications.
+- User Account.
+
+Do not add a separate Home or Community button.
+
+### Explore Creations
+
+Make this the primary public discovery area.
+
+Show:
+
+- All Creations.
+- Games.
+- Websites.
+- Experiments.
+- Creative Tools.
+
+Also support additional categories such as videos and novels where configured.
+
+These categories must not be populated with hardcoded sample games, arbitrary links or fictitious website entries.
+
+All displayed content must come from actual published records in Firestore.
+
+If no approved content exists in a category, display a professional empty state instead of fabricated content.
+
+### Latest Updates
+
+This section should contain official public announcements, platform developments and approved community updates.
+
+Use actual published update records.
+
+Do not automatically expose internal chat announcements.
+
+### Challenges
+
+Display only challenges that have actually been created and published through the relevant administration or content-management system.
+
+Do not hardcode fake challenge deadlines, prizes, participant counts or active competitions.
+
+---
+
+# PART 6 — REMOVE HARDCODED CREATIONS AND PROJECT LINKS
+
+## 8. Make the public showcase fully data-driven
+
+This is a very important requirement.
+
+The current website contains sample projects, games, website previews and other example content.
+
+I do not want hardcoded games, hardcoded website URLs, sample repositories or fictitious project links appearing as actual public content.
+
+Inspect the existing project showcase, mock data and all components responsible for displaying creations.
+
+Remove the hardcoded demonstration content from the live production experience.
+
+Do not leave fake games or arbitrary external links in the All Creations section.
+
+The public showcase must load real content from the existing Firestore database.
+
+### Approved public content sources
+
+Public creations may come from two places:
+
+**Source 1: Administrator-published content**
+
+An administrator can create a public creation or project directly from the administration interface.
+
+**Source 2: Private Community Hub submissions**
+
+Students may share games, websites, videos, novels, experiments and other creations inside the existing private Community Hub.
+
+Those submissions must initially remain private to the channels and users who are authorised to access them.
+
+An administrator may subsequently select one or more of those shared creations for public showcasing.
+
+Students should also be able to request that their creations be considered for public showcasing.
+
+No private chat link should automatically become publicly accessible simply because it has been shared in a channel.
+
+### Important publication rule
+
+Only records explicitly approved and published for public viewing should appear on the main website.
+
+The public website must not fetch and render private chat messages directly as public content.
+
+Create or update an appropriately controlled public publication record when content has been approved.
+
+Preserve the original source message and its private-channel permissions.
+
+If a student submits a creation for public consideration, the request must be reviewed before publication.
+
+---
+
+# PART 7 — INTEGRATE PRIVATE SHARED CREATIONS WITH THE PUBLIC SHOWCASE
+
+## 9. Connect Community Hub creator-showcase channels to public publishing
+
+The existing private Community Hub already has creator-showcase sections.
+
+These include:
+
+- Games.
+- Websites.
+- Videos.
+- Novels.
+- All Shared Links.
+
+Preserve the existing channel structure and interactions.
+
+Do not redesign the chat interface.
+
+### All Creations
+
+The public All Creations section should aggregate approved, publicly published creations from the relevant categories.
+
+It should not automatically display every private message.
+
+### Individual categories
+
+The public website should display approved items in the corresponding sections:
+
+- Games.
+- Websites.
+- Videos.
+- Novels.
+- Experiments.
+- Creative Tools.
+
+The category structure should be configurable by the administrator.
+
+Do not create a different hardcoded content source for every category.
+
+Use a common content model with category metadata.
+
+### Student sharing workflow
+
+Students should have two ways to share their creations.
+
+**Option A — Share through the private chat**
+
+A student posts a game, website, repository or other creation inside the appropriate Community Hub channel.
+
+That submission remains private by default.
+
+The student may request that it be considered for public showcasing.
+
+**Option B — Share directly through the public community**
+
+An authenticated public user can create a public post or submit a creation through the Share Creation / Post button.
+
+Apply the configured Review Mode rules before publishing.
+
+The public publishing workflow must be separate from the private chat messaging workflow.
+
+### Administrator curation workflow
+
+Create or extend the administration tools so that the administrator can browse submissions and select creations for public showcasing.
+
+The administrator should be able to:
+
+- View the creator's original submission.
+- View the original channel or submission source.
+- Open the original game or website.
+- View the provided description.
+- Preview attached media.
+- Select a public category.
+- Edit the public display title.
+- Improve or add a public description.
+- Select or change the cover image, where permitted.
+- Add appropriate tags.
+- Approve the submission for public showcasing.
+- Reject the request.
+- Return it for additional information.
+- Unpublish a previously published creation.
+
+Do not modify the original private message when editing the public showcase details.
+
+The public publication should retain a reference to its original source for administrative traceability.
+
+### Student requests
+
+Provide a clear way for a student to request public showcasing of a private creation.
+
+The student should be able to see the request status:
+
+- Pending review.
+- Approved.
+- Rejected.
+- Additional information required.
+
+Notify the student when an administrator makes a decision.
+
+### Ownership and consent
+
+Where a student submits a creation created by them, associate the publication with their account.
+
+Before publishing a private-channel submission publicly, obtain explicit confirmation that the student is happy for the linked content and submitted material to be public.
+
+Do not expose private names, school information or other sensitive student details without appropriate permission.
+
+---
+
+# PART 8 — ALL SHARED LINKS AND UNREAD ACTIVITY
+
+## 10. Fix the All Shared Links content-loading problem
+
+There is currently a problem with All Shared Links.
+
+Some shared links do not appear immediately. It sometimes seems that more than one item is missing until the user opens the section.
+
+This must be investigated and corrected.
+
+Do not simply change the displayed item count.
+
+Inspect the actual Firestore queries, subscriptions, pagination, caching and rendering logic.
+
+### Expected behaviour
+
+All Shared Links should contain the complete collection of shared links that the authenticated user is authorised to access across the relevant Community Hub channels.
+
+Every valid shared-link message should be represented.
+
+The section should:
+
+- Load its available history reliably.
+- Display new links as they arrive.
+- Update automatically through the existing real-time infrastructure.
+- Preserve chronological ordering.
+- Avoid duplicated records.
+- Avoid dropping messages because of incorrect query limits.
+- Handle pagination correctly.
+- Display older links when the user requests them.
+- Retain the original channel information and sender details.
+- Respect existing private-channel access permissions.
+
+The section must not depend on the user opening it for the first time before the content becomes visible or loads correctly.
+
+Investigate the current implementation and fix the actual issue.
+
+### Unread/new activity indicators
+
+Improve the visibility of new shared links and activity.
+
+When new messages or links arrive in All Shared Links or a relevant channel, display a clear unread/new-activity indicator.
+
+Use the existing brand palette:
+
+- Yellow: #FFF025.
+- Pink: #B11469.
+- Orange: #C15D00.
+
+A compact yellow or pink unread badge is preferable.
+
+The badge may display a meaningful unread count or a small indicator when a numerical count is unavailable.
+
+Do not add unnecessary green badges or unrelated status colours.
+
+### Unread count behaviour
+
+- Count genuinely unread incoming messages or links.
+- Do not count the current user's own messages as incoming unread messages where inappropriate.
+- Update the count in real time.
+- Clear the unread state when the relevant section is opened or messages are marked as read.
+- Preserve the read state across refreshes and authenticated sessions.
+- Avoid counting the same message more than once.
+- Do not display fake unread counts.
+
+If the existing interface already has a numerical count, preserve it and correct its underlying logic.
+
+Apply consistent unread indicators to other relevant channels where new activity occurs.
+
+---
+
+# PART 9 — NOTIFICATION BELL
+
+## 11. Use the notification bell in the community header
+
+The public community header should contain a notification bell beside the Share Creation / Post and Account controls.
+
+The bell should provide access to genuine user notifications.
+
+It may include notifications for:
+
+- Replies to the user's public posts.
+- Replies to the user's comments.
+- Reactions and relevant engagement.
+- Public-post moderation decisions.
+- Student access application decisions.
+- Student access approval.
+- Requests for additional information.
+- Important community updates.
+
+Use Firestore-backed notification records.
+
+Provide:
+
+- An unread indicator.
+- A notification dropdown or panel.
+- A clear read/unread state.
+- A way to open the relevant post or page.
+- An appropriate empty state.
+
+Do not use fake notification records.
+
+Keep private chat notifications separate from public post notifications where needed.
+
+Do not display private message content in notifications accessible to unauthorised users.
+
+---
+
+# PART 10 — ADMINISTRATION CONTROLS
+
+## 12. Place administration tools under the account menu
+
+The administrator should not see a separate prominent Admin Verification button in the public community navigation.
+
+Remove it from the public navigation and any prominent community header position.
+
+Instead, keep administrative tools inside the authorised administrator's profile dropdown.
+
+The admin dropdown should include:
+
+- Verify Student Membership.
+- Manage Public Posts.
+- Manage Categories.
+- Review Mode.
+- Manage Public Updates.
+- Manage Challenges.
+- Relevant existing administrative tools.
+
+Only administrators should see these options.
+
+### Verify Student Membership
+
+Open the existing student-verification management interface.
+
+Preserve all existing application statuses and verification functionality.
+
+### Manage Public Posts
+
+Allow administrators to manage:
+
+- Public posts.
+- Public creations.
+- Selected private-chat showcase submissions.
+- Featured creations.
+- Publication status.
+- Moderation decisions.
+
+### Manage Categories
+
+Administrators should be able to manage the public content categories.
+
+They should be able to:
+
+- Create categories.
+- Rename categories.
+- Change category descriptions.
+- Activate or deactivate categories.
+- Control category display ordering.
+- Assign public creations to categories.
+
+Do not allow category changes to destroy existing content records.
+
+### Review Mode
+
+Preserve or introduce the Review Mode control.
+
+This should determine how newly submitted public content is handled.
+
+Provide clear options:
+
+**Review required:** New public posts and creation submissions must be approved by an administrator before appearing publicly.
+
+**Automatic publication:** Eligible submissions may appear immediately, subject to the configured moderation and safety rules.
+
+Do not allow this setting to override private-chat privacy.
+
+A message shared in a private channel must never become publicly visible simply because Automatic Publication is enabled.
+
+Review Mode applies to public submissions, not the internal private chat.
+
+Record administrative changes appropriately.
+
+---
+
+# PART 11 — PRIVATE CHAT ENTRY
+
+## 13. Preserve the existing private Community Hub
+
+The existing CommunityHub interface is already designed and should remain unchanged.
+
+Do not redesign its Discord-style layout.
+
+Do not remove the existing channel categories, messages, project-sharing channels or functionality.
+
+Remove only the unwanted sparkle icon and other specifically requested navigation elements.
+
+The private chat should now be accessible through the authenticated account dropdown using the label:
+
+**Enter Private Chats**
+
+Only approved students and authorised administrators should be able to enter.
+
+Pending, rejected and unverified public accounts should remain in the public environment.
+
+Do not create a new Student Hub button in the main homepage or community navigation.
+
+Do not use local storage as proof of student membership.
+
+Verify all access through Firebase-backed membership records and the applicable Firestore security rules.
+
+If the user loses private membership, the existing Hub entry must immediately respect the revoked permission.
+
+Ensure the PWA's standalone launch flow also follows the same access restrictions.
+
+---
+
+# PART 12 — DATA AND TECHNICAL IMPLEMENTATION
+
+## 14. Make the content system genuinely dynamic
+
+Inspect existing Firestore collections before adding new ones.
+
+Reuse existing data structures where practical.
+
+Avoid duplicate collections, redundant records or parallel content-management systems.
+
+The system should be able to distinguish between:
+
+- Private chat messages.
+- Private creation submissions.
+- Public showcase requests.
+- Publicly approved creations.
+- Public discussion posts.
+- Official announcements.
+- Challenges.
+- Public categories.
+- User notifications.
+
+Use clear publication states and ownership metadata.
+
+All public data must be read from approved Firestore records.
+
+Do not use `SAMPLE_PROJECTS`, mock discussions or hardcoded project URLs as production public content.
+
+Demo data may remain in an explicitly isolated development/demo environment if required for testing, but must never masquerade as real public community activity.
+
+Do not expose private Firestore data through public collection queries.
+
+### Firestore security
+
+Review the actual existing security rules.
+
+Ensure:
+
+- Public visitors can read only published public content.
+- Authenticated public users can perform permitted public interactions.
+- Only authorised users can create submissions.
+- Private chat messages remain restricted.
+- Only approved users can access protected Community Hub data.
+- Only authorised administrators can approve and publish curated content.
+- Users cannot make their own submissions publicly approved by modifying their own Firestore fields.
+- Users cannot modify their own administrator roles or membership status.
+- Private student application information remains protected.
+
+Any change in publication status that exposes content publicly must be performed through a trusted, authorised administrative process.
+
+---
+
+# PART 13 — VISUAL QUALITY AND RESPONSIVENESS
+
+## 15. Maintain a coherent interface
+
+The main marketing homepage and public community should feel like two parts of the same Build Buds brand.
+
+Use consistent:
+
+- Logo.
+- Typography.
+- Colours.
+- Buttons.
+- Iconography.
+- Spacing.
+- Border treatments.
+- Interaction behaviour.
+
+However, they should have different navigation structures.
+
+The marketing homepage should remain minimal.
+
+The public community should have its dedicated navigation.
+
+The private chat should preserve its existing interface.
+
+Ensure that:
+
+- Desktop layouts are balanced.
+- Mobile navigation is usable.
+- Profile dropdowns remain inside the viewport.
+- Notification panels are not clipped.
+- Content cards resize correctly.
+- Public post images have reliable aspect ratios.
+- No horizontal scrolling is introduced accidentally.
+- Buttons have clear hover, focus and pressed states.
+
+Do not use sparkle icons or unnecessary decorative symbols anywhere.
+
+---
+
+# PART 14 — TESTING AND VERIFICATION
+
+## 16. Perform these checks after implementation
+
+### Main homepage
+
+1. Open the marketing homepage.
+2. Confirm that Community is not in the navigation.
+3. Confirm that Explore Creations, Latest Updates and Challenges are not in the navigation.
+4. Confirm that the Student Hub button is gone.
+5. Confirm that the Download App button is gone.
+6. Confirm that the standalone theme toggle is gone.
+7. Confirm that the logo and account controls work.
+
+### Public community
+
+1. Open the public Community Discovery page.
+2. Confirm that the logo is the home navigation.
+3. Confirm that Explore Creations, Latest Updates and Challenges appear.
+4. Confirm that there is no Home or Community navigation button.
+5. Confirm that Share Creation / Post is visible.
+6. Confirm that the notification bell works.
+7. Confirm that the account dropdown is on the far right.
+8. Confirm that the layout follows the attached reference image.
+
+### Account dropdown
+
+1. Test while logged out.
+2. Confirm that Guest or User is displayed rather than a fabricated username.
+3. Confirm that Sign In is shown instead of Sign Out.
+4. Confirm that Appearance settings are accessible.
+5. Sign in with Google.
+6. Confirm that the user's actual profile information is displayed.
+7. Confirm the appropriate Private Chats option for each membership state.
+8. Confirm that administrator tools appear only for the administrator.
+9. Click outside the dropdown and confirm that it closes.
+10. Press Escape and confirm that it closes.
+11. Test on mobile.
+
+### Sparkle removal
+
+Search the entire relevant application for all sparkle icon variants and remove them from the visible UI.
+
+Test the private chat sidebar as well as the public community.
+
+### Hardcoded content removal
+
+1. Inspect all public creation sections.
+2. Confirm that the hardcoded sample games are no longer displayed.
+3. Confirm that random hardcoded URLs are removed.
+4. Confirm that actual published Firestore records appear.
+5. Confirm that empty categories display appropriate empty states.
+6. Confirm that private chat links remain private until approved for publication.
+
+### Content publishing
+
+1. Create a public post.
+2. Share a creation in the private chat.
+3. Request public showcasing.
+4. Review the submission as an administrator.
+5. Approve or reject it.
+6. Confirm that approved content appears in the correct public category.
+7. Confirm that rejected or pending content remains private.
+8. Confirm that administrators can unpublish public creations.
+
+### All Shared Links
+
+1. Open the private chat.
+2. Share multiple links across relevant channels.
+3. Confirm that All Shared Links loads every authorised item.
+4. Confirm that new links appear without requiring the user to open the section first.
+5. Confirm that unread indicators update correctly.
+6. Open the section and confirm that the appropriate unread state clears.
+7. Refresh the page and verify that content and read states persist.
+
+### Final technical checks
+
+Run the existing build and lint processes.
+
+Resolve new TypeScript errors, runtime errors, broken imports, Firestore query problems and security-rule issues.
+
+Verify the production deployment and direct URL refresh behaviour.
+
+Do not claim that a feature works simply because its button or visual component appears.
+
+---
+
+# FINAL INSTRUCTIONS
+
+Implement the requested changes carefully and incrementally.
+
+Do not unnecessarily modify the existing homepage content.
+
+Do not redesign the existing Discord-style private chat.
+
+Do not introduce a second backend.
+
+Do not delete existing student accounts, messages, profiles or creation submissions.
+
+Do not display mock creations as real published work.
+
+Do not automatically publish private chat messages.
+
+Do not put administrator verification in the community header.
+
+Do not create new navigation clutter.
+
+The desired final arrangement is:
+
+### Main Build Buds homepage
+- Build Buds logo.
+- Minimal account control.
+- No Community navigation item.
+- No Explore Creations, Latest Updates or Challenges navigation items.
+- No Student Hub button.
+- No Download App button.
+- No standalone theme toggle.
+- Relevant homepage content and community exploration CTA remain.
+
+### Public Community Discovery page
+- Build Buds logo serving as home navigation.
+- Explore Creations.
+- Latest Updates.
+- Challenges.
+- Share Creation / Post.
+- Notification Bell.
+- Account/Profile at the far right.
+
+### Account dropdown
+- Sign In or Sign Out depending on authentication.
+- Appearance settings.
+- My Profile and My Public Posts where applicable.
+- Private Chat access according to membership status.
+- Student verification status.
+- Administrator-only verification and management tools.
+
+### Existing private Community Hub
+- Remains visually and functionally unchanged.
+- Accessible through the account dropdown as Enter Private Chats.
+- No sparkle icon in the branding or sidebars.
+- Existing channels and functionality preserved.
+- All Shared Links loads and updates reliably.
+- New activity is clearly indicated.
+
+### Public creations
+- Only actual approved and published content is displayed.
+- Administrators can curate links shared in private chat.
+- Students can request public showcasing.
+- Administrators control publication and review.
+- Categories and content are dynamically managed.
+
+**The central objective is to make Build Buds feel cleaner, more organised and more intentional. The main website introduces the brand, the public community helps people discover creations, and the existing private chat remains the dedicated space for verified students to communicate and collaborate.**

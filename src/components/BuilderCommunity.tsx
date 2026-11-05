@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Gamepad2, Globe, Wrench, Sparkles, Lightbulb, Users, ArrowRight } from 'lucide-react';
+import { Gamepad2, Globe, Wrench, Compass, Lightbulb, Users, ArrowRight } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface BuilderCommunityProps {
@@ -14,7 +14,7 @@ export const BuilderCommunity: React.FC<BuilderCommunityProps> = ({ onJoinClick 
     { label: 'Game builders', icon: <Gamepad2 className="w-4 h-4 text-[#FFF025]" /> },
     { label: 'Website makers', icon: <Globe className="w-4 h-4 text-[#B11469]" /> },
     { label: 'Problem solvers', icon: <Wrench className="w-4 h-4 text-[#C15D00]" /> },
-    { label: 'Creative explorers', icon: <Sparkles className="w-4 h-4 text-[#FFF025]" /> },
+    { label: 'Creative explorers', icon: <Compass className="w-4 h-4 text-[#FFF025]" /> },
     { label: 'Curious beginners', icon: <Lightbulb className="w-4 h-4 text-[#B11469]" /> },
     { label: 'Students helping students', icon: <Users className="w-4 h-4 text-[#C15D00]" /> },
   ];

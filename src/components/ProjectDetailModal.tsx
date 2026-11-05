@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ProjectItem } from '../types/index.ts';
-import { X, Play, Code, BookOpen, Layers, Check, Copy, ExternalLink, Sparkles } from 'lucide-react';
+import { X, Play, Code, BookOpen, Layers, Check, Copy, ExternalLink } from 'lucide-react';
 
 interface ProjectDetailModalProps {
   project: ProjectItem | null;

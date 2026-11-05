@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Check, ArrowRight, ExternalLink, Code2, Sparkles, Gamepad2 } from 'lucide-react';
+import { Check, ArrowRight, ExternalLink, Code2, Gamepad2 } from 'lucide-react';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface ProjectPublishingSectionProps {

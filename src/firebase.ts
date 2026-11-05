@@ -11,13 +11,15 @@ import {
   linkWithCredential,
   signOut,
   onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
   User,
 } from 'firebase/auth';
 import {
   getFirestore,
   doc,
   getDoc,
-  getDocFromServer,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -29,36 +31,81 @@ import {
   limit,
   onSnapshot,
   serverTimestamp,
-  Timestamp,
+  runTransaction,
+  writeBatch,
+  increment,
+  arrayUnion,
+  arrayRemove,
 } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import firebaseAppletConfig from '../firebase-applet-config.json';
 import { getDefaultPresetAvatar } from './utils/avatars.ts';
+import type {
+  CommunityMembership,
+  StudentAccessRequest,
+  StudentAccessStatus,
+} from './types/community.ts';
 
-// Resolve Firebase config from Vercel FIREBASE_* or VITE_FIREBASE_* env vars, or local firebase-applet-config.json
-const env = import.meta.env as Record<string, string | undefined>;
+// Support VITE_FIREBASE_*, FIREBASE_* (without VITE_), and fallback to firebase-applet-config.json
+const env = (import.meta as unknown as { env: Record<string, string | undefined> }).env || {};
 
-const resolvedFirebaseConfig = {
-  apiKey: env.FIREBASE_API_KEY || env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
-  authDomain: env.FIREBASE_AUTH_DOMAIN || env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  projectId: env.FIREBASE_PROJECT_ID || env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
-  storageBucket:
-    env.FIREBASE_STORAGE_BUCKET || env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+const firebaseConfig = {
+  apiKey: env.VITE_FIREBASE_API_KEY || env.FIREBASE_API_KEY || firebaseAppletConfig.apiKey,
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || env.FIREBASE_AUTH_DOMAIN || firebaseAppletConfig.authDomain,
+  projectId: env.VITE_FIREBASE_PROJECT_ID || env.FIREBASE_PROJECT_ID || firebaseAppletConfig.projectId,
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || env.FIREBASE_STORAGE_BUCKET || firebaseAppletConfig.storageBucket,
   messagingSenderId:
-    env.FIREBASE_MESSAGING_SENDER_ID ||
-    env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
-    firebaseConfig.messagingSenderId,
-  appId: env.FIREBASE_APP_ID || env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+    env.VITE_FIREBASE_MESSAGING_SENDER_ID || env.FIREBASE_MESSAGING_SENDER_ID || firebaseAppletConfig.messagingSenderId,
+  appId: env.VITE_FIREBASE_APP_ID || env.FIREBASE_APP_ID || firebaseAppletConfig.appId,
 };
 
-const resolvedDatabaseId =
-  env.FIREBASE_DATABASE_ID || env.VITE_FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+const firestoreDatabaseId =
+  env.VITE_FIREBASE_DATABASE_ID || env.FIREBASE_DATABASE_ID || firebaseAppletConfig.firestoreDatabaseId;
 
-// Initialize Firebase SDK
-const app = initializeApp(resolvedFirebaseConfig);
-export const db = getFirestore(app, resolvedDatabaseId);
+const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+
+// Explicitly enforce browser local persistence so returning users stay signed in across sessions
+setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.warn('Auth persistence setup warning:', err);
+});
+
+export const db = getFirestore(app, firestoreDatabaseId);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+export {
+  EmailAuthProvider,
+  signInWithPopup,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  updatePassword,
+  linkWithCredential,
+  signOut,
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  doc,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  addDoc,
+  query,
+  where,
+  orderBy,
+  limit,
+  onSnapshot,
+  serverTimestamp,
+  runTransaction,
+  writeBatch,
+  increment,
+  arrayUnion,
+  arrayRemove,
+};
+export type { User };
 
 export enum OperationType {
   CREATE = 'create',
@@ -116,33 +163,27 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate connection to Firestore on boot
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-testConnection();
+export const ADMIN_EMAIL = 'johnrufai242@gmail.com';
+export const AVATAR_COLORS = ['#FFF025', '#B11469', '#C15D00'];
 
 export type UserAccountStatus = 'active' | 'suspended' | 'banned';
 
 export interface BuilderProfile {
   uid: string;
   displayName: string;
-  schoolName?: string;
-  gradeLevel?: string;
-  primaryInterest?: string;
+  schoolName: string;
+  gradeLevel: string;
+  primaryInterest: string;
   avatarUrl?: string;
   avatarColor: string;
   role: 'member' | 'moderator' | 'admin';
   status?: UserAccountStatus;
+  accountType?: 'public' | 'student';
+  publishingDisabled?: boolean;
+  bookmarkedPostIds?: string[];
   acceptedGuidelines: boolean;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CommunityGlobalSettings {
@@ -151,8 +192,8 @@ export interface CommunityGlobalSettings {
   banLinks: boolean;
   enableLinkPreviews: boolean;
   globalChatLocked: boolean;
-  updatedBy: string;
-  updatedAt?: Timestamp;
+  updatedBy?: string;
+  updatedAt?: string;
 }
 
 export interface CommunityChannelConfig {
@@ -166,15 +207,13 @@ export interface CommunityChannelConfig {
   isLocked: boolean;
   banLinks: boolean;
   enableLinkPreviews: boolean;
-  cooldownSeconds: number; // -1 means inherit global cooldown
+  cooldownSeconds: number; // -1 means use global default
   allowMemberMessages: boolean;
   allowMemberGroups: boolean;
   allowMemberInvites: boolean;
   moderatorIds: string[];
   kickedUserIds: string[];
-  createdBy?: string;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  updatedAt?: string;
 }
 
 export interface CommunitySubGroup {
@@ -185,195 +224,241 @@ export interface CommunitySubGroup {
   isPrivate: boolean;
   createdBy: string;
   memberIds: string[];
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
-export const ADMIN_EMAIL = 'johnrufai242@gmail.com';
-export const AVATAR_COLORS = ['#FFF025', '#B11469', '#C15D00', '#38BDF8', '#10B981', '#A855F7'];
-
-export function pickAvatarColor(seed: string): string {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+export function isSuperAdminUser(user?: User | null, profile?: BuilderProfile | null): boolean {
+  if (user?.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) {
+    return true;
   }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+  if (profile?.role === 'admin') {
+    return true;
+  }
+  return false;
 }
 
 /**
- * Checks if a user has ALREADY signed up in the Firestore `users/{uid}` database.
- * - For regular users, this NEVER creates a profile document. If the user is not in the database, it returns `null`.
- * - For the Super Admin (`ADMIN_EMAIL`), automatically ensures the admin profile exists so the admin can sign straight in.
+ * Builds a complete in-memory BuilderProfile from a Firebase User and optional overrides,
+ * guaranteeing that a signed-in user always has a valid profile state even while Firestore syncs.
  */
-export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
-  const isAdminUser = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  if (isAdminUser) {
-    return registerBuilderProfile(user, {
-      displayName: user.displayName || 'Super Admin',
-      schoolName: 'Build Buds HQ',
-      gradeLevel: 'Super Admin',
-      primaryInterest: 'Community Administration',
-      acceptedGuidelines: true,
-    });
-  }
+export function buildFallbackBuilderProfile(
+  user: User,
+  overrides?: Partial<BuilderProfile>
+): BuilderProfile {
+  const isAdmin = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const colorIndex = (user.uid ? user.uid.charCodeAt(0) : 0) % AVATAR_COLORS.length;
+  const presetAvatar = getDefaultPresetAvatar(user.uid || 'default');
+  const nowIso = new Date().toISOString();
 
+  return {
+    uid: user.uid,
+    displayName:
+      overrides?.displayName?.trim() ||
+      user.displayName ||
+      (user.email ? user.email.split('@')[0] : 'Creator'),
+    schoolName: overrides?.schoolName?.trim() || '',
+    gradeLevel: overrides?.gradeLevel || '',
+    primaryInterest: overrides?.primaryInterest || 'Creative Projects',
+    avatarUrl: overrides?.avatarUrl || user.photoURL || presetAvatar.id,
+    avatarColor: overrides?.avatarColor || AVATAR_COLORS[colorIndex],
+    role: isAdmin ? 'admin' : overrides?.role || 'member',
+    status: overrides?.status || 'active',
+    accountType: isAdmin ? 'student' : overrides?.accountType || 'public',
+    publishingDisabled: overrides?.publishingDisabled ?? false,
+    bookmarkedPostIds: overrides?.bookmarkedPostIds || [],
+    acceptedGuidelines: overrides?.acceptedGuidelines ?? true,
+    createdAt: overrides?.createdAt || nowIso,
+    updatedAt: overrides?.updatedAt || nowIso,
+  };
+}
+
+// Check if a user already has a registered BuilderProfile in the database without creating one
+export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
   const userRef = doc(db, 'users', user.uid);
   try {
     const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      return null;
-    }
+    if (snap.exists()) {
+      const raw = snap.data() as Partial<BuilderProfile>;
+      const isAdminEmail = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+      const normalized = buildFallbackBuilderProfile(user, {
+        ...raw,
+        role: isAdminEmail ? 'admin' : raw.role || 'member',
+        status: raw.status || 'active',
+      });
 
-    return snap.data() as BuilderProfile;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, `users/${user.uid}`);
+      if (isAdminEmail && raw.role !== 'admin') {
+        try {
+          await setDoc(userRef, normalized, { merge: true });
+        } catch {
+          // Non-blocking if merge fails
+        }
+      }
+      return normalized;
+    }
+    return null;
+  } catch (err) {
+    console.warn('Could not read existing user profile:', err);
+    return null;
   }
 }
 
 /**
- * Registers a user profile in Firestore (`users/{uid}`) when they explicitly complete Sign Up,
- * or updates an existing profile when overrides are provided.
+ * Ensures a basic public user profile exists in `users/{uid}` after Google sign-in.
+ * Does NOT overwrite existing accounts and does NOT grant Student Hub access.
  */
-export async function registerBuilderProfile(
+export async function ensurePublicUserProfile(
   user: User,
-  overrides?: {
-    displayName?: string;
-    schoolName?: string;
-    gradeLevel?: string;
-    primaryInterest?: string;
-    avatarUrl?: string;
-    avatarColor?: string;
-    acceptedGuidelines?: boolean;
-  }
+  overrides?: Partial<BuilderProfile>
 ): Promise<BuilderProfile> {
+  const existing = await checkExistingBuilderProfile(user);
+  if (existing) {
+    // If the user explicitly provided a displayName during registration and their profile lacked a custom name, update it gently
+    const requestedName = overrides?.displayName?.trim();
+    if (requestedName && requestedName !== existing.displayName) {
+      const updatedExisting: BuilderProfile = {
+        ...existing,
+        displayName: requestedName,
+        updatedAt: new Date().toISOString(),
+      };
+      try {
+        await setDoc(doc(db, 'users', user.uid), updatedExisting, { merge: true });
+      } catch {
+        // Non-fatal
+      }
+      return updatedExisting;
+    }
+    return existing;
+  }
+
   const userRef = doc(db, 'users', user.uid);
   const privateRef = doc(db, 'users_private', user.uid);
+  const newProfile = buildFallbackBuilderProfile(user, overrides);
 
   try {
-    const snap = await getDoc(userRef);
-    const isAdminUser = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-    const canClaimAdminInRules = isAdminUser && user.emailVerified;
-
-    if (snap.exists()) {
-      const existing = snap.data() as BuilderProfile;
-      const shouldPromoteToAdmin = canClaimAdminInRules && existing.role !== 'admin';
-
-      if (overrides || shouldPromoteToAdmin) {
-        const updatedFields: Record<string, unknown> = {
-          updatedAt: serverTimestamp(),
-        };
-        if (overrides?.displayName) updatedFields.displayName = overrides.displayName.slice(0, 60);
-        if (overrides?.schoolName) updatedFields.schoolName = overrides.schoolName.slice(0, 100);
-        if (overrides?.gradeLevel) updatedFields.gradeLevel = overrides.gradeLevel.slice(0, 40);
-        if (overrides?.primaryInterest) updatedFields.primaryInterest = overrides.primaryInterest.slice(0, 60);
-        if (typeof overrides?.avatarUrl === 'string') {
-          updatedFields.avatarUrl = overrides.avatarUrl.slice(0, 4000);
-        }
-        if (overrides?.avatarColor) updatedFields.avatarColor = overrides.avatarColor.slice(0, 30);
-        if (typeof overrides?.acceptedGuidelines === 'boolean') {
-          updatedFields.acceptedGuidelines = overrides.acceptedGuidelines;
-        }
-        if (shouldPromoteToAdmin) {
-          updatedFields.role = 'admin';
-        }
-        await updateDoc(userRef, updatedFields);
-        return {
-          ...existing,
-          ...(overrides || {}),
-          ...(isAdminUser ? { role: 'admin' } : {}),
-        };
-      }
-      return {
-        ...existing,
-        ...(isAdminUser ? { role: 'admin' } : {}),
-      };
-    }
-
-    const displayName = (
-      overrides?.displayName?.trim() ||
-      user.displayName?.trim() ||
-      (user.email ? user.email.split('@')[0] : 'Builder')
-    ).slice(0, 60);
-
-    const defaultAvatar = getDefaultPresetAvatar(user.uid);
-    const avatarUrl = (overrides?.avatarUrl || defaultAvatar.id).slice(0, 4000);
-    const avatarColor = overrides?.avatarColor || pickAvatarColor(user.uid);
-    const firestoreRole: 'member' | 'moderator' | 'admin' = canClaimAdminInRules ? 'admin' : 'member';
-    const effectiveRole: 'member' | 'moderator' | 'admin' = isAdminUser ? 'admin' : firestoreRole;
-    const status: UserAccountStatus = 'active';
-    const acceptedGuidelines = overrides?.acceptedGuidelines ?? true;
-
-    const newProfileData: Record<string, unknown> = {
-      uid: user.uid,
-      displayName,
-      schoolName: (overrides?.schoolName?.trim() || 'Build Buds Creator Club').slice(0, 100),
-      gradeLevel: (overrides?.gradeLevel?.trim() || 'Grade 8').slice(0, 40),
-      primaryInterest: (overrides?.primaryInterest?.trim() || 'Games & Simulations').slice(0, 60),
-      avatarUrl,
-      avatarColor,
-      role: firestoreRole,
-      status,
-      acceptedGuidelines,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
-    await setDoc(userRef, newProfileData);
-
-    if (user.email) {
-      try {
-        await setDoc(privateRef, {
-          uid: user.uid,
-          email: user.email.slice(0, 254),
-          createdAt: serverTimestamp(),
-        });
-      } catch {
-        // Ignore if private record already exists
-      }
-    }
-
-    return {
-      uid: user.uid,
-      displayName,
-      schoolName: String(newProfileData.schoolName),
-      gradeLevel: String(newProfileData.gradeLevel),
-      primaryInterest: String(newProfileData.primaryInterest),
-      avatarUrl: String(newProfileData.avatarUrl),
-      avatarColor,
-      role: effectiveRole,
-      status,
-      acceptedGuidelines,
-    };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+    await setDoc(userRef, newProfile);
+  } catch (err) {
+    console.warn('Could not write new user profile to Firestore, using in-memory profile:', err);
   }
+
+  if (user.email) {
+    try {
+      await setDoc(
+        privateRef,
+        {
+          uid: user.uid,
+          email: user.email,
+          createdAt: newProfile.createdAt || new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  return newProfile;
 }
 
-export const ensureBuilderProfile = registerBuilderProfile;
+// Explicitly register or update a user profile in the database during Sign Up
+export async function registerBuilderProfile(
+  user: User,
+  overrides?: Partial<BuilderProfile>
+): Promise<BuilderProfile> {
+  return ensurePublicUserProfile(user, {
+    primaryInterest: 'Games & Simulations',
+    ...overrides,
+  });
+}
 
-export {
-  EmailAuthProvider,
-  signInWithPopup,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  updateProfile,
-  updatePassword,
-  linkWithCredential,
-  signOut,
-  onAuthStateChanged,
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  collection,
-  addDoc,
-  query,
-  where,
-  orderBy,
-  limit,
-  onSnapshot,
-  serverTimestamp,
-  Timestamp,
-};
-export type { User };
+export async function ensureBuilderProfile(
+  user: User,
+  overrides?: Partial<BuilderProfile>
+): Promise<BuilderProfile> {
+  return ensurePublicUserProfile(user, overrides);
+}
+
+/**
+ * Checks the user's current Student Hub membership and access request status.
+ */
+export async function getStudentAccessState(
+  user: User,
+  profile?: BuilderProfile | null
+): Promise<{
+  isApprovedForHub: boolean;
+  accessStatus: StudentAccessStatus;
+  membership: CommunityMembership | null;
+  request: StudentAccessRequest | null;
+}> {
+  if (isSuperAdminUser(user, profile)) {
+    return {
+      isApprovedForHub: true,
+      accessStatus: 'approved',
+      membership: {
+        uid: user.uid,
+        email: user.email || ADMIN_EMAIL,
+        displayName: profile?.displayName || user.displayName || 'Admin',
+        status: 'approved',
+        approvedBy: user.uid,
+        approvedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      request: null,
+    };
+  }
+
+  let membership: CommunityMembership | null = null;
+  let request: StudentAccessRequest | null = null;
+
+  try {
+    const membershipSnap = await getDoc(doc(db, 'communityMemberships', user.uid));
+    if (membershipSnap.exists()) {
+      membership = membershipSnap.data() as CommunityMembership;
+    }
+  } catch {
+    // Ignore permission errors if doc doesn't exist
+  }
+
+  try {
+    const reqSnap = await getDoc(doc(db, 'studentAccessRequests', user.uid));
+    if (reqSnap.exists()) {
+      request = reqSnap.data() as StudentAccessRequest;
+    }
+  } catch {
+    // Ignore
+  }
+
+  if (membership?.status === 'approved') {
+    return {
+      isApprovedForHub: true,
+      accessStatus: 'approved',
+      membership,
+      request,
+    };
+  }
+
+  if (membership?.status === 'suspended' || request?.status === 'suspended') {
+    return {
+      isApprovedForHub: false,
+      accessStatus: 'suspended',
+      membership,
+      request,
+    };
+  }
+
+  if (request) {
+    return {
+      isApprovedForHub: false,
+      accessStatus: request.status,
+      membership,
+      request,
+    };
+  }
+
+  return {
+    isApprovedForHub: false,
+    accessStatus: 'not_requested',
+    membership: null,
+    request: null,
+  };
+}

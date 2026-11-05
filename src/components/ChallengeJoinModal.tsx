@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Check, Flame, Trophy, Sparkles } from 'lucide-react';
+import { X, Check, Flame, Trophy } from 'lucide-react';
 import { ChallengeItem } from '../types/index.ts';
 
 interface ChallengeJoinModalProps {
