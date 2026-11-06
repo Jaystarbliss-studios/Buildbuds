@@ -1105,6 +1105,18 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   + Share Creation
                 </button>
               )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileNavOpen(false);
+                    onNavigate('/admin/student-access');
+                  }}
+                  className="py-2 px-3 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black text-left col-span-2"
+                >
+                  🛡️ Manage Student Access Requests
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1488,17 +1500,29 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                     </h1>
                   </div>
 
-                  {/* Role-Based Publishing Permission: Only Approved Student Hub Members & Admins see Publish Your Creation */}
-                  {canPublish && (
-                    <button
-                      type="button"
-                      onClick={handleCreatePostClick}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs sm:text-sm font-black cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4 stroke-[2.5]" />
-                      <span>Publish Your Creation</span>
-                    </button>
-                  )}
+                  {/* Role-Based Publishing Permission + Admin Access Requests Shortcut */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('/admin/student-access')}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl border-2 border-black bg-[#B11469] hover:bg-[#920f56] text-white text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm"
+                      >
+                        <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
+                        <span>Manage Access Requests</span>
+                      </button>
+                    )}
+                    {canPublish && (
+                      <button
+                        type="button"
+                        onClick={handleCreatePostClick}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs sm:text-sm font-black cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4 stroke-[2.5]" />
+                        <span>Publish Your Creation</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {featuredBannerPost && (
@@ -1582,8 +1606,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                             isVerified={
                               featuredBannerPost.authorRole === 'admin' ||
                               featuredBannerPost.authorRole === 'moderator' ||
-                              verifiedUserIds.has(featuredBannerPost.authorId) ||
-                              !featuredBannerPost.authorId.startsWith('seed-')
+                              verifiedUserIds.has(featuredBannerPost.authorId)
                             }
                             sizeClass="w-9 h-9"
                             ringPaddingClass="p-[2.5px]"
@@ -1591,7 +1614,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                           <div>
                             <div
                               className={`text-xs font-black ${
-                                isDark ? 'text-white' : 'text-black'
+                                featuredBannerPost.authorRole === 'admin' ||
+                                featuredBannerPost.authorRole === 'moderator' ||
+                                verifiedUserIds.has(featuredBannerPost.authorId)
+                                  ? 'verified-student-name-gradient'
+                                  : isDark
+                                  ? 'text-white'
+                                  : 'text-black'
                               }`}
                             >
                               {featuredBannerPost.authorName}
@@ -2066,8 +2095,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                 isVerified={
                                   post.authorRole === 'admin' ||
                                   post.authorRole === 'moderator' ||
-                                  verifiedUserIds.has(post.authorId) ||
-                                  !post.authorId.startsWith('seed-')
+                                  verifiedUserIds.has(post.authorId)
                                 }
                                 sizeClass="w-9 h-9"
                                 ringPaddingClass="p-[2.5px]"
@@ -2075,7 +2103,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               <div>
                                 <div
                                   className={`text-xs font-black ${
-                                    isDark ? 'text-white' : 'text-black'
+                                    post.authorRole === 'admin' ||
+                                    post.authorRole === 'moderator' ||
+                                    verifiedUserIds.has(post.authorId)
+                                      ? 'verified-student-name-gradient'
+                                      : isDark
+                                      ? 'text-white'
+                                      : 'text-black'
                                   }`}
                                 >
                                   {post.authorName}

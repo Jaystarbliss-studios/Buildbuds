@@ -36,14 +36,7 @@ service cloud.firestore {
           (exists(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)) &&
             get(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)).data.status == 'approved') ||
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-            (!exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) ||
-              get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved') &&
-            (
-              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accountType', '') == 'student' ||
-              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'] ||
-              (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accountType', '') != 'public' &&
-                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('schoolName', '') != '')
-            ))
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'])
         );
     }
 
@@ -194,7 +187,7 @@ service cloud.firestore {
     // Approved Student Memberships (/communityMemberships/{userId})
     // ===============================================================
     match /communityMemberships/{userId} {
-      allow read: if isOwner(userId) || isApprovedStudent() || isAdmin();
+      allow read: if true;
       allow create, update, delete: if isAdmin();
     }
 
@@ -420,9 +413,10 @@ service cloud.firestore {
     match /messages/{messageId} {
       allow read: if isApprovedStudent() && isNotBanned();
 
-      allow create: if isApprovedStudent() &&
+      allow create: if (isApprovedStudent() &&
         isActiveUser() &&
-        isValidMessage(request.resource.data);
+        isValidMessage(request.resource.data)) ||
+        isAdmin();
 
       allow update: if isApprovedStudent() &&
         isActiveUser() &&

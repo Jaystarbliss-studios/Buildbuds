@@ -14,6 +14,7 @@ import {
   orderBy,
   limit,
   onSnapshot,
+  serverTimestamp,
   runTransaction,
   arrayUnion,
   arrayRemove,
@@ -943,7 +944,91 @@ export async function adminApproveStudentAccess(params: {
   };
   await addDoc(collection(db, 'adminAuditLogs'), auditLog);
 
+  // Broadcast welcome & guideline notification in #general-chat, #announcements, and #guidelines
+  await broadcastNewMemberJoinedToHub({
+    uid: params.targetRequest.uid,
+    displayName: params.targetRequest.fullName,
+    schoolName: params.targetRequest.schoolName,
+    programme: params.targetRequest.programme,
+  });
+
   return { emailStatus, emailError };
+}
+
+/**
+ * Posts automatic real-time notifications in #general-chat and #announcements (and ensures #guidelines
+ * has a detailed guideline post) whenever a student is approved by an Admin into the Private Student Hub.
+ */
+export async function broadcastNewMemberJoinedToHub(params: {
+  uid: string;
+  displayName: string;
+  schoolName?: string;
+  programme?: string;
+}): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) return;
+
+  const cleanName = params.displayName.trim() || 'New Builder';
+  const cleanSchool = params.schoolName?.trim() || 'Jaystarbliss Studios Partner School';
+  const cleanProgramme = params.programme?.trim() || 'Build Buds Creator Club';
+  const nowMillis = Date.now();
+
+  try {
+    // 1. Welcome notification in #general-chat
+    await addDoc(collection(db, 'messages'), {
+      channelId: 'general-chat',
+      authorId: currentUser.uid,
+      authorName: 'Build Buds Bot • Official',
+      authorColor: '#FFF025',
+      authorRole: 'admin',
+      text: `🎉 Welcome @${cleanName} to the Build Buds Private Student Hub!\n🏫 School: ${cleanSchool} • Programme: ${cleanProgramme}\n✨ Everyone say hello! Check out #announcements and #guidelines to see how our creative channels work and start sharing what you're building!`,
+      hadProfanity: false,
+      threadCount: 0,
+      reactions: { '🎉': 1, '🚀': 1 },
+      userReactions: { '🎉': [currentUser.uid], '🚀': [currentUser.uid] },
+      createdAt: serverTimestamp(),
+      createdAtMillis: nowMillis,
+    });
+
+    // 2. Official New Member & Guideline summary in #announcements
+    await addDoc(collection(db, 'messages'), {
+      channelId: 'announcements',
+      authorId: currentUser.uid,
+      authorName: 'Jaystarbliss Studios Admin',
+      authorColor: '#FFF025',
+      authorRole: 'admin',
+      text: `📣 NEW CORE MEMBER APPROVED: @${cleanName} (${cleanSchool}) has officially joined the Build Buds Private Student Hub!\n\n🛡️ Quick Community Guidelines for All Core Members:\n1. Respect & Kindness: Always give constructive, encouraging feedback on fellow builders' creations.\n2. Showcase Channels: Post playable games in #games, web apps in #websites, videos in #videos, and stories in #novels.\n3. Tagging & Mentions: Type @username to mention a specific builder or @all for group updates.\n4. Public Showcase Curation: Core members can publish creations to the Public Community Discovery feed or click "Request Public Showcase" on any link shared in chat!`,
+      hadProfanity: false,
+      threadCount: 0,
+      reactions: { '🔥': 1, '👏': 1 },
+      userReactions: { '🔥': [currentUser.uid], '👏': [currentUser.uid] },
+      createdAt: serverTimestamp(),
+      createdAtMillis: nowMillis + 10,
+    });
+
+    // 3. Ensure #guidelines has a comprehensive Community Guidelines reference post
+    const guidelinesSnap = await getDocs(
+      query(collection(db, 'messages'), where('channelId', '==', 'guidelines'), limit(3))
+    );
+    if (guidelinesSnap.empty) {
+      await addDoc(collection(db, 'messages'), {
+        channelId: 'guidelines',
+        authorId: currentUser.uid,
+        authorName: 'Jaystarbliss Studios Admin',
+        authorColor: '#FFF025',
+        authorRole: 'admin',
+        text: `🛡️ OFFICIAL BUILD BUDS STUDENT HUB GUIDELINES\n\nWelcome to the private Build Buds Student Hub! Every member here has been verified by Jaystarbliss Studios and carries the Pro Core Member gradient ring.\n\n1️⃣ Build Boldly & Share Often:\n• Use #games, #websites, #videos, and #novels to post links and screenshots of your projects.\n• Use #help whenever you hit a bug or design challenge.\n\n2️⃣ Positive Peer Feedback:\n• Treat every builder with kindness and respect. Celebrate each other's launches and help debug issues together.\n• Profanity, bullying, or spam links are strictly filtered and moderated.\n\n3️⃣ Unique Builder Identity:\n• Every member has a unique username. Use @username to tag teammates or @all for important announcements.\n\n4️⃣ Public Community Publishing:\n• As a verified Student Hub member, you have publishing privileges on the Public Community Discovery page! Share your best work to inspire young creators everywhere.`,
+        hadProfanity: false,
+        threadCount: 0,
+        reactions: { '❤️': 1, '🚀': 1 },
+        userReactions: { '❤️': [currentUser.uid], '🚀': [currentUser.uid] },
+        createdAt: serverTimestamp(),
+        createdAtMillis: nowMillis + 20,
+      });
+    }
+  } catch (err) {
+    console.warn('Could not post welcome message to chat channels:', err);
+  }
 }
 
 /**
@@ -1037,6 +1122,21 @@ export async function adminUpdateStudentAccessDecision(params: {
     },
     { merge: true }
   );
+
+  // Also ensure users/{uid} accountType is set back to 'public' so they are not treated as student
+  try {
+    await setDoc(
+      doc(db, 'users', params.targetRequest.uid),
+      {
+        accountType: 'public',
+        isApprovedStudent: false,
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
+  } catch {
+    // Non-fatal
+  }
 
   if (params.privateAdminNotes !== undefined || params.officialRecordReference !== undefined) {
     const noteDoc: StudentAccessAdminNote = {
@@ -1189,8 +1289,8 @@ export async function adminRetryStudentNotification(
 }
 
 /**
- * Admin Migration Helper: Approves an existing registered builder (`users/{uid}`) into `communityMemberships/{uid}`
- * so legitimate pre-existing students retain access to `CommunityHub` without losing chat history.
+ * Admin Migration / Direct Approval Helper: Approves a registered builder (`users/{uid}`) into `communityMemberships/{uid}`
+ * and broadcasts their join notification to #general-chat and #announcements.
  */
 export async function adminMigrateLegacyBuilderToStudent(
   builder: BuilderProfile,
@@ -1231,14 +1331,14 @@ export async function adminMigrateLegacyBuilderToStudent(
       schoolName: builder.schoolName || 'Jaystarbliss Studios Partner School',
       gradeLevel: builder.gradeLevel || 'Student Builder',
       programme: builder.primaryInterest || 'Build Buds School Creator Club',
-      studentReference: 'LEGACY-BUILDER',
+      studentReference: 'ADMIN-APPROVED',
       confirmedDeclaration: true,
       status: 'approved',
       verifiedAgainstOfficialRecords: true,
       reviewedBy: currentUser.uid,
       reviewedByEmail: currentUser.email,
       reviewedAt: nowIso,
-      publicStatusNote: 'Migrated existing Build Buds student builder account.',
+      publicStatusNote: 'Approved by Admin for Build Buds Private Student Hub access.',
       emailNotificationStatus: 'skipped',
       createdAt: builder.createdAt || nowIso,
       updatedAt: nowIso,
@@ -1250,20 +1350,127 @@ export async function adminMigrateLegacyBuilderToStudent(
     doc(db, 'users', builder.uid),
     {
       accountType: 'student',
+      isApprovedStudent: true,
+      updatedAt: nowIso,
+    },
+    { merge: true }
+  );
+
+  // Create in-app notification for the approved member
+  const notifRef = doc(collection(db, 'userNotifications', builder.uid, 'items'));
+  await setDoc(notifRef, {
+    id: notifRef.id,
+    uid: builder.uid,
+    type: 'student_access_approved',
+    title: "You're approved! Welcome to the Build Buds Student Hub 🎉",
+    message: `An administrator has approved your Build Buds Student Hub membership. Click below to enter the private Student Hub!`,
+    actionUrl: '/hub',
+    actionLabel: 'Enter Build Buds Student Hub',
+    read: false,
+    createdAt: nowIso,
+  } satisfies UserNotificationItem);
+
+  await addDoc(collection(db, 'adminAuditLogs'), {
+    action: 'migrate_legacy_student',
+    targetUid: builder.uid,
+    targetEmail: email || 'builder-account',
+    targetName: builder.displayName,
+    adminUid: currentUser.uid,
+    adminEmail: currentUser.email,
+    verifiedAgainstOfficialRecords: true,
+    reason: 'Approved registered builder into private Student Hub membership',
+    emailDeliveryStatus: 'skipped',
+    createdAt: nowIso,
+  } satisfies AdminAuditLog);
+
+  // Broadcast welcome & guideline notification in #general-chat, #announcements, and #guidelines
+  await broadcastNewMemberJoinedToHub({
+    uid: builder.uid,
+    displayName: builder.displayName,
+    schoolName: builder.schoolName || 'Jaystarbliss Studios Partner School',
+    programme: builder.primaryInterest || 'Build Buds Creator Club',
+  });
+}
+
+/**
+ * Admin Action: Revoke or Reject Student Hub access for a registered user (`users/{uid}`),
+ * immediately removing them from the Private Student Hub while keeping their public community account intact.
+ */
+export async function adminRevokeStudentHubAccess(
+  builder: {
+    uid: string;
+    displayName: string;
+    email?: string;
+    schoolName?: string;
+    gradeLevel?: string;
+    primaryInterest?: string;
+  },
+  reason: string = 'Access restricted to verified Jaystarbliss Studios Student Hub members.'
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !currentUser.email) {
+    throw new Error('Admin authentication required.');
+  }
+
+  const nowIso = new Date().toISOString();
+
+  await setDoc(
+    doc(db, 'communityMemberships', builder.uid),
+    {
+      uid: builder.uid,
+      email: builder.email || '',
+      displayName: builder.displayName,
+      status: 'revoked',
+      approvedBy: currentUser.uid,
+      approvedByEmail: currentUser.email,
+      approvedAt: nowIso,
+      updatedAt: nowIso,
+    },
+    { merge: true }
+  );
+
+  await setDoc(
+    doc(db, 'studentAccessRequests', builder.uid),
+    {
+      uid: builder.uid,
+      fullName: builder.displayName,
+      email: builder.email || '',
+      schoolName: builder.schoolName || 'Not specified',
+      gradeLevel: builder.gradeLevel || 'Not specified',
+      programme: builder.primaryInterest || 'General Community',
+      confirmedDeclaration: false,
+      status: 'rejected',
+      verifiedAgainstOfficialRecords: false,
+      reviewedBy: currentUser.uid,
+      reviewedByEmail: currentUser.email,
+      reviewedAt: nowIso,
+      publicStatusNote: reason,
+      emailNotificationStatus: 'skipped',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    },
+    { merge: true }
+  );
+
+  await setDoc(
+    doc(db, 'users', builder.uid),
+    {
+      accountType: 'public',
+      isApprovedStudent: false,
       updatedAt: nowIso,
     },
     { merge: true }
   );
 
   await addDoc(collection(db, 'adminAuditLogs'), {
-    action: 'migrate_legacy_student',
+    action: 'reject_student',
     targetUid: builder.uid,
-    targetEmail: email || 'legacy-builder',
+    targetEmail: builder.email || 'builder-account',
     targetName: builder.displayName,
     adminUid: currentUser.uid,
     adminEmail: currentUser.email,
-    verifiedAgainstOfficialRecords: true,
-    reason: 'Migrated existing registered builder into approved student membership',
+    verifiedAgainstOfficialRecords: false,
+    reason,
     emailDeliveryStatus: 'skipped',
     createdAt: nowIso,
   } satisfies AdminAuditLog);

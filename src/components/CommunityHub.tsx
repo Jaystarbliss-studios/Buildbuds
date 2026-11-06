@@ -74,6 +74,7 @@ import {
   AVATAR_COLORS,
   buildFallbackBuilderProfile,
   checkExistingBuilderProfile,
+  checkUsernameAvailability,
   ensureBuilderProfile,
   handleFirestoreError,
   OperationType,
@@ -113,7 +114,12 @@ import {
 import {
   submitCreationForPublicShowcase,
   adminCurateShowcaseSubmission,
+  adminApproveStudentAccess,
+  adminUpdateStudentAccessDecision,
+  adminMigrateLegacyBuilderToStudent,
+  adminRevokeStudentHubAccess,
 } from '../utils/communityService.ts';
+import { StudentAccessRequest } from '../types/community.ts';
 import { toggleMessageReaction } from '../utils/communityLogic.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 import {
@@ -401,7 +407,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   }, [allShowcaseMessages, lastViewedShowcaseTime, viewMode, currentUser?.uid]);
 
   const [onlineMembers, setOnlineMembers] = useState<PresenceItem[]>([]);
-  const [registeredUsers, setRegisteredUsers] = useState<BuilderProfile[]>([]);
+  const [allPlatformUsers, setAllPlatformUsers] = useState<BuilderProfile[]>([]);
+  const [approvedHubMemberIds, setApprovedHubMemberIds] = useState<Set<string>>(new Set());
+  const [hubAccessRequests, setHubAccessRequests] = useState<StudentAccessRequest[]>([]);
+  const [isProcessingHubAccess, setIsProcessingHubAccess] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<CommunityGlobalSettings>(DEFAULT_GLOBAL_SETTINGS);
   const [channelConfigs, setChannelConfigs] = useState<Record<string, CommunityChannelConfig>>({});
   const [channelSubGroups, setChannelSubGroups] = useState<CommunitySubGroup[]>([]);
@@ -410,7 +419,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Drawers & Modals
   const [showMembersDrawer, setShowMembersDrawer] = useState(false);
   const [showAdminDrawer, setShowAdminDrawer] = useState(false);
-  const [adminTab, setAdminTab] = useState<'global' | 'channels' | 'users' | 'groups'>('global');
+  const [adminTab, setAdminTab] = useState<'access' | 'global' | 'channels' | 'users' | 'groups'>('access');
   const [selectedAdminChannelId, setSelectedAdminChannelId] = useState<string>(initialChannelId);
 
   // Create Sub-Group Modal state
@@ -793,10 +802,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [activeChannelId]);
 
-  // Real-time listener for All Registered Users (`/users`)
+  // Real-time listener for All Platform Users (`/users`) and Approved Memberships (`/communityMemberships`)
+  // Unapproved accounts are strictly hidden from `registeredUsers` (Private Chat) and only shown in Admin Center.
   useEffect(() => {
-    const q = query(collection(db, 'users'), limit(100));
-    const unsubscribe = onSnapshot(
+    const q = query(collection(db, 'users'), limit(200));
+    const unsubscribeUsers = onSnapshot(
       q,
       (snapshot) => {
         const users: BuilderProfile[] = snapshot.docs.map((docSnap) => {
@@ -812,16 +822,84 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             role: d.role || 'member',
             status: d.status || 'active',
             acceptedGuidelines: Boolean(d.acceptedGuidelines),
-            studentAccessStatus: d.studentAccessStatus || 'approved',
-            isApprovedStudent: d.isApprovedStudent !== false,
+            accountType: d.accountType || 'public',
+            studentAccessStatus: d.studentAccessStatus || 'none',
+            isApprovedStudent: Boolean(d.isApprovedStudent),
           };
         });
-        setRegisteredUsers(users);
+        setAllPlatformUsers(users);
       },
       () => {}
     );
-    return () => unsubscribe();
+
+    const membershipsQuery = query(collection(db, 'communityMemberships'), limit(300));
+    const unsubscribeMemberships = onSnapshot(
+      membershipsQuery,
+      (snapshot) => {
+        const approvedIds = new Set<string>();
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (d?.status === 'approved') {
+            approvedIds.add(d.uid || docSnap.id);
+          }
+        });
+        setApprovedHubMemberIds(approvedIds);
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubscribeUsers();
+      unsubscribeMemberships();
+    };
   }, []);
+
+  // Real-time listener for Student Access Requests (Super Admin only)
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    const unsubscribeReqs = onSnapshot(
+      collection(db, 'studentAccessRequests'),
+      (snap) => {
+        const list: StudentAccessRequest[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as StudentAccessRequest), uid: d.id }));
+        list.sort(
+          (a, b) =>
+            new Date(b.updatedAt || b.createdAt).getTime() -
+            new Date(a.updatedAt || a.createdAt).getTime()
+        );
+        setHubAccessRequests(list);
+      },
+      () => {}
+    );
+    return () => unsubscribeReqs();
+  }, [isSuperAdmin]);
+
+  // Strictly filter Private Chat members (`registeredUsers`) to ONLY approved Student Hub members & admins/mods
+  const registeredUsers = useMemo<BuilderProfile[]>(() => {
+    return allPlatformUsers.filter(
+      (u) =>
+        u.role === 'admin' ||
+        u.role === 'moderator' ||
+        approvedHubMemberIds.has(u.uid)
+    );
+  }, [allPlatformUsers, approvedHubMemberIds]);
+
+  // Unapproved registered accounts (visible ONLY to Admin inside Admin Control Center)
+  const unapprovedPlatformUsers = useMemo<BuilderProfile[]>(() => {
+    return allPlatformUsers.filter(
+      (u) =>
+        u.role !== 'admin' &&
+        u.role !== 'moderator' &&
+        !approvedHubMemberIds.has(u.uid)
+    );
+  }, [allPlatformUsers, approvedHubMemberIds]);
+
+  const pendingHubRequestsCount = useMemo(() => {
+    return (
+      hubAccessRequests.filter((r) => r.status === 'pending').length +
+      unapprovedPlatformUsers.length
+    );
+  }, [hubAccessRequests, unapprovedPlatformUsers]);
 
   const mentionableUsersList = useMemo<MentionableUser[]>(() => {
     return registeredUsers.map((u) => ({
@@ -1357,12 +1435,26 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     ).filteredText.slice(0, 100);
 
     try {
-      const updated = await ensureBuilderProfile(currentUser, {
-        displayName: cleanedName,
-        schoolName: cleanedSchool,
-        avatarUrl: selectedPresetAvatarId,
-        avatarColor: selectedAccentColor,
-      });
+      // Enforce unique username across the platform when changing display name
+      const availability = await checkUsernameAvailability(cleanedName, currentUser.uid);
+      if (!availability.available) {
+        setComposerError(
+          `The username "${cleanedName}" is already taken by another member. Try "${availability.suggestion}" instead.`
+        );
+        setIsSavingAvatar(false);
+        return;
+      }
+
+      const updated = await ensureBuilderProfile(
+        currentUser,
+        {
+          displayName: cleanedName,
+          schoolName: cleanedSchool,
+          avatarUrl: selectedPresetAvatarId,
+          avatarColor: selectedAccentColor,
+        },
+        { strictUniqueName: true }
+      );
       onProfileUpdated(updated);
 
       // Immediately sync updated profile to live presence document
@@ -1381,7 +1473,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       window.setTimeout(() => setComposerNotice(null), 3500);
     } catch (err) {
       console.error('Failed to save profile settings:', err);
-      setComposerError('Could not save profile changes. Please try again.');
+      setComposerError(
+        err instanceof Error
+          ? err.message
+          : 'Could not save profile changes. Please try again.'
+      );
     } finally {
       setIsSavingAvatar(false);
     }
@@ -2182,13 +2278,22 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     e.preventDefault();
     if (!currentUser || !isSuperAdmin || !newMemberName.trim()) return;
 
+    const cleanName = newMemberName.trim().slice(0, 60);
+    const availability = await checkUsernameAvailability(cleanName);
+    if (!availability.available) {
+      setComposerError(
+        `The username "${cleanName}" is already taken. Try "${availability.suggestion}" instead.`
+      );
+      return;
+    }
+
     const generatedUid = `member-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const color = AVATAR_COLORS[registeredUsers.length % AVATAR_COLORS.length];
 
     try {
-      await setDoc(doc(db, 'users', generatedUid), {
+      const createdProfile: BuilderProfile = {
         uid: generatedUid,
-        displayName: newMemberName.trim().slice(0, 60),
+        displayName: cleanName,
         schoolName: (newMemberSchool.trim() || 'Build Buds Network').slice(0, 100),
         gradeLevel: newMemberGrade.slice(0, 40),
         primaryInterest: 'All Creations',
@@ -2197,15 +2302,112 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         role: newMemberRole,
         status: 'active',
         acceptedGuidelines: true,
+        accountType: 'student',
+        studentAccessStatus: 'approved',
+        isApprovedStudent: true,
+      };
+      await setDoc(doc(db, 'users', generatedUid), {
+        ...createdProfile,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      await adminMigrateLegacyBuilderToStudent(createdProfile);
       setNewMemberName('');
       setNewMemberSchool('');
-      setComposerNotice(`Created member profile for ${newMemberName.trim()}.`);
+      setComposerNotice(`Created and approved member profile for ${cleanName}.`);
       window.setTimeout(() => setComposerNotice(null), 3000);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `users/${generatedUid}`);
+    }
+  };
+
+  // Super Admin: Approve a formal Student Access Request directly inside the Hub Control Center
+  const handleAdminApproveRequestInHub = async (req: StudentAccessRequest) => {
+    if (!isSuperAdmin) return;
+    setIsProcessingHubAccess(true);
+    try {
+      await adminApproveStudentAccess({
+        targetRequest: req,
+        verifiedAgainstOfficialRecords: true,
+        privateAdminNotes: 'Approved via Super Admin Control Center in Student Hub',
+        officialRecordReference: req.studentReference || 'HUB-ADMIN-APPROVED',
+        publicStatusNote:
+          'Approved! Your Jaystarbliss Studios student membership has been verified. Welcome to the Build Buds Student Hub!',
+      });
+      setComposerNotice(
+        `Approved ${req.fullName} for the Private Student Hub and broadcasted welcome in #general-chat & #announcements!`
+      );
+      window.setTimeout(() => setComposerNotice(null), 4000);
+    } catch (err) {
+      setComposerError(
+        err instanceof Error ? err.message : 'Failed to approve student request.'
+      );
+    } finally {
+      setIsProcessingHubAccess(false);
+    }
+  };
+
+  // Super Admin: Reject a formal Student Access Request directly inside the Hub Control Center
+  const handleAdminRejectRequestInHub = async (req: StudentAccessRequest) => {
+    if (!isSuperAdmin) return;
+    setIsProcessingHubAccess(true);
+    try {
+      await adminUpdateStudentAccessDecision({
+        targetRequest: req,
+        newStatus: 'rejected',
+        publicStatusNote:
+          'We could not match the submitted details to an active Jaystarbliss Studios student registration. You can continue using the Public Community.',
+        privateAdminNotes: 'Rejected via Super Admin Control Center in Student Hub',
+      });
+      setComposerNotice(`Rejected Student Hub application for ${req.fullName}.`);
+      window.setTimeout(() => setComposerNotice(null), 3500);
+    } catch (err) {
+      setComposerError(
+        err instanceof Error ? err.message : 'Failed to reject student request.'
+      );
+    } finally {
+      setIsProcessingHubAccess(false);
+    }
+  };
+
+  // Super Admin: Approve an unapproved registered account into the Private Student Hub
+  const handleAdminApproveUserInHub = async (userObj: BuilderProfile) => {
+    if (!isSuperAdmin) return;
+    setIsProcessingHubAccess(true);
+    try {
+      await adminMigrateLegacyBuilderToStudent(userObj);
+      setComposerNotice(
+        `Approved ${userObj.displayName} into the Private Student Hub and posted welcome announcement in #general-chat & #announcements!`
+      );
+      window.setTimeout(() => setComposerNotice(null), 4000);
+    } catch (err) {
+      setComposerError(
+        err instanceof Error ? err.message : 'Failed to approve user for Student Hub.'
+      );
+    } finally {
+      setIsProcessingHubAccess(false);
+    }
+  };
+
+  // Super Admin: Revoke / Remove a user from the Private Student Hub (keeps them in Public Community only)
+  const handleAdminRevokeUserInHub = async (userObj: BuilderProfile) => {
+    if (!isSuperAdmin) return;
+    setIsProcessingHubAccess(true);
+    try {
+      await adminRevokeStudentHubAccess(
+        userObj,
+        'Removed from Private Student Hub by Super Admin.'
+      );
+      setComposerNotice(
+        `Removed ${userObj.displayName} from the Private Student Hub. They now only have Public Community access.`
+      );
+      window.setTimeout(() => setComposerNotice(null), 4000);
+    } catch (err) {
+      setComposerError(
+        err instanceof Error ? err.message : 'Failed to remove user from Student Hub.'
+      );
+    } finally {
+      setIsProcessingHubAccess(false);
     }
   };
 
@@ -2611,7 +2813,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               type="button"
               onClick={() => {
                 setSelectedAdminChannelId(activeChannelId);
-                setAdminTab(isSuperAdmin ? 'global' : 'channels');
+                setAdminTab(isSuperAdmin ? 'access' : 'channels');
                 setActiveThreadMessage(null);
                 setShowMembersDrawer(false);
                 setShowAdminDrawer((prev) => !prev);
@@ -2621,11 +2823,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   ? 'bg-[#FFF025] text-black border-black'
                   : 'bg-amber-500/15 hover:bg-amber-500/25 text-[#FFF025] border-[#FFF025]/40'
               }`}
-              title={isSuperAdmin ? 'Open Super Admin Control Center' : 'Open Channel Moderator Controls'}
+              title={isSuperAdmin ? 'Open Super Admin Control Center (Manage Access Requests & Hub)' : 'Open Channel Moderator Controls'}
               aria-label={isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}
             >
               <Settings className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">{isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}</span>
+              {isSuperAdmin && pendingHubRequestsCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[10px] font-black">
+                  {pendingHubRequestsCount}
+                </span>
+              )}
             </button>
           )}
 
@@ -3287,10 +3494,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 {isFirstInGroup && (
                                   <div className="flex items-baseline justify-between gap-2 mb-0.5">
                                     <div className="flex items-baseline gap-2 flex-wrap min-w-0">
-                                      <span
-                                        className="font-mono font-bold text-sm tracking-tight truncate"
-                                        style={{ color: resolvedAuthorColor }}
-                                      >
+                                      <span className="font-mono font-extrabold text-sm tracking-tight truncate verified-student-name-gradient-dark">
                                         {resolvedAuthorName}
                                       </span>
 
@@ -4034,6 +4238,23 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 <div className="px-3 pt-2.5 pb-2 border-b border-white/10 flex flex-wrap gap-1.5 bg-[#14151c]">
                   {isSuperAdmin && (
                     <button
+                      onClick={() => setAdminTab('access')}
+                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors flex items-center gap-1.5 ${
+                        adminTab === 'access'
+                          ? 'bg-[#FFF025] text-black'
+                          : 'bg-white/5 text-white/70 hover:text-white'
+                      }`}
+                    >
+                      <span>Access Requests</span>
+                      {pendingHubRequestsCount > 0 && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[9px] font-black">
+                          {pendingHubRequestsCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                  {isSuperAdmin && (
+                    <button
                       onClick={() => setAdminTab('global')}
                       className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors ${
                         adminTab === 'global'
@@ -4063,7 +4284,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           : 'bg-white/5 text-white/70 hover:text-white'
                       }`}
                     >
-                      Users ({registeredUsers.length})
+                      All Accounts ({allPlatformUsers.length})
                     </button>
                   )}
                   <button
@@ -4080,6 +4301,181 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
                 {/* Tab Body */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-5 text-xs">
+                  {adminTab === 'access' && isSuperAdmin && (
+                    /* TAB 0: STUDENT HUB ACCESS REQUESTS & UNAPPROVED ACCOUNTS (ADMIN ONLY) */
+                    <div className="space-y-4">
+                      <div className="p-3.5 rounded-2xl bg-[#1b1e2b] border border-[#FFF025]/40 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-bold text-[#FFF025] text-sm flex items-center gap-1.5">
+                            <ShieldCheck className="w-4 h-4" />
+                            <span>Student Hub Access Gate</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.history.pushState({}, '', '/admin/student-access');
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-[#FFF025] text-black font-black text-[10px] cursor-pointer"
+                          >
+                            Full Admin Portal →
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-white/70 leading-relaxed">
+                          Unapproved accounts are strictly hidden from the Private Chat and can only
+                          browse the Public Community. When you accept a student below, they gain
+                          Private Hub access, receive the Pro Gradient Ring &amp; Name, and a welcome
+                          announcement is automatically posted in <strong>#general-chat</strong> and{' '}
+                          <strong>#announcements</strong>.
+                        </p>
+                      </div>
+
+                      {/* Formal Student Access Requests */}
+                      <div className="space-y-2">
+                        <div className="font-black uppercase tracking-wider text-[10px] text-[#FFF025] flex items-center justify-between">
+                          <span>
+                            Student Access Applications ({hubAccessRequests.length})
+                          </span>
+                          <span className="text-white/50">
+                            {hubAccessRequests.filter((r) => r.status === 'pending').length} pending
+                          </span>
+                        </div>
+
+                        {hubAccessRequests.length === 0 ? (
+                          <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/50 text-[11px]">
+                            No formal student access applications submitted yet.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {hubAccessRequests.map((req) => (
+                              <div
+                                key={req.uid}
+                                className="p-3 rounded-2xl bg-white/[0.04] border border-white/15 space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-white text-xs truncate">
+                                      {req.fullName}
+                                    </div>
+                                    <div className="text-[10px] text-white/60 truncate">
+                                      {req.email}
+                                    </div>
+                                    <div className="text-[10px] text-white/75 mt-0.5">
+                                      🏫 {req.schoolName} • {req.gradeLevel}
+                                    </div>
+                                    <div className="text-[10px] text-[#FFF025]/90 truncate">
+                                      🎓 {req.programme}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${
+                                      req.status === 'approved'
+                                        ? 'bg-emerald-400 text-black'
+                                        : req.status === 'pending'
+                                        ? 'bg-amber-400 text-black'
+                                        : 'bg-rose-500 text-white'
+                                    }`}
+                                  >
+                                    {req.status}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 pt-1">
+                                  {req.status !== 'approved' && (
+                                    <button
+                                      type="button"
+                                      disabled={isProcessingHubAccess}
+                                      onClick={() => handleAdminApproveRequestInHub(req)}
+                                      className="flex-1 py-1.5 px-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-black font-black text-[11px] cursor-pointer disabled:opacity-50"
+                                    >
+                                      ✓ Accept &amp; Welcome to Hub
+                                    </button>
+                                  )}
+                                  {req.status !== 'rejected' && (
+                                    <button
+                                      type="button"
+                                      disabled={isProcessingHubAccess}
+                                      onClick={() => handleAdminRejectRequestInHub(req)}
+                                      className="py-1.5 px-2.5 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white font-black text-[11px] cursor-pointer disabled:opacity-50"
+                                    >
+                                      Reject
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Unapproved Registered Accounts (Visible ONLY to Admin) */}
+                      <div className="space-y-2 pt-2 border-t border-white/10">
+                        <div className="font-black uppercase tracking-wider text-[10px] text-amber-300 flex items-center justify-between">
+                          <span>
+                            Unapproved Registered Accounts ({unapprovedPlatformUsers.length})
+                          </span>
+                          <span className="text-white/50">Hidden from Private Chat</span>
+                        </div>
+
+                        {unapprovedPlatformUsers.length === 0 ? (
+                          <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/50 text-[11px]">
+                            All registered accounts have been reviewed.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {unapprovedPlatformUsers.map((u) => (
+                              <div
+                                key={u.uid}
+                                className="p-3 rounded-2xl bg-white/[0.04] border border-amber-400/30 space-y-2"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <VerifiedAvatarFrame
+                                      src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
+                                      alt={u.displayName}
+                                      isVerified={false}
+                                      sizeClass="w-8 h-8"
+                                    />
+                                    <div className="min-w-0">
+                                      <div className="font-bold text-white truncate">
+                                        {u.displayName}
+                                      </div>
+                                      <div className="text-[10px] text-white/55 truncate">
+                                        {u.schoolName || 'Public Community Account'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 text-[9px] font-black uppercase shrink-0">
+                                    Public Only
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingHubAccess}
+                                    onClick={() => handleAdminApproveUserInHub(u)}
+                                    className="flex-1 py-1.5 px-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-[11px] cursor-pointer disabled:opacity-50"
+                                  >
+                                    ✓ Accept into Private Chat
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingHubAccess}
+                                    onClick={() => handleAdminRevokeUserInHub(u)}
+                                    className="py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-rose-500/30 text-white/75 hover:text-rose-200 font-bold text-[10px] cursor-pointer disabled:opacity-50"
+                                  >
+                                    Keep Public
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {adminTab === 'global' && isSuperAdmin && (
                     /* TAB 1: GLOBAL COMMUNITY SETTINGS */
                     <div className="space-y-4">
@@ -4562,13 +4958,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           className="w-full px-3 py-2 rounded-xl bg-[#1a1c24] border border-white/15 text-xs text-white"
                         />
 
-                        {registeredUsers.length === 0 ? (
+                        {allPlatformUsers.length === 0 ? (
                           <div className="p-6 text-center text-white/45 font-mono">
                             No users have signed up yet.
                           </div>
                         ) : (
                           <div className="space-y-2">
-                            {registeredUsers
+                            {allPlatformUsers
                               .filter((u) =>
                                 u.displayName
                                   .toLowerCase()
@@ -4576,6 +4972,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               )
                               .map((u) => {
                                 const st = u.status || 'active';
+                                const isUserApprovedInHub =
+                                  u.role === 'admin' ||
+                                  u.role === 'moderator' ||
+                                  approvedHubMemberIds.has(u.uid);
                                 return (
                                   <div
                                     key={u.uid}
@@ -4583,31 +4983,40 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   >
                                     <div className="flex items-center justify-between gap-2">
                                       <div className="flex items-center gap-2 min-w-0">
-                                        <span
-                                          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-black text-black shrink-0"
-                                          style={{ backgroundColor: u.avatarColor }}
-                                        >
-                                          {u.displayName.charAt(0).toUpperCase()}
-                                        </span>
+                                        <VerifiedAvatarFrame
+                                          src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
+                                          alt={u.displayName}
+                                          isVerified={isUserApprovedInHub}
+                                          sizeClass="w-7 h-7"
+                                          ringPaddingClass="p-[1.5px]"
+                                        />
                                         <div className="min-w-0">
                                           <div className="font-bold text-white truncate flex items-center gap-1.5">
-                                            <span>{u.displayName}</span>
+                                            <span
+                                              className={
+                                                isUserApprovedInHub
+                                                  ? 'verified-student-name-gradient-dark'
+                                                  : 'text-white'
+                                              }
+                                            >
+                                              {u.displayName}
+                                            </span>
                                             <span className="px-1.5 py-0.2 rounded bg-white/10 text-[9px] uppercase font-mono">
                                               {u.role}
                                             </span>
                                           </div>
                                           <div className="text-[10px] text-white/45 truncate">
-                                            {u.schoolName || 'Build Buds'} • Status:{' '}
+                                            {u.schoolName || 'Build Buds'} •{' '}
                                             <strong
                                               className={
-                                                st === 'banned'
-                                                  ? 'text-rose-400'
-                                                  : st === 'suspended'
-                                                    ? 'text-amber-400'
-                                                    : 'text-emerald-400'
+                                                isUserApprovedInHub
+                                                  ? 'text-emerald-400'
+                                                  : 'text-amber-300'
                                               }
                                             >
-                                              {st.toUpperCase()}
+                                              {isUserApprovedInHub
+                                                ? 'IN PRIVATE HUB'
+                                                : 'PUBLIC ONLY (HIDDEN)'}
                                             </strong>
                                           </div>
                                         </div>
@@ -4631,6 +5040,31 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         </button>
                                       )}
                                     </div>
+
+                                    {/* Student Hub Access Gate Control: Approve or Remove from Private Chat */}
+                                    {u.role !== 'admin' && (
+                                      <div className="pt-1">
+                                        {isUserApprovedInHub ? (
+                                          <button
+                                            type="button"
+                                            disabled={isProcessingHubAccess}
+                                            onClick={() => handleAdminRevokeUserInHub(u)}
+                                            className="w-full py-1.5 px-2.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-[10px] font-black cursor-pointer transition-colors"
+                                          >
+                                            Remove from Private Chat (Restrict to Public Only)
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            disabled={isProcessingHubAccess}
+                                            onClick={() => handleAdminApproveUserInHub(u)}
+                                            className="w-full py-1.5 px-2.5 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-[10px] font-black cursor-pointer transition-colors"
+                                          >
+                                            ✓ Approve for Private Student Chat
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
 
                                     {/* Account Status Controls: Active | Suspend (Read-Only) | Ban (Block Access) */}
                                     {u.role !== 'admin' && (
@@ -5162,7 +5596,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#121317]" />
                               </VerifiedAvatarFrame>
                               <div className="min-w-0">
-                                <div className="text-xs font-bold text-white truncate">
+                                <div className="text-xs font-extrabold truncate verified-student-name-gradient-dark">
                                   {getLiveUserDisplayName(member.uid, member.displayName)}
                                 </div>
                                 <div className="text-[10px] text-white/45 font-mono truncate">
@@ -5179,14 +5613,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     )}
                   </div>
 
-                  {/* All Signed-Up Community Builders */}
+                  {/* All Approved Student Hub Builders */}
                   <div>
                     <div className="px-2 mb-1.5 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                      Registered Builders ({registeredUsers.length})
+                      Verified Hub Builders ({registeredUsers.length})
                     </div>
                     {registeredUsers.length === 0 ? (
                       <div className="px-2 py-3 text-xs text-white/40 font-mono">
-                        No registered members yet. When users sign up, they will appear here.
+                        No approved Student Hub members yet.
                       </div>
                     ) : (
                       <div className="space-y-1">
@@ -5212,8 +5646,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   />
                                 </VerifiedAvatarFrame>
                                 <div className="min-w-0">
-                                  <div className="text-xs font-bold text-white truncate flex items-center gap-1">
-                                    <span className="truncate">{u.displayName}</span>
+                                  <div className="text-xs font-extrabold truncate flex items-center gap-1">
+                                    <span className="truncate verified-student-name-gradient-dark">
+                                      {u.displayName}
+                                    </span>
                                     {u.role === 'admin' && (
                                       <span className="px-1 py-0.2 rounded bg-[#FFF025] text-black text-[9px] font-black">
                                         ADMIN

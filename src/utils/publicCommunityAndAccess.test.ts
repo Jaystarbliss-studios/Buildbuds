@@ -213,4 +213,6 @@ test('Hardened firestore.rules separates Public Community from Private Student H
   assert.ok(rulesText.includes('match /communityMemberships/{userId}'));
   assert.ok(rulesText.includes('match /studentAccessAdminNotes/{userId}'));
   assert.ok(rulesText.includes('match /adminAuditLogs/{logId}'));
+  // Ensure newly registered accounts with a schoolName are NOT automatically granted Student Hub access without Admin approval
+  assert.ok(!rulesText.includes("get('schoolName', '') != ''"));
 });

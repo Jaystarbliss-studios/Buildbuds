@@ -489,15 +489,24 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                   isVerified={
                     post.authorRole === 'admin' ||
                     post.authorRole === 'moderator' ||
-                    verifiedUserIds.has(post.authorId) ||
-                    !post.authorId.startsWith('seed-')
+                    verifiedUserIds.has(post.authorId)
                   }
                   sizeClass="w-11 h-11"
                   ringPaddingClass="p-[2.5px]"
                 />
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="font-black text-sm">{post.authorName}</span>
+                    <span
+                      className={`font-black text-sm ${
+                        post.authorRole === 'admin' ||
+                        post.authorRole === 'moderator' ||
+                        verifiedUserIds.has(post.authorId)
+                          ? 'verified-student-name-gradient'
+                          : ''
+                      }`}
+                    >
+                      {post.authorName}
+                    </span>
                     {post.authorRole === 'admin' && (
                       <span className="px-2 py-0.5 rounded-md border border-black bg-[#FFF025] text-black text-[10px] font-black uppercase">
                         Official Team
@@ -836,7 +845,17 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                           />
                           <div>
                             <div className="flex items-center gap-1.5">
-                              <span className="text-xs font-black">{comment.authorName}</span>
+                              <span
+                                className={`text-xs font-black ${
+                                  comment.authorRole === 'admin' ||
+                                  comment.authorRole === 'moderator' ||
+                                  verifiedUserIds.has(comment.authorId)
+                                    ? 'verified-student-name-gradient'
+                                    : ''
+                                }`}
+                              >
+                                {comment.authorName}
+                              </span>
                               {comment.authorRole === 'admin' && (
                                 <span className="px-1.5 py-0.2 rounded bg-[#FFF025] text-black border border-black text-[9px] font-black uppercase">
                                   Admin
@@ -1052,7 +1071,15 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                       sizeClass="w-6 h-6"
                                       ringPaddingClass="p-[1.5px]"
                                     />
-                                    <span className="text-xs font-black">
+                                    <span
+                                      className={`text-xs font-black ${
+                                        reply.authorRole === 'admin' ||
+                                        reply.authorRole === 'moderator' ||
+                                        verifiedUserIds.has(reply.authorId)
+                                          ? 'verified-student-name-gradient'
+                                          : ''
+                                      }`}
+                                    >
                                       {reply.authorName}
                                     </span>
                                     <span

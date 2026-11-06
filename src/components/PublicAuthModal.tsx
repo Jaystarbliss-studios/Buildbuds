@@ -8,6 +8,7 @@ import {
   createUserWithEmailAndPassword,
   updateProfile,
   ensurePublicUserProfile,
+  checkUsernameAvailability,
   BuilderProfile,
   User,
 } from '../firebase.ts';
@@ -51,18 +52,29 @@ export const PublicAuthModal: React.FC<PublicAuthModalProps> = ({
     setError(null);
     setIsLoading(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
       const customName = displayName.trim();
-      if (customName && !result.user.displayName) {
-        try {
-          await updateProfile(result.user, { displayName: customName });
-        } catch {
-          // Non-fatal
+      const result = await signInWithPopup(auth, googleProvider);
+      if (customName) {
+        const check = await checkUsernameAvailability(customName, result.user.uid);
+        if (!check.available) {
+          setError(
+            `The username "${check.normalizedName}" is already taken by another Build Buds member. Please enter a unique username (for example: "${check.suggestion}").`
+          );
+          setIsLoading(false);
+          return;
+        }
+        if (!result.user.displayName) {
+          try {
+            await updateProfile(result.user, { displayName: customName });
+          } catch {
+            // Non-fatal
+          }
         }
       }
       const profile = await ensurePublicUserProfile(
         result.user,
-        customName ? { displayName: customName } : undefined
+        customName ? { displayName: customName } : undefined,
+        { strictUniqueName: Boolean(customName) }
       );
       onSuccess(profile, result.user);
     } catch (err: unknown) {
@@ -103,25 +115,41 @@ export const PublicAuthModal: React.FC<PublicAuthModalProps> = ({
       } else {
         const cleanName = displayName.trim();
         if (!cleanName) {
-          setError('Please enter your name above first.');
+          setError('Please enter a unique username / builder name above first.');
+          setIsLoading(false);
+          return;
+        }
+        const preCheck = await checkUsernameAvailability(cleanName, auth.currentUser?.uid);
+        if (!preCheck.available) {
+          setError(
+            `The username "${preCheck.normalizedName}" is already taken by another Build Buds member. Please choose a unique username (for example: "${preCheck.suggestion}").`
+          );
           setIsLoading(false);
           return;
         }
         try {
           const cred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
           await updateProfile(cred.user, { displayName: cleanName });
-          const profile = await ensurePublicUserProfile(cred.user, {
-            displayName: cleanName,
-          });
+          const profile = await ensurePublicUserProfile(
+            cred.user,
+            {
+              displayName: cleanName,
+            },
+            { strictUniqueName: true }
+          );
           onSuccess(profile, cred.user);
         } catch (signupErr: unknown) {
           const signupCode = (signupErr as { code?: string })?.code || '';
           if (signupCode === 'auth/email-already-in-use') {
             // Existing account — sign them in directly instead of failing
             const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
-            const profile = await ensurePublicUserProfile(cred.user, {
-              displayName: cleanName,
-            });
+            const profile = await ensurePublicUserProfile(
+              cred.user,
+              {
+                displayName: cleanName,
+              },
+              { strictUniqueName: true }
+            );
             onSuccess(profile, cred.user);
             return;
           }

@@ -37,7 +37,10 @@ import {
   adminUpdateStudentAccessDecision,
   adminRetryStudentNotification,
   adminMigrateLegacyBuilderToStudent,
+  adminRevokeStudentHubAccess,
 } from '../utils/communityService.ts';
+import { VerifiedAvatarFrame } from './MentionAndEmotes.tsx';
+import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 
 interface AdminStudentAccessDashboardProps {
   currentUser: User | null;
@@ -155,7 +158,11 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
   // Populate review fields when selecting an applicant
   useEffect(() => {
     if (!selectedRequest) return;
-    setVerifiedOfficialCheck(Boolean(selectedRequest.verifiedAgainstOfficialRecords));
+    setVerifiedOfficialCheck(
+      selectedRequest.verifiedAgainstOfficialRecords !== undefined
+        ? Boolean(selectedRequest.verifiedAgainstOfficialRecords)
+        : true
+    );
     setPublicStatusNote(selectedRequest.publicStatusNote || '');
     const existingNote = adminNotesMap[selectedRequest.uid];
     setPrivateAdminNotes(existingNote?.privateNotes || '');
@@ -303,12 +310,34 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
       await adminMigrateLegacyBuilderToStudent(builder);
       setFeedbackBanner({
         type: 'success',
-        message: `Migrated ${builder.displayName} into verified Student Hub membership!`,
+        message: `Approved ${builder.displayName} for the Private Student Hub and posted welcome announcement in #general-chat and #announcements!`,
       });
     } catch (err) {
       setFeedbackBanner({
         type: 'error',
-        message: err instanceof Error ? err.message : 'Migration failed.',
+        message: err instanceof Error ? err.message : 'Approval failed.',
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRevokeSingleUser = async (builder: BuilderProfile) => {
+    setFeedbackBanner(null);
+    setIsProcessing(true);
+    try {
+      await adminRevokeStudentHubAccess(
+        builder,
+        'Removed from Private Student Hub by Administrator. Account restricted to Public Community.'
+      );
+      setFeedbackBanner({
+        type: 'success',
+        message: `Removed ${builder.displayName} from the Private Student Hub. They can now only access the Public Community.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Revoke failed.',
       });
     } finally {
       setIsProcessing(false);
@@ -316,6 +345,10 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
   };
 
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
+  const unapprovedRegisteredUsers = allUsers.filter((u) => {
+    const m = membershipsMap[u.uid];
+    return u.role !== 'admin' && u.role !== 'moderator' && m?.status !== 'approved';
+  });
 
   return (
     <div className="min-h-screen bg-[#FFFDF5] text-black font-sans flex flex-col">
@@ -392,7 +425,12 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
               }`}
             >
               <Users className="w-4 h-4" />
-              <span>Existing Builder Migration ({allUsers.length})</span>
+              <span>Manage All Accounts & Hub Access ({allUsers.length})</span>
+              {unapprovedRegisteredUsers.length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-300 text-black border border-black text-[11px]">
+                  {unapprovedRegisteredUsers.length} Unapproved
+                </span>
+              )}
             </button>
 
             <button
@@ -518,6 +556,53 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                   })
                 )}
               </div>
+
+              {/* Unapproved Registered Accounts Quick Queue */}
+              {unapprovedRegisteredUsers.length > 0 && (
+                <div className="p-4 rounded-2xl border-2 border-black bg-[#FFFDF5] space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-black uppercase tracking-wider text-[#B11469]">
+                      Unapproved Accounts ({unapprovedRegisteredUsers.length})
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-600">
+                      Hidden from Private Chat until approved
+                    </span>
+                  </div>
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {unapprovedRegisteredUsers.map((u) => (
+                      <div
+                        key={u.uid}
+                        className="p-3 rounded-xl border-2 border-black bg-white flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <VerifiedAvatarFrame
+                            src={resolveBuilderAvatarUrl(u.avatarUrl, u.uid)}
+                            alt={u.displayName}
+                            isVerified={false}
+                            sizeClass="w-8 h-8"
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-black text-black truncate">
+                              {u.displayName}
+                            </div>
+                            <div className="text-[10px] text-slate-600 truncate">
+                              {u.schoolName || 'Public Member'}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isProcessing}
+                          onClick={() => handleMigrateSingleUser(u)}
+                          className="px-3 py-1.5 rounded-lg border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black shrink-0 cursor-pointer"
+                        >
+                          Approve
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Right Column: Detailed Official Verification Panel */}
@@ -755,56 +840,95 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
           </div>
         )}
 
-        {/* TAB 2 — EXISTING BUILDERS MIGRATION */}
+        {/* TAB 2 — MANAGE ALL ACCOUNTS & STUDENT HUB ACCESS */}
         {activeTab === 'migration' && (
           <div className="rounded-3xl border-3 border-black bg-white p-6 sm:p-8 brand-shadow space-y-6">
             <div>
               <h2 className="font-chewy text-2xl sm:text-3xl text-black">
-                Existing Build Buds User Migration
+                Manage All Registered Accounts &amp; Private Student Hub Access
               </h2>
               <p className="text-xs sm:text-sm text-slate-600 mt-1">
-                Approve pre-existing registered builders in <code>users/&#123;uid&#125;</code> into{' '}
-                <code>communityMemberships/&#123;uid&#125;</code> so legitimate Jaystarbliss Studios
-                students retain uninterrupted access to the private Student Hub and their existing
-                chat history.
+                Only accounts with <strong>Approved Student Hub Access</strong> appear inside the
+                Private Student Hub chat and receive the Verified Pro Avatar Ring + Gradient Name.
+                Unapproved accounts can only use the Public Community until you approve them here.
               </p>
             </div>
 
             <div className="divide-y-2 divide-black/10">
               {allUsers.map((u) => {
                 const membership = membershipsMap[u.uid];
-                const isApproved = membership?.status === 'approved' || u.role === 'admin';
+                const isApproved =
+                  membership?.status === 'approved' ||
+                  u.role === 'admin' ||
+                  u.role === 'moderator';
                 return (
                   <div
                     key={u.uid}
                     className="py-4 flex flex-wrap items-center justify-between gap-4"
                   >
-                    <div>
-                      <div className="text-sm font-black text-black flex items-center gap-2">
-                        <span>{u.displayName}</span>
-                        <span className="text-xs font-mono text-slate-500">({u.uid})</span>
-                      </div>
-                      <div className="text-xs text-slate-600">
-                        School: {u.schoolName || 'Not specified'} • Grade:{' '}
-                        {u.gradeLevel || 'Not specified'} • Role: {u.role}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <VerifiedAvatarFrame
+                        src={resolveBuilderAvatarUrl(u.avatarUrl, u.uid)}
+                        alt={u.displayName}
+                        isVerified={isApproved}
+                        sizeClass="w-10 h-10"
+                        ringPaddingClass="p-[2.5px]"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-black flex flex-wrap items-center gap-2">
+                          <span
+                            className={
+                              isApproved ? 'verified-student-name-gradient' : 'text-black'
+                            }
+                          >
+                            {u.displayName}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-md border border-black text-[10px] font-black uppercase ${
+                              isApproved
+                                ? 'bg-emerald-300 text-black'
+                                : 'bg-amber-200 text-black'
+                            }`}
+                          >
+                            {isApproved ? 'Approved in Private Hub' : 'Public Community Only'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600 mt-0.5">
+                          School: {u.schoolName || 'Not specified'} • Grade:{' '}
+                          {u.gradeLevel || 'Not specified'} • Role: {u.role}
+                        </div>
                       </div>
                     </div>
 
-                    {isApproved ? (
-                      <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border-2 border-black bg-emerald-300 text-black text-xs font-black">
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Approved Student Hub Member</span>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={isProcessing}
-                        onClick={() => handleMigrateSingleUser(u)}
-                        className="px-4 py-2 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer"
-                      >
-                        Approve & Migrate to Student Hub
-                      </button>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {isApproved ? (
+                        <>
+                          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-emerald-100 text-emerald-950 text-xs font-black">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Verified Hub Member</span>
+                          </span>
+                          {u.role !== 'admin' && (
+                            <button
+                              type="button"
+                              disabled={isProcessing}
+                              onClick={() => handleRevokeSingleUser(u)}
+                              className="px-3.5 py-1.5 rounded-xl border-2 border-black bg-rose-100 hover:bg-rose-600 hover:text-white text-rose-900 text-xs font-black transition-colors cursor-pointer"
+                            >
+                              Remove from Private Hub
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isProcessing}
+                          onClick={() => handleMigrateSingleUser(u)}
+                          className="px-4 py-2 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer"
+                        >
+                          Approve for Private Student Hub
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}

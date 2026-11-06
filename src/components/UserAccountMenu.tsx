@@ -417,6 +417,20 @@ export const UserAccountMenu: React.FC<UserAccountMenuProps> = ({
                 <div className="px-3 py-1 text-[10px] font-black uppercase tracking-wider text-[#C15D00]">
                   Admin Controls
                 </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOpen(false);
+                    onNavigate('/admin/student-access');
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black border-2 border-black font-black transition-colors cursor-pointer brand-shadow-sm"
+                >
+                  <span className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-[#B11469]" />
+                    <span>Manage Student Access Requests</span>
+                  </span>
+                  <span className="text-[10px] uppercase">Review →</span>
+                </button>
                 {onOpenChallengesModal && (
                   <button
                     type="button"

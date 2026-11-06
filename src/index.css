@@ -166,5 +166,18 @@ html {
   box-shadow: 0 0 14px rgba(255, 240, 37, 0.4), 0 0 22px rgba(177, 20, 105, 0.32);
 }
 
+/* Special brand gradient for approved Student Hub members' display names */
+.verified-student-name-gradient {
+  background: linear-gradient(90deg, #C15D00 0%, #B11469 50%, #FF7A00 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 
-
+.dark .verified-student-name-gradient,
+.verified-student-name-gradient-dark {
+  background: linear-gradient(90deg, #FFF025 0%, #FF7A00 52%, #FF4DA6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

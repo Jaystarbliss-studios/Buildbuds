@@ -14,6 +14,7 @@ import {
   signOut,
   checkExistingBuilderProfile,
   registerBuilderProfile,
+  checkUsernameAvailability,
   BuilderProfile,
   User,
 } from '../firebase.ts';
@@ -157,11 +158,25 @@ export const JoinModal: React.FC<JoinModalProps> = ({
 
     try {
       const targetUser = pendingAuthUser || (await signInWithPopup(auth, googleProvider)).user;
+      const desiredName =
+        formData.fullName.trim() ||
+        targetUser.displayName ||
+        (targetUser.email ? targetUser.email.split('@')[0] : 'Builder');
+
+      const nameCheck = await checkUsernameAvailability(desiredName, targetUser.uid);
+      if (!nameCheck.available) {
+        setPendingAuthUser(targetUser);
+        setErrors({
+          fullName: `The username "${nameCheck.normalizedName}" is already taken! Try "${nameCheck.suggestion}" or enter a unique username.`,
+        });
+        setAuthError(
+          `The username "${nameCheck.normalizedName}" is already taken by another member. Please enter a unique Builder Nickname below and click Sign Up again.`
+        );
+        return;
+      }
+
       const profile = await registerBuilderProfile(targetUser, {
-        displayName:
-          formData.fullName.trim() ||
-          targetUser.displayName ||
-          (targetUser.email ? targetUser.email.split('@')[0] : 'Builder'),
+        displayName: nameCheck.normalizedName,
         schoolName: formData.schoolName.trim() || 'Build Buds Creator Club',
         gradeLevel: formData.gradeLevel || 'Grade 8',
         primaryInterest: formData.primaryInterest || 'Games & Simulations',
@@ -230,8 +245,24 @@ export const JoinModal: React.FC<JoinModalProps> = ({
     setIsLoading(true);
     onAuthBusyChange?.(true);
 
+    const nameCheck = await checkUsernameAvailability(
+      formData.fullName.trim(),
+      pendingAuthUser?.uid || auth.currentUser?.uid
+    );
+    if (!nameCheck.available) {
+      setIsLoading(false);
+      onAuthBusyChange?.(false);
+      setErrors({
+        fullName: `The username "${nameCheck.normalizedName}" is already taken! Try "${nameCheck.suggestion}" or enter a unique username.`,
+      });
+      setAuthError(
+        `The username "${nameCheck.normalizedName}" is already taken by another Build Buds member. Every user must have a unique username.`
+      );
+      return;
+    }
+
     const profileOverrides = {
-      displayName: formData.fullName.trim(),
+      displayName: nameCheck.normalizedName,
       schoolName: formData.schoolName.trim(),
       gradeLevel: formData.gradeLevel,
       primaryInterest: formData.primaryInterest,

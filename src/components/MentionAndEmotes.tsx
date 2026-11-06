@@ -609,35 +609,71 @@ export interface MentionableUser {
 }
 
 let cachedDirectoryUsers: MentionableUser[] = [];
+let rawDirectoryDocs: Array<{ uid: string; data: Record<string, any> }> = [];
+const approvedDirectoryMembershipUids = new Set<string>();
 const directorySubscribers = new Set<(users: MentionableUser[]) => void>();
 let isDirectoryListening = false;
+
+const rebuildDirectoryUsers = () => {
+  const list: MentionableUser[] = [];
+  for (const item of rawDirectoryDocs) {
+    const d = item.data;
+    const uid = item.uid;
+    const displayName = String(d.displayName || 'Builder').trim();
+    if (!displayName) continue;
+    const isApproved =
+      approvedDirectoryMembershipUids.has(uid) ||
+      isApprovedStudentMember({
+        profile: d as any,
+        membership: approvedDirectoryMembershipUids.has(uid) ? ({ status: 'approved' } as any) : null,
+      });
+    list.push({
+      uid,
+      displayName,
+      avatarUrl: d.avatarUrl || '',
+      avatarColor: d.avatarColor || '#FFF025',
+      role: d.role || 'member',
+      schoolName: d.schoolName || '',
+      isVerifiedStudent: isApproved,
+    });
+  }
+  list.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  cachedDirectoryUsers = list;
+  directorySubscribers.forEach((cb) => cb(list));
+};
 
 const ensureDirectorySubscription = () => {
   if (isDirectoryListening) return;
   isDirectoryListening = true;
-  const q = query(collection(db, 'users'), limit(150));
+
+  const membershipsQuery = query(collection(db, 'communityMemberships'), limit(300));
+  onSnapshot(
+    membershipsQuery,
+    (snap) => {
+      approvedDirectoryMembershipUids.clear();
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data?.status === 'approved') {
+          approvedDirectoryMembershipUids.add(data.uid || docSnap.id);
+        }
+      });
+      rebuildDirectoryUsers();
+    },
+    () => {}
+  );
+
+  const q = query(collection(db, 'users'), limit(200));
   onSnapshot(
     q,
     (snap) => {
-      const list: MentionableUser[] = [];
+      const nextRaw: Array<{ uid: string; data: Record<string, any> }> = [];
       snap.forEach((docSnap) => {
         const d = docSnap.data();
         const uid = d.uid || docSnap.id;
-        const displayName = String(d.displayName || 'Builder').trim();
-        if (!displayName) return;
-        list.push({
-          uid,
-          displayName,
-          avatarUrl: d.avatarUrl || '',
-          avatarColor: d.avatarColor || '#FFF025',
-          role: d.role || 'member',
-          schoolName: d.schoolName || '',
-          isVerifiedStudent: isApprovedStudentMember(d as any),
-        });
+        nextRaw.push({ uid, data: d });
       });
-      list.sort((a, b) => a.displayName.localeCompare(b.displayName));
-      cachedDirectoryUsers = list;
-      directorySubscribers.forEach((cb) => cb(list));
+      rawDirectoryDocs = nextRaw;
+      rebuildDirectoryUsers();
     },
     () => {}
   );

@@ -179,6 +179,8 @@ export interface BuilderProfile {
   role: 'member' | 'moderator' | 'admin';
   status?: UserAccountStatus;
   accountType?: 'public' | 'student';
+  studentAccessStatus?: string;
+  isApprovedStudent?: boolean;
   publishingDisabled?: boolean;
   bookmarkedPostIds?: string[];
   acceptedGuidelines: boolean;
@@ -258,8 +260,10 @@ function normalizeIsoTimestamp(val: unknown, fallbackIso: string): string {
 }
 
 /**
- * Determines whether a user is an approved Student Hub member based on their admin status,
- * `communityMemberships/{uid}`, `studentAccessRequests/{uid}`, or pre-existing Student Hub builder profile.
+ * Determines whether a user is an approved Student Hub member based strictly on their admin/moderator role,
+ * an approved `communityMemberships/{uid}` record, or an approved `studentAccessRequests/{uid}` record.
+ * Newly registered accounts default to public community access only and CANNOT enter the private Student Hub
+ * until explicitly approved by an administrator.
  */
 export function isApprovedStudentMember(params: {
   user?: User | null;
@@ -268,13 +272,20 @@ export function isApprovedStudentMember(params: {
   studentRequest?: StudentAccessRequest | null;
 }): boolean {
   const { user, profile, membership, studentRequest } = params;
-  if (!user) return false;
+  if (!user && !profile) return false;
   if (isSuperAdminUser(user, profile)) return true;
 
-  if (membership?.status === 'approved') return true;
-  if (membership?.status === 'suspended' || membership?.status === 'revoked') return false;
+  if (profile?.status === 'banned' || profile?.status === 'suspended') {
+    return false;
+  }
 
-  if (studentRequest?.status === 'approved') return true;
+  if (profile?.role === 'admin' || profile?.role === 'moderator') {
+    return true;
+  }
+
+  if (membership?.status === 'suspended' || membership?.status === 'revoked') return false;
+  if (membership?.status === 'approved') return true;
+
   if (
     studentRequest?.status === 'pending' ||
     studentRequest?.status === 'rejected' ||
@@ -283,24 +294,80 @@ export function isApprovedStudentMember(params: {
   ) {
     return false;
   }
-
-  if (profile && profile.status !== 'banned' && profile.status !== 'suspended') {
-    if (
-      profile.accountType === 'student' ||
-      profile.role === 'moderator' ||
-      profile.role === 'admin' ||
-      (profile.accountType !== 'public' && Boolean(profile.schoolName?.trim()))
-    ) {
-      return true;
-    }
-  }
+  if (studentRequest?.status === 'approved') return true;
 
   return false;
 }
 
 /**
+ * Checks whether a desired username / displayName is unique across all registered Build Buds users.
+ * Case-insensitive comparison, excluding `excludeUid` (the user's own UID when editing or re-signing in).
+ */
+export async function checkUsernameAvailability(
+  desiredName: string,
+  excludeUid?: string
+): Promise<{
+  available: boolean;
+  normalizedName: string;
+  conflictName?: string;
+  suggestion: string;
+}> {
+  const clean = desiredName.trim().replace(/\s+/g, ' ');
+  const targetLower = clean.toLowerCase();
+  const baseForSuggestion = clean || 'Builder';
+
+  try {
+    const snap = await getDocs(query(collection(db, 'users'), limit(300)));
+    const takenLowerSet = new Set<string>();
+    let conflictName: string | undefined;
+
+    snap.docs.forEach((docSnap) => {
+      const uid = docSnap.data().uid || docSnap.id;
+      if (excludeUid && uid === excludeUid) return;
+      const existingName = String(docSnap.data().displayName || '').trim().replace(/\s+/g, ' ');
+      if (!existingName) return;
+      const lower = existingName.toLowerCase();
+      takenLowerSet.add(lower);
+      if (lower === targetLower) {
+        conflictName = existingName;
+      }
+    });
+
+    if (!takenLowerSet.has(targetLower)) {
+      return {
+        available: true,
+        normalizedName: clean,
+        suggestion: clean,
+      };
+    }
+
+    // Generate a guaranteed unique suggestion
+    let suffix = 2;
+    let candidate = `${baseForSuggestion}_${suffix}`;
+    while (takenLowerSet.has(candidate.toLowerCase()) && suffix < 999) {
+      suffix += 1;
+      candidate = `${baseForSuggestion}_${suffix}`;
+    }
+
+    return {
+      available: false,
+      normalizedName: clean,
+      conflictName,
+      suggestion: candidate,
+    };
+  } catch {
+    return {
+      available: true,
+      normalizedName: clean,
+      suggestion: clean,
+    };
+  }
+}
+
+/**
  * Builds a complete in-memory BuilderProfile from a Firebase User and optional overrides,
  * guaranteeing that a signed-in user always has a valid profile state even while Firestore syncs.
+ * Note: New non-admin accounts always default to `accountType: 'public'` until approved by an admin.
  */
 export function buildFallbackBuilderProfile(
   user: User,
@@ -315,10 +382,9 @@ export function buildFallbackBuilderProfile(
 
   const inferredAccountType: 'public' | 'student' =
     isAdmin ||
-    overrides?.accountType === 'student' ||
     effectiveRole === 'moderator' ||
     effectiveRole === 'admin' ||
-    (overrides?.accountType !== 'public' && cleanSchool.length > 0)
+    overrides?.accountType === 'student'
       ? 'student'
       : 'public';
 
@@ -354,15 +420,12 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
     if (snap.exists()) {
       const raw = snap.data() as Partial<BuilderProfile>;
       const isAdminEmail = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-      const hasLegacySchool = Boolean(raw.schoolName && raw.schoolName.trim().length > 0);
       const inferredType: 'public' | 'student' =
-        isAdminEmail ||
-        raw.accountType === 'student' ||
-        raw.role === 'moderator' ||
-        raw.role === 'admin' ||
-        (raw.accountType !== 'public' && hasLegacySchool)
+        isAdminEmail || raw.role === 'moderator' || raw.role === 'admin'
           ? 'student'
-          : 'public';
+          : raw.accountType === 'student'
+            ? 'student'
+            : 'public';
 
       const normalized = buildFallbackBuilderProfile(user, {
         ...raw,
@@ -390,21 +453,42 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
 
 /**
  * Ensures a basic public user profile exists in `users/{uid}` after Google sign-in.
- * Does NOT overwrite existing accounts and does NOT grant Student Hub access unless overrides are supplied.
+ * Enforces unique usernames across all accounts and does NOT grant Student Hub access.
  */
 export async function ensurePublicUserProfile(
   user: User,
-  overrides?: Partial<BuilderProfile>
+  overrides?: Partial<BuilderProfile>,
+  options?: { strictUniqueName?: boolean }
 ): Promise<BuilderProfile> {
   const existing = await checkExistingBuilderProfile(user);
   if (existing) {
     if (overrides && Object.keys(overrides).length > 0) {
+      let resolvedDisplayName = existing.displayName;
+      if (
+        overrides.displayName &&
+        overrides.displayName.trim() &&
+        overrides.displayName.trim().toLowerCase() !== existing.displayName.trim().toLowerCase()
+      ) {
+        const check = await checkUsernameAvailability(overrides.displayName, user.uid);
+        if (!check.available) {
+          if (options?.strictUniqueName) {
+            throw new Error(
+              `The username "${check.normalizedName}" is already taken by another Build Buds member. Please choose a unique username (for example: "${check.suggestion}").`
+            );
+          }
+          resolvedDisplayName = check.suggestion;
+        } else {
+          resolvedDisplayName = check.normalizedName;
+        }
+      }
+
       const updatedExisting = buildFallbackBuilderProfile(user, {
         ...existing,
         ...overrides,
+        displayName: resolvedDisplayName,
         role: existing.role,
         status: existing.status,
-        accountType: overrides.accountType || existing.accountType,
+        accountType: existing.accountType || 'public',
         createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
       });
@@ -418,9 +502,27 @@ export async function ensurePublicUserProfile(
     return existing;
   }
 
+  // Brand-new account: verify username uniqueness
+  const rawDesiredName =
+    overrides?.displayName?.trim() ||
+    user.displayName?.trim() ||
+    (user.email ? user.email.split('@')[0] : 'Creator');
+  const nameCheck = await checkUsernameAvailability(rawDesiredName, user.uid);
+  if (!nameCheck.available && options?.strictUniqueName) {
+    throw new Error(
+      `The username "${nameCheck.normalizedName}" is already taken by another Build Buds member. Please choose a unique username (for example: "${nameCheck.suggestion}").`
+    );
+  }
+  const uniqueDisplayName = nameCheck.available ? nameCheck.normalizedName : nameCheck.suggestion;
+
   const userRef = doc(db, 'users', user.uid);
   const privateRef = doc(db, 'users_private', user.uid);
-  const newProfile = buildFallbackBuilderProfile(user, overrides);
+  const isAdmin = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  const newProfile = buildFallbackBuilderProfile(user, {
+    ...overrides,
+    displayName: uniqueDisplayName,
+    accountType: isAdmin ? 'student' : 'public',
+  });
 
   try {
     await setDoc(userRef, newProfile);
@@ -447,22 +549,28 @@ export async function ensurePublicUserProfile(
   return newProfile;
 }
 
-// Explicitly register or update a user profile in the database during Sign Up
+// Explicitly register or update a user profile in the database during Sign Up (enforces strict unique username)
 export async function registerBuilderProfile(
   user: User,
   overrides?: Partial<BuilderProfile>
 ): Promise<BuilderProfile> {
-  return ensurePublicUserProfile(user, {
-    primaryInterest: 'Games & Simulations',
-    ...overrides,
-  });
+  return ensurePublicUserProfile(
+    user,
+    {
+      primaryInterest: 'Games & Simulations',
+      ...overrides,
+      accountType: 'public',
+    },
+    { strictUniqueName: true }
+  );
 }
 
 export async function ensureBuilderProfile(
   user: User,
-  overrides?: Partial<BuilderProfile>
+  overrides?: Partial<BuilderProfile>,
+  options?: { strictUniqueName?: boolean }
 ): Promise<BuilderProfile> {
-  return ensurePublicUserProfile(user, overrides);
+  return ensurePublicUserProfile(user, overrides, options);
 }
 
 /**
