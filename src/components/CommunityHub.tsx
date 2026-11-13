@@ -47,6 +47,7 @@ import {
   Menu,
   MoreHorizontal,
   Clock,
+  Pin,
 } from 'lucide-react';
 import {
   db,
@@ -99,6 +100,9 @@ import {
   computeNextThreadReplyCount,
   computeEffectiveReplyCount,
   evaluateHorizontalSwipeGesture,
+  evaluateMessageSwipeToReply,
+  resolveJumpToMessageTarget,
+  buildPinMessagePatch,
   RawPresenceRecord,
 } from '../utils/messageGrouping.ts';
 import {
@@ -268,6 +272,9 @@ export interface HubMessage {
   publicPostId?: string;
   reactions?: Record<string, number>;
   userReactions?: Record<string, string[]>;
+  isPinned?: boolean;
+  pinnedAtMillis?: number;
+  pinnedBy?: string;
   threadCount: number;
   createdAtMillis: number;
   timeLabel: string;
@@ -308,8 +315,8 @@ interface ReportItem {
 const QUICK_EMOJIS = ['👍', '👎', '❤️', '🔥', '🚀', '😭'];
 
 const DEFAULT_GLOBAL_SETTINGS: CommunityGlobalSettings = {
-  cooldownSeconds: 3,
-  disableCooldown: false,
+  cooldownSeconds: 0,
+  disableCooldown: true,
   banLinks: false,
   enableLinkPreviews: true,
   globalChatLocked: false,
@@ -378,8 +385,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [showcaseFilter, setShowcaseFilter] = useState<'all' | CreationCategory>('all');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  // Real-time Firestore state (100% real data, zero seed/demo users)
+  // Real-time Firestore state (100% real data, zero seed/demo users) + instant optimistic buffer
   const [firestoreMessages, setFirestoreMessages] = useState<HubMessage[]>([]);
+  const [optimisticMessages, setOptimisticMessages] = useState<HubMessage[]>([]);
   const [allShowcaseMessages, setAllShowcaseMessages] = useState<HubMessage[]>([]);
   const [lastViewedShowcaseTime, setLastViewedShowcaseTime] = useState<number>(() => {
     try {
@@ -409,6 +417,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [onlineMembers, setOnlineMembers] = useState<PresenceItem[]>([]);
   const [allPlatformUsers, setAllPlatformUsers] = useState<BuilderProfile[]>([]);
   const [approvedHubMemberIds, setApprovedHubMemberIds] = useState<Set<string>>(new Set());
+  const [revokedHubMemberIds, setRevokedHubMemberIds] = useState<Set<string>>(new Set());
   const [hubAccessRequests, setHubAccessRequests] = useState<StudentAccessRequest[]>([]);
   const [isProcessingHubAccess, setIsProcessingHubAccess] = useState(false);
   const [globalSettings, setGlobalSettings] = useState<CommunityGlobalSettings>(DEFAULT_GLOBAL_SETTINGS);
@@ -469,6 +478,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [editingThreadReplyText, setEditingThreadReplyText] = useState<string>('');
   const [liveThreadCountsByMessageId, setLiveThreadCountsByMessageId] = useState<Record<string, number>>({});
 
+  // Delete Confirmation Modal, Pinned Messages Drawer, Jump-to-Message Highlight, and Mobile Swipe-to-Reply state
+  const [pendingDeleteMessage, setPendingDeleteMessage] = useState<HubMessage | null>(null);
+  const [pendingDeleteThreadReply, setPendingDeleteThreadReply] = useState<ThreadReplyItem | null>(null);
+  const [isDeletingItem, setIsDeletingItem] = useState<boolean>(false);
+  const [showPinnedListExpanded, setShowPinnedListExpanded] = useState<boolean>(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [swipingMessageState, setSwipingMessageState] = useState<{
+    id: string;
+    startX: number;
+    startY: number;
+    offsetPx: number;
+    shouldTriggerReply: boolean;
+  } | null>(null);
+
   // Slow-mode cooldown timer
   const [cooldownRemaining, setCooldownRemaining] = useState(0);
 
@@ -500,6 +523,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [notificationStatusBanner, setNotificationStatusBanner] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
   const typingTimeoutRef = useRef<number | null>(null);
@@ -837,13 +861,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       membershipsQuery,
       (snapshot) => {
         const approvedIds = new Set<string>();
+        const revokedIds = new Set<string>();
         snapshot.docs.forEach((docSnap) => {
           const d = docSnap.data();
+          const uid = d.uid || docSnap.id;
           if (d?.status === 'approved') {
-            approvedIds.add(d.uid || docSnap.id);
+            approvedIds.add(uid);
+          } else if (d?.status === 'revoked' || d?.status === 'suspended') {
+            revokedIds.add(uid);
           }
         });
         setApprovedHubMemberIds(approvedIds);
+        setRevokedHubMemberIds(revokedIds);
       },
       () => {}
     );
@@ -874,15 +903,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribeReqs();
   }, [isSuperAdmin]);
 
-  // Strictly filter Private Chat members (`registeredUsers`) to ONLY approved Student Hub members & admins/mods
+  // Strictly filter Private Chat members (`registeredUsers`) to approved Student Hub members & admins/mods
   const registeredUsers = useMemo<BuilderProfile[]>(() => {
     return allPlatformUsers.filter(
       (u) =>
         u.role === 'admin' ||
         u.role === 'moderator' ||
-        approvedHubMemberIds.has(u.uid)
+        approvedHubMemberIds.has(u.uid) ||
+        (!revokedHubMemberIds.has(u.uid) &&
+          u.studentAccessStatus !== 'rejected' &&
+          (u.isApprovedStudent === true ||
+            u.studentAccessStatus === 'approved' ||
+            u.accountType === 'student'))
     );
-  }, [allPlatformUsers, approvedHubMemberIds]);
+  }, [allPlatformUsers, approvedHubMemberIds, revokedHubMemberIds]);
 
   // Unapproved registered accounts (visible ONLY to Admin inside Admin Control Center)
   const unapprovedPlatformUsers = useMemo<BuilderProfile[]>(() => {
@@ -890,9 +924,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       (u) =>
         u.role !== 'admin' &&
         u.role !== 'moderator' &&
-        !approvedHubMemberIds.has(u.uid)
+        !approvedHubMemberIds.has(u.uid) &&
+        (revokedHubMemberIds.has(u.uid) ||
+          u.studentAccessStatus === 'rejected' ||
+          (!u.isApprovedStudent &&
+            u.studentAccessStatus !== 'approved' &&
+            u.accountType !== 'student'))
     );
-  }, [allPlatformUsers, approvedHubMemberIds]);
+  }, [allPlatformUsers, approvedHubMemberIds, revokedHubMemberIds]);
 
   const pendingHubRequestsCount = useMemo(() => {
     return (
@@ -913,19 +952,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }));
   }, [registeredUsers]);
 
-  // Real-time listener for Messages in the active channel or sub-group (`activeStreamId`)
+  // Real-time listener for Messages in the active channel or sub-group (`activeStreamId`).
+  // IMPORTANT: Do NOT attach an unindexed `limit(100)` without `orderBy`, because Firestore orders
+  // unindexed queries by `__name__` (random document ID) and silently drops newly created messages
+  // whose random ID sorts after the first 100 docs!
   useEffect(() => {
+    setShowPinnedListExpanded(false);
     const q = query(
       collection(db, 'messages'),
-      where('channelId', '==', activeStreamId),
-      limit(100)
+      where('channelId', '==', activeStreamId)
     );
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
+        const confirmedIds = new Set<string>();
         const loaded: HubMessage[] = snapshot.docs.map((docSnap) => {
           const data = docSnap.data();
+          confirmedIds.add(docSnap.id);
           const createdMillis = extractMessageMillis(data);
           const dateObj = new Date(createdMillis);
           const hours = String(dateObj.getHours()).padStart(2, '0');
@@ -952,7 +996,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             linkCategory: data.linkCategory,
             linkDomain: data.linkDomain,
             coverImageUrl: data.coverImageUrl,
+            showcaseStatus: data.showcaseStatus,
+            publicPostId: data.publicPostId,
             reactions: data.reactions || {},
+            userReactions: data.userReactions || {},
+            isPinned: Boolean(data.isPinned),
+            pinnedAtMillis: Number(data.pinnedAtMillis || 0),
+            pinnedBy: data.pinnedBy || '',
             threadCount: Number(data.threadCount || 0),
             createdAtMillis: createdMillis,
             timeLabel: `${hours}:${mins}`,
@@ -961,6 +1011,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
         loaded.sort((a, b) => a.createdAtMillis - b.createdAtMillis);
         setFirestoreMessages(loaded);
+        setOptimisticMessages((prev) =>
+          prev.filter((m) => m.channelId === activeStreamId && !confirmedIds.has(m.id))
+        );
       },
       (error) => {
         console.error('Error listening to channel messages:', error);
@@ -1743,6 +1796,41 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       payload.coverImageUrl = (customCoverDataUrl || preview.defaultCoverUrl).slice(0, 350000);
     }
 
+    // Pre-generate document ref and render optimistically in 0ms so messages NEVER fail to appear
+    const newMsgRef = doc(collection(db, 'messages'));
+    const nowDateObj = new Date(nowMillis);
+    const optimisticItem: HubMessage = {
+      id: newMsgRef.id,
+      channelId: String(payload.channelId),
+      authorId: currentUser.uid,
+      authorName: safeAuthorName,
+      authorAvatar: chosenAvatarId.slice(0, 4000),
+      authorColor: safeAuthorColor,
+      authorRole: effectiveRole,
+      text: String(payload.text),
+      hadProfanity: Boolean(hadProfanity),
+      replyToId: payload.replyToId as string | undefined,
+      replyToAuthor: payload.replyToAuthor as string | undefined,
+      replyToColor: payload.replyToColor as string | undefined,
+      replyToSnippet: payload.replyToSnippet as string | undefined,
+      linkUrl: payload.linkUrl as string | undefined,
+      linkTitle: payload.linkTitle as string | undefined,
+      linkDescription: payload.linkDescription as string | undefined,
+      linkCategory: payload.linkCategory as CreationCategory | undefined,
+      linkDomain: payload.linkDomain as string | undefined,
+      coverImageUrl: payload.coverImageUrl as string | undefined,
+      reactions: {},
+      userReactions: {},
+      isPinned: false,
+      threadCount: 0,
+      createdAtMillis: nowMillis,
+      timeLabel: `${String(nowDateObj.getHours()).padStart(2, '0')}:${String(
+        nowDateObj.getMinutes()
+      ).padStart(2, '0')}`,
+    };
+
+    setOptimisticMessages((prev) => [...prev, optimisticItem]);
+
     // Optimistically clear composer immediately so sending feels instant and never stalls
     setMessageText('');
     setReplyingTo(null);
@@ -1761,7 +1849,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         writeTypingPresence(false);
       }
 
-      await addDoc(collection(db, 'messages'), payload);
+      try {
+        await setDoc(newMsgRef, payload);
+      } catch (firstErr) {
+        // Automatic 1x retry if transient connection glitch occurred
+        await new Promise((r) => setTimeout(r, 350));
+        await setDoc(newMsgRef, payload);
+      }
 
       if (!isSuperAdmin && !isCurrentChannelModerator && effectiveCooldownSeconds > 0) {
         setCooldownRemaining(effectiveCooldownSeconds);
@@ -1772,7 +1866,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         window.setTimeout(() => setComposerNotice(null), 4000);
       }
     } catch (error) {
-      // Restore draft if write failed and surface a clear error banner
+      // Remove optimistic item and restore draft if write genuinely failed
+      setOptimisticMessages((prev) => prev.filter((m) => m.id !== newMsgRef.id));
       setMessageText(rawText);
       setReplyingTo(previousReply);
       setComposerError('Could not send your message. Please check your connection and try again.');
@@ -2024,9 +2119,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Delete a thread reply (Author, Super Admin, or Global Moderator)
-  const handleDeleteThreadReply = async (reply: ThreadReplyItem) => {
+  // Request confirmation before deleting a thread reply
+  const handleDeleteThreadReply = (reply: ThreadReplyItem) => {
     if (!activeThreadMessage || !currentUser) return;
+    setPendingDeleteThreadReply(reply);
+  };
+
+  // Execute confirmed thread reply deletion
+  const handleConfirmDeleteThreadReply = async () => {
+    if (!activeThreadMessage || !currentUser || !pendingDeleteThreadReply) return;
+    const reply = pendingDeleteThreadReply;
+    setIsDeletingItem(true);
     const liveParent = firestoreMessages.find((m) => m.id === activeThreadMessage.id);
     const nextThreadCount = computeNextThreadReplyCount(
       liveParent?.threadCount ?? activeThreadMessage.threadCount,
@@ -2048,12 +2151,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setActiveThreadMessage((prev) =>
         prev ? { ...prev, threadCount: nextThreadCount } : null
       );
+      setPendingDeleteThreadReply(null);
+      setComposerNotice('Reply deleted.');
+      window.setTimeout(() => setComposerNotice(null), 2500);
     } catch (error) {
       handleFirestoreError(
         error,
         OperationType.DELETE,
         `messages/${activeThreadMessage.id}/threadReplies/${reply.id}`
       );
+    } finally {
+      setIsDeletingItem(false);
     }
   };
 
@@ -2080,9 +2188,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Delete a message (Author, Super Admin, Global Moderator, or Channel Moderator)
-  const handleDeleteMessage = async (msg: HubMessage) => {
+  // Request confirmation before deleting a message (Author, Super Admin, Global Moderator, or Channel Moderator)
+  const handleDeleteMessage = (msg: HubMessage) => {
+    setActiveActionMessageId(null);
+    setPendingDeleteMessage(msg);
+  };
+
+  // Execute confirmed message deletion
+  const handleConfirmDeleteMessage = async () => {
+    if (!pendingDeleteMessage) return;
+    const msg = pendingDeleteMessage;
+    setIsDeletingItem(true);
     try {
+      setOptimisticMessages((prev) => prev.filter((m) => m.id !== msg.id));
       await deleteDoc(doc(db, 'messages', msg.id));
       if (activeThreadMessage?.id === msg.id) {
         setActiveThreadMessage(null);
@@ -2093,9 +2211,37 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       if (editingMessageId === msg.id) {
         setEditingMessageId(null);
       }
-      setActiveActionMessageId(null);
+      setPendingDeleteMessage(null);
+      setComposerNotice('Message deleted.');
+      window.setTimeout(() => setComposerNotice(null), 2500);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `messages/${msg.id}`);
+    } finally {
+      setIsDeletingItem(false);
+    }
+  };
+
+  // Pin or Unpin a message in the channel (Super Admin, Global Moderator, or Channel Moderator)
+  const handleTogglePinMessage = async (msg: HubMessage) => {
+    if (!currentUser || !(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator)) return;
+    const patch = buildPinMessagePatch(
+      msg.isPinned,
+      builderProfile?.displayName || currentUser.displayName || 'Moderator'
+    );
+    setActiveActionMessageId(null);
+    try {
+      await updateDoc(doc(db, 'messages', msg.id), {
+        ...patch,
+        updatedAt: serverTimestamp(),
+      });
+      setComposerNotice(
+        patch.isPinned
+          ? `Pinned message by ${msg.authorName} to #${activeChannel.name}.`
+          : `Unpinned message by ${msg.authorName}.`
+      );
+      window.setTimeout(() => setComposerNotice(null), 3000);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
     }
   };
 
@@ -2601,10 +2747,58 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     (m) => m.activeChannelId === activeStreamId || m.activeChannelId.startsWith(activeChannelId)
   ).length;
 
+  // Merge Firestore snapshot messages with instant optimistic messages (deduplicated by ID)
+  const combinedChannelMessages = React.useMemo(() => {
+    const existingIds = new Set(firestoreMessages.map((m) => m.id));
+    const pendingForStream = optimisticMessages.filter(
+      (m) => m.channelId === activeStreamId && !existingIds.has(m.id)
+    );
+    if (pendingForStream.length === 0) return firestoreMessages;
+    return [...firestoreMessages, ...pendingForStream].sort(
+      (a, b) => a.createdAtMillis - b.createdAtMillis
+    );
+  }, [firestoreMessages, optimisticMessages, activeStreamId]);
+
+  // Pinned messages in the active stream
+  const pinnedMessagesInChannel = React.useMemo(
+    () => combinedChannelMessages.filter((m) => Boolean(m.isPinned)),
+    [combinedChannelMessages]
+  );
+
+  // Smoothly scroll to a replied-to, tagged, or pinned message and highlight it
+  const handleJumpToMessage = (
+    replyToId?: string,
+    replyToAuthor?: string,
+    replyToSnippet?: string
+  ) => {
+    const targetId = resolveJumpToMessageTarget(
+      combinedChannelMessages,
+      replyToId,
+      replyToAuthor,
+      replyToSnippet
+    );
+    if (!targetId) {
+      setComposerNotice('Original message could not be found in this channel.');
+      window.setTimeout(() => setComposerNotice(null), 3500);
+      return;
+    }
+    const el = document.getElementById(`chat-msg-${targetId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMessageId(targetId);
+      window.setTimeout(() => {
+        setHighlightedMessageId((prev) => (prev === targetId ? null : prev));
+      }, 2600);
+    } else {
+      setComposerNotice('Original message is not currently visible.');
+      window.setTimeout(() => setComposerNotice(null), 3500);
+    }
+  };
+
   // Annotate messages with Discord-style consecutive grouping metadata
   const groupedMessages = React.useMemo(
-    () => annotateMessageGrouping(firestoreMessages),
-    [firestoreMessages]
+    () => annotateMessageGrouping(combinedChannelMessages),
+    [combinedChannelMessages]
   );
 
   // Typing users in current stream (excluding self)
@@ -2615,7 +2809,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Map of inline channel replies (messages that used replyToId) per parent message ID
   const inlineRepliesByParentId = React.useMemo(() => {
     const map: Record<string, HubMessage[]> = {};
-    firestoreMessages.forEach((m) => {
+    combinedChannelMessages.forEach((m) => {
       if (m.replyToId) {
         if (!map[m.replyToId]) {
           map[m.replyToId] = [];
@@ -2624,7 +2818,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       }
     });
     return map;
-  }, [firestoreMessages]);
+  }, [combinedChannelMessages]);
 
   const getMessageEffectiveReplyCount = (msg: HubMessage): number => {
     const inlineCount = inlineRepliesByParentId[msg.id]?.length || 0;
@@ -3372,6 +3566,116 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
               )}
 
+              {/* Pinned Messages Bar (Visible when channel has pinned messages) */}
+              {!isKickedFromActiveChannel && pinnedMessagesInChannel.length > 0 && (
+                <div className="bg-[#181a22] border-b border-[#FFF025]/25 px-3 sm:px-5 py-2 shrink-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const latestPinned =
+                          pinnedMessagesInChannel[pinnedMessagesInChannel.length - 1];
+                        if (latestPinned) {
+                          handleJumpToMessage(
+                            latestPinned.id,
+                            latestPinned.authorName,
+                            latestPinned.text
+                          );
+                        }
+                      }}
+                      className="flex items-center gap-2 min-w-0 flex-1 text-left group cursor-pointer"
+                      title="Click to jump to pinned message"
+                    >
+                      <span className="w-6 h-6 rounded-lg bg-[#FFF025]/15 border border-[#FFF025]/40 flex items-center justify-center text-[#FFF025] shrink-0">
+                        <Pin className="w-3.5 h-3.5 rotate-45" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[#FFF025] font-bold">
+                          <span>
+                            Pinned Message
+                            {pinnedMessagesInChannel.length > 1
+                              ? ` (${pinnedMessagesInChannel.length})`
+                              : ''}
+                          </span>
+                          <span className="text-white/40">•</span>
+                          <span className="text-white/75 truncate">
+                            {
+                              pinnedMessagesInChannel[pinnedMessagesInChannel.length - 1]
+                                .authorName
+                            }
+                          </span>
+                        </div>
+                        <p className="text-xs text-white/85 truncate group-hover:text-[#FFF025] transition-colors">
+                          {pinnedMessagesInChannel[pinnedMessagesInChannel.length - 1].text}
+                        </p>
+                      </div>
+                    </button>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {pinnedMessagesInChannel.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowPinnedListExpanded((prev) => !prev)}
+                          className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[11px] font-bold text-white/85 cursor-pointer"
+                        >
+                          {showPinnedListExpanded
+                            ? 'Hide List'
+                            : `View All (${pinnedMessagesInChannel.length})`}
+                        </button>
+                      )}
+                      {(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleTogglePinMessage(
+                              pinnedMessagesInChannel[pinnedMessagesInChannel.length - 1]
+                            )
+                          }
+                          title="Unpin Message"
+                          className="p-1.5 rounded-lg bg-white/5 hover:bg-rose-500/20 text-white/60 hover:text-rose-300 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {showPinnedListExpanded && pinnedMessagesInChannel.length > 1 && (
+                    <div className="mt-2 pt-2 border-t border-white/10 space-y-1.5 max-h-40 overflow-y-auto">
+                      {pinnedMessagesInChannel.map((pMsg) => (
+                        <div
+                          key={pMsg.id}
+                          className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-black/30 hover:bg-white/5 text-xs"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleJumpToMessage(pMsg.id, pMsg.authorName, pMsg.text);
+                              setShowPinnedListExpanded(false);
+                            }}
+                            className="flex items-center gap-2 min-w-0 flex-1 text-left cursor-pointer"
+                          >
+                            <span className="font-bold text-[#FFF025] shrink-0">
+                              {pMsg.authorName}:
+                            </span>
+                            <span className="text-white/80 truncate">{pMsg.text}</span>
+                          </button>
+                          {(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator) && (
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePinMessage(pMsg)}
+                              className="text-[10px] font-bold text-rose-300 hover:underline shrink-0 cursor-pointer"
+                            >
+                              Unpin
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Kicked From Channel Intercept */}
               {isKickedFromActiveChannel ? (
                 <div className="flex-1 flex items-center justify-center p-8 text-center">
@@ -3436,23 +3740,139 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         );
                         const isHighlightedForMe =
                           mentionFlags.mentionsAll || mentionFlags.mentionsUser;
+                        const isJumpHighlighted = highlightedMessageId === msg.id;
+                        const activeSwipeOffset =
+                          swipingMessageState?.id === msg.id
+                            ? swipingMessageState.offsetPx
+                            : 0;
 
                         return (
                           <div
                             key={msg.id}
+                            id={`chat-msg-${msg.id}`}
                             data-grouped={isFirstInGroup ? 'false' : 'true'}
-                            className={`group relative rounded-xl px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 hover:bg-white/[0.035] transition-colors ${
+                            onTouchStart={(e) => {
+                              if (e.touches.length !== 1) return;
+                              const t = e.touches[0];
+                              setSwipingMessageState({
+                                id: msg.id,
+                                startX: t.clientX,
+                                startY: t.clientY,
+                                offsetPx: 0,
+                                shouldTriggerReply: false,
+                              });
+                            }}
+                            onTouchMove={(e) => {
+                              if (
+                                !swipingMessageState ||
+                                swipingMessageState.id !== msg.id ||
+                                e.touches.length !== 1
+                              ) {
+                                return;
+                              }
+                              const t = e.touches[0];
+                              const evalSwipe = evaluateMessageSwipeToReply(
+                                swipingMessageState.startX,
+                                swipingMessageState.startY,
+                                t.clientX,
+                                t.clientY
+                              );
+                              if (evalSwipe.offsetPx > 0) {
+                                e.stopPropagation();
+                                setSwipingMessageState({
+                                  ...swipingMessageState,
+                                  offsetPx: evalSwipe.offsetPx,
+                                  shouldTriggerReply: evalSwipe.shouldTriggerReply,
+                                });
+                              } else if (swipingMessageState.offsetPx > 0) {
+                                setSwipingMessageState({
+                                  ...swipingMessageState,
+                                  offsetPx: 0,
+                                  shouldTriggerReply: false,
+                                });
+                              }
+                            }}
+                            onTouchEnd={(e) => {
+                              if (
+                                !swipingMessageState ||
+                                swipingMessageState.id !== msg.id
+                              ) {
+                                return;
+                              }
+                              const wasTriggered = swipingMessageState.shouldTriggerReply;
+                              setSwipingMessageState(null);
+                              if (wasTriggered) {
+                                e.stopPropagation();
+                                setReplyingTo(msg);
+                                window.setTimeout(() => {
+                                  composerTextareaRef.current?.focus();
+                                }, 50);
+                              }
+                            }}
+                            style={
+                              activeSwipeOffset > 0
+                                ? {
+                                    transform: `translateX(${activeSwipeOffset}px)`,
+                                    transition: 'none',
+                                  }
+                                : undefined
+                            }
+                            className={`group relative rounded-xl px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 hover:bg-white/[0.035] transition-all duration-200 ${
                               isFirstInGroup ? 'mt-4 first:mt-0 pt-1.5 pb-1' : 'mt-0.5 py-0.5'
                             } ${isActionOpen ? 'bg-white/[0.04]' : ''} ${
                               isHighlightedForMe
                                 ? 'bg-[#FFF025]/[0.05] border-l-2 border-l-[#FFF025]'
                                 : ''
+                            } ${
+                              msg.isPinned
+                                ? 'bg-[#FFF025]/[0.03] border-l-2 border-l-[#FFF025]/60'
+                                : ''
+                            } ${
+                              isJumpHighlighted
+                                ? 'ring-2 ring-[#FFF025] bg-[#FFF025]/15 shadow-[0_0_24px_rgba(255,240,37,0.2)]'
+                                : ''
                             }`}
                           >
-                            {/* Curved Inline Reply Connector */}
+                            {/* WhatsApp-style Swipe-to-Reply Left Indicator */}
+                            {activeSwipeOffset > 8 && (
+                              <div
+                                className="absolute -left-9 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full flex items-center justify-center bg-[#FFF025] text-black shadow-lg pointer-events-none"
+                                style={{
+                                  opacity: Math.min(1, activeSwipeOffset / 48),
+                                  transform: `translateY(-50%) scale(${Math.min(
+                                    1.1,
+                                    0.65 + activeSwipeOffset / 96
+                                  )})`,
+                                }}
+                              >
+                                <Reply className="w-3.5 h-3.5 stroke-[2.5]" />
+                              </div>
+                            )}
+
+                            {/* Pinned Message Badge */}
+                            {msg.isPinned && (
+                              <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#FFF025] mb-1 pl-4">
+                                <Pin className="w-3 h-3 rotate-45" />
+                                <span>Pinned by {msg.pinnedBy || 'Moderator'}</span>
+                              </div>
+                            )}
+
+                            {/* Curved Inline Reply Connector (Click to Scroll to Original Message) */}
                             {msg.replyToAuthor && (
-                              <div className="flex items-center gap-2 text-xs text-white/55 mb-1 pl-4 relative">
-                                <div className="w-6 h-3 border-l-2 border-t-2 border-white/25 rounded-tl-md -ml-2 mt-1.5 shrink-0" />
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleJumpToMessage(
+                                    msg.replyToId,
+                                    msg.replyToAuthor,
+                                    msg.replyToSnippet
+                                  );
+                                }}
+                                title="Click to scroll to original message"
+                                className="flex items-center gap-2 text-xs text-white/55 hover:text-white mb-1 pl-4 relative text-left group/reply cursor-pointer max-w-full"
+                              >
+                                <div className="w-6 h-3 border-l-2 border-t-2 border-white/25 group-hover/reply:border-[#FFF025] rounded-tl-md -ml-2 mt-1.5 shrink-0 transition-colors" />
                                 <span
                                   className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-black text-black shrink-0"
                                   style={{ backgroundColor: msg.replyToColor || '#a855f7' }}
@@ -3460,15 +3880,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   {msg.replyToAuthor.charAt(0).toUpperCase()}
                                 </span>
                                 <span
-                                  className="font-bold hover:underline cursor-pointer shrink-0"
+                                  className="font-bold group-hover/reply:underline shrink-0"
                                   style={{ color: msg.replyToColor || '#c084fc' }}
                                 >
                                   {msg.replyToAuthor}
                                 </span>
-                                <span className="truncate text-white/50 max-w-[200px] sm:max-w-md">
+                                <span className="truncate text-white/50 group-hover/reply:text-white/85 max-w-[200px] sm:max-w-md transition-colors">
                                   {msg.replyToSnippet}
                                 </span>
-                              </div>
+                              </button>
                             )}
 
                             <div className="flex items-start gap-2.5 sm:gap-3.5">
@@ -3848,6 +4268,25 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 <MessageSquare className="w-3.5 h-3.5" />
                               </button>
 
+                              {/* Pin / Unpin Message (Moderators & Admins) */}
+                              {(isSuperAdmin ||
+                                isCurrentChannelModerator ||
+                                isGlobalModerator) && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePinMessage(msg)}
+                                  title={msg.isPinned ? 'Unpin Message' : 'Pin Message'}
+                                  aria-label={msg.isPinned ? 'Unpin Message' : 'Pin Message'}
+                                  className={`p-1.5 rounded hover:bg-white/10 cursor-pointer shrink-0 ${
+                                    msg.isPinned
+                                      ? 'text-[#FFF025]'
+                                      : 'text-white/75 hover:text-[#FFF025]'
+                                  }`}
+                                >
+                                  <Pin className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
                               {/* Edit Own Message */}
                               {isOwnMessage && userStatus === 'active' && (
                                 <button
@@ -3862,7 +4301,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               )}
 
                               {/* Delete Own Message (or Admin/Moderator Delete) */}
-                              {(isOwnMessage || isSuperAdmin || isCurrentChannelModerator) && (
+                              {(isOwnMessage ||
+                                isSuperAdmin ||
+                                isCurrentChannelModerator ||
+                                isGlobalModerator) && (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -4169,6 +4611,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       variant="dark"
                     />
                     <textarea
+                      ref={composerTextareaRef}
                       rows={Math.min(5, Math.max(1, messageText.split('\n').length))}
                       disabled={!canUserSendMessageInChannel}
                       value={messageText}
@@ -6508,6 +6951,100 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 className="px-5 py-2 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer transition-transform active:scale-95"
               >
                 {isSubmittingCuration ? 'Publishing...' : 'Approve & Publish to Showcase'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Message / Thread Reply Confirmation Modal */}
+      {(pendingDeleteMessage || pendingDeleteThreadReply) && (
+        <div
+          onClick={() => {
+            if (!isDeletingItem) {
+              setPendingDeleteMessage(null);
+              setPendingDeleteThreadReply(null);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-[#16181f] border-2 border-rose-500/50 shadow-2xl p-6 space-y-4 text-white"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    Delete {pendingDeleteThreadReply ? 'Thread Reply' : 'Message'}?
+                  </h3>
+                  <p className="text-[11px] font-mono text-white/55">
+                    Are you sure? This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isDeletingItem}
+                onClick={() => {
+                  setPendingDeleteMessage(null);
+                  setPendingDeleteThreadReply(null);
+                }}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-black/40 border border-white/10 p-3.5 space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-mono font-bold text-[#FFF025]">
+                  {pendingDeleteMessage
+                    ? pendingDeleteMessage.authorName
+                    : pendingDeleteThreadReply?.authorName}
+                </span>
+                <span className="text-[10px] font-mono text-white/40">
+                  {pendingDeleteMessage
+                    ? pendingDeleteMessage.timeLabel
+                    : pendingDeleteThreadReply?.timeLabel}
+                </span>
+              </div>
+              <p className="text-xs font-mono text-white/80 line-clamp-3 whitespace-pre-wrap break-words">
+                {pendingDeleteMessage
+                  ? pendingDeleteMessage.text
+                  : pendingDeleteThreadReply?.text}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingItem}
+                onClick={() => {
+                  setPendingDeleteMessage(null);
+                  setPendingDeleteThreadReply(null);
+                }}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white/85 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingItem}
+                onClick={() => {
+                  if (pendingDeleteMessage) {
+                    handleConfirmDeleteMessage();
+                  } else if (pendingDeleteThreadReply) {
+                    handleConfirmDeleteThreadReply();
+                  }
+                }}
+                className="px-5 py-2 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-black text-xs cursor-pointer transition-transform active:scale-95 flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingItem ? 'Deleting...' : 'Yes, Delete'}</span>
               </button>
             </div>
           </div>

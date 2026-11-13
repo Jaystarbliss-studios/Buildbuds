@@ -7,7 +7,12 @@ import {
   computeNextThreadReplyCount,
   computeEffectiveReplyCount,
   evaluateHorizontalSwipeGesture,
+  evaluateMessageSwipeToReply,
+  resolveJumpToMessageTarget,
+  buildPinMessagePatch,
   GROUPING_TIME_WINDOW_MS,
+  SWIPE_TO_REPLY_THRESHOLD_PX,
+  SWIPE_TO_REPLY_MAX_OFFSET_PX,
 } from './messageGrouping';
 import {
   PRESET_AVATARS,
@@ -158,10 +163,59 @@ test('Thread reply counter increments accurately across 3 consecutive replies an
 test('Mobile horizontal swipe gesture opens and closes left sidebar cleanly', () => {
   // Swiping right from left edge opens sidebar
   assert.equal(evaluateHorizontalSwipeGesture(24, 300, 120, 310, false), 'open-sidebar');
+  // Swiping right from middle of screen (e.g. on a message bubble) does NOT open sidebar
+  assert.equal(evaluateHorizontalSwipeGesture(80, 300, 160, 305, false), 'none');
   // Vertical scroll does not trigger sidebar swipe
   assert.equal(evaluateHorizontalSwipeGesture(24, 300, 60, 450, false), 'none');
   // Swiping left when sidebar is open closes sidebar
   assert.equal(evaluateHorizontalSwipeGesture(220, 300, 90, 305, true), 'close-sidebar');
+});
+
+test('WhatsApp-style swipe-to-reply gesture triggers reply past threshold and clamps offset', () => {
+  // Partial swipe (30px drag < 48px threshold) moves bubble with 0.78x damping (23px) and does not trigger reply yet
+  const partial = evaluateMessageSwipeToReply(100, 200, 130, 204);
+  assert.equal(partial.offsetPx, 23);
+  assert.equal(partial.shouldTriggerReply, false);
+
+  // Full swipe (>= 48px threshold) triggers reply and clamps at 72px
+  const full = evaluateMessageSwipeToReply(100, 200, 195, 205);
+  assert.equal(full.offsetPx, SWIPE_TO_REPLY_MAX_OFFSET_PX);
+  assert.equal(full.shouldTriggerReply, true);
+  assert.ok(SWIPE_TO_REPLY_THRESHOLD_PX <= SWIPE_TO_REPLY_MAX_OFFSET_PX);
+
+  // Vertical scrolling on a message does not trigger swipe-to-reply
+  const vertical = evaluateMessageSwipeToReply(100, 200, 130, 260);
+  assert.equal(vertical.offsetPx, 0);
+  assert.equal(vertical.shouldTriggerReply, false);
+});
+
+test('resolveJumpToMessageTarget locates original message by ID or author+snippet fallback', () => {
+  const stream = [
+    { id: 'msg-101', authorName: 'John Rufai', text: 'Welcome to the Build Buds Student Hub!' },
+    { id: 'msg-102', authorName: 'Jaystarbliss', text: 'Working on our new 3D physics level today' },
+  ];
+
+  // Direct ID match
+  assert.equal(resolveJumpToMessageTarget(stream, 'msg-101', 'John Rufai', 'Welcome'), 'msg-101');
+  // Fallback when replyToId is missing or legacy
+  assert.equal(
+    resolveJumpToMessageTarget(stream, undefined, 'Jaystarbliss', 'Working on our new 3D'),
+    'msg-102'
+  );
+  // Missing target returns null
+  assert.equal(resolveJumpToMessageTarget(stream, 'non-existent', 'Nobody', 'Nope'), null);
+});
+
+test('buildPinMessagePatch toggles pin state and attributes moderator/admin', () => {
+  const pinnedPatch = buildPinMessagePatch(false, 'John Rufai', 1700000000000);
+  assert.equal(pinnedPatch.isPinned, true);
+  assert.equal(pinnedPatch.pinnedBy, 'John Rufai');
+  assert.equal(pinnedPatch.pinnedAtMillis, 1700000000000);
+
+  const unpinnedPatch = buildPinMessagePatch(true, 'John Rufai', 1700000050000);
+  assert.equal(unpinnedPatch.isPinned, false);
+  assert.equal(unpinnedPatch.pinnedBy, '');
+  assert.equal(unpinnedPatch.pinnedAtMillis, 0);
 });
 
 test('computeAccurateOnlineMembers filters out deleted/unregistered accounts so online count never exceeds registered builders', () => {

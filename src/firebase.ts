@@ -260,10 +260,11 @@ function normalizeIsoTimestamp(val: unknown, fallbackIso: string): string {
 }
 
 /**
- * Determines whether a user is an approved Student Hub member based strictly on their admin/moderator role,
- * an approved `communityMemberships/{uid}` record, or an approved `studentAccessRequests/{uid}` record.
- * Newly registered accounts default to public community access only and CANNOT enter the private Student Hub
- * until explicitly approved by an administrator.
+ * Determines whether a user is an approved Student Hub member based on their admin/moderator role,
+ * an approved `communityMemberships/{uid}` record, an approved `studentAccessRequests/{uid}` record,
+ * or an existing verified student profile (`isApprovedStudent === true`, `studentAccessStatus === 'approved'`,
+ * or `accountType === 'student'`, unless explicitly revoked/suspended/rejected).
+ * Brand-new accounts default to `accountType: 'public'` and `isApprovedStudent: false` until approved by an admin.
  */
 export function isApprovedStudentMember(params: {
   user?: User | null;
@@ -295,6 +296,20 @@ export function isApprovedStudentMember(params: {
     return false;
   }
   if (studentRequest?.status === 'approved') return true;
+
+  // Explicitly revoked on profile document
+  if (profile?.isApprovedStudent === false || profile?.studentAccessStatus === 'rejected') {
+    return false;
+  }
+
+  // Existing approved student profile flags
+  if (
+    profile?.isApprovedStudent === true ||
+    profile?.studentAccessStatus === 'approved' ||
+    profile?.accountType === 'student'
+  ) {
+    return true;
+  }
 
   return false;
 }
@@ -380,13 +395,15 @@ export function buildFallbackBuilderProfile(
   const cleanSchool = overrides?.schoolName?.trim() || '';
   const effectiveRole = isAdmin ? 'admin' : overrides?.role || 'member';
 
-  const inferredAccountType: 'public' | 'student' =
+  const isExplicitlyApproved =
     isAdmin ||
     effectiveRole === 'moderator' ||
     effectiveRole === 'admin' ||
-    overrides?.accountType === 'student'
-      ? 'student'
-      : 'public';
+    overrides?.isApprovedStudent === true ||
+    overrides?.studentAccessStatus === 'approved' ||
+    (overrides?.accountType === 'student' && overrides?.isApprovedStudent !== false);
+
+  const inferredAccountType: 'public' | 'student' = isExplicitlyApproved ? 'student' : 'public';
 
   return {
     uid: user.uid,
@@ -402,6 +419,16 @@ export function buildFallbackBuilderProfile(
     role: effectiveRole,
     status: overrides?.status || 'active',
     accountType: inferredAccountType,
+    ...(typeof overrides?.isApprovedStudent === 'boolean'
+      ? { isApprovedStudent: overrides.isApprovedStudent }
+      : isExplicitlyApproved
+        ? { isApprovedStudent: true }
+        : {}),
+    ...(overrides?.studentAccessStatus
+      ? { studentAccessStatus: overrides.studentAccessStatus }
+      : isExplicitlyApproved
+        ? { studentAccessStatus: 'approved' }
+        : {}),
     publishingDisabled: overrides?.publishingDisabled ?? false,
     bookmarkedPostIds: Array.isArray(overrides?.bookmarkedPostIds)
       ? overrides.bookmarkedPostIds
@@ -420,18 +447,28 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
     if (snap.exists()) {
       const raw = snap.data() as Partial<BuilderProfile>;
       const isAdminEmail = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-      const inferredType: 'public' | 'student' =
-        isAdminEmail || raw.role === 'moderator' || raw.role === 'admin'
-          ? 'student'
-          : raw.accountType === 'student'
-            ? 'student'
-            : 'public';
+      const isApprovedExisting =
+        isAdminEmail ||
+        raw.role === 'moderator' ||
+        raw.role === 'admin' ||
+        raw.isApprovedStudent === true ||
+        raw.studentAccessStatus === 'approved' ||
+        (raw.accountType === 'student' && raw.isApprovedStudent !== false);
+
+      const inferredType: 'public' | 'student' = isApprovedExisting ? 'student' : 'public';
 
       const normalized = buildFallbackBuilderProfile(user, {
         ...raw,
         role: isAdminEmail ? 'admin' : raw.role || 'member',
         status: raw.status || 'active',
         accountType: inferredType,
+        isApprovedStudent:
+          typeof raw.isApprovedStudent === 'boolean'
+            ? raw.isApprovedStudent
+            : isApprovedExisting
+              ? true
+              : undefined,
+        studentAccessStatus: raw.studentAccessStatus,
         acceptedGuidelines: raw.acceptedGuidelines ?? true,
       });
 
@@ -452,8 +489,128 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
 }
 
 /**
+ * Self-heals student hub access for returning students who previously participated in the
+ * Private Student Hub (e.g., sent messages in `/messages` or had an approved membership/request)
+ * whose `users/{uid}` document may have been missing `isApprovedStudent: true` or `accountType: 'student'`.
+ * Does NOT grant access to brand-new accounts or accounts explicitly revoked/rejected by Admin.
+ */
+export async function verifyAndRestoreStudentHubAccess(
+  user: User,
+  profile: BuilderProfile
+): Promise<BuilderProfile> {
+  if (isSuperAdminUser(user, profile)) return profile;
+  if (profile.status === 'banned' || profile.status === 'suspended') return profile;
+
+  try {
+    // 1. Check communityMemberships/{uid}
+    const memSnap = await getDoc(doc(db, 'communityMemberships', user.uid));
+    if (memSnap.exists()) {
+      const memData = memSnap.data();
+      if (memData.status === 'revoked' || memData.status === 'suspended') {
+        return profile;
+      }
+      if (memData.status === 'approved') {
+        if (profile.accountType !== 'student' || profile.isApprovedStudent !== true) {
+          const healed: BuilderProfile = {
+            ...profile,
+            accountType: 'student',
+            isApprovedStudent: true,
+            studentAccessStatus: 'approved',
+          };
+          await setDoc(
+            doc(db, 'users', user.uid),
+            {
+              accountType: 'student',
+              isApprovedStudent: true,
+              studentAccessStatus: 'approved',
+            },
+            { merge: true }
+          ).catch(() => {});
+          return healed;
+        }
+        return profile;
+      }
+    }
+
+    // 2. Check studentAccessRequests/{uid}
+    const reqSnap = await getDoc(doc(db, 'studentAccessRequests', user.uid));
+    if (reqSnap.exists()) {
+      const reqData = reqSnap.data();
+      if (
+        reqData.status === 'rejected' ||
+        reqData.status === 'suspended' ||
+        reqData.status === 'pending' ||
+        reqData.status === 'more_information_required'
+      ) {
+        return profile;
+      }
+      if (reqData.status === 'approved') {
+        const healed: BuilderProfile = {
+          ...profile,
+          accountType: 'student',
+          isApprovedStudent: true,
+          studentAccessStatus: 'approved',
+        };
+        await setDoc(
+          doc(db, 'users', user.uid),
+          {
+            accountType: 'student',
+            isApprovedStudent: true,
+            studentAccessStatus: 'approved',
+          },
+          { merge: true }
+        ).catch(() => {});
+        return healed;
+      }
+    }
+
+    // If explicitly revoked by Admin on users/{uid}, do not auto-restore
+    if (profile.isApprovedStudent === false || profile.studentAccessStatus === 'rejected') {
+      return profile;
+    }
+
+    // If already approved on profile, return as-is
+    if (
+      profile.isApprovedStudent === true ||
+      profile.studentAccessStatus === 'approved' ||
+      profile.accountType === 'student'
+    ) {
+      return profile;
+    }
+
+    // 3. Check if this user has prior messages in the Private Student Hub (`/messages`)
+    const priorMsgsSnap = await getDocs(
+      query(collection(db, 'messages'), where('authorId', '==', user.uid), limit(1))
+    );
+    if (!priorMsgsSnap.empty) {
+      const healed: BuilderProfile = {
+        ...profile,
+        accountType: 'student',
+        isApprovedStudent: true,
+        studentAccessStatus: 'approved',
+      };
+      await setDoc(
+        doc(db, 'users', user.uid),
+        {
+          accountType: 'student',
+          isApprovedStudent: true,
+          studentAccessStatus: 'approved',
+        },
+        { merge: true }
+      ).catch(() => {});
+      return healed;
+    }
+  } catch {
+    // Ignore permission errors if unapproved user cannot read `/messages`
+  }
+
+  return profile;
+}
+
+/**
  * Ensures a basic public user profile exists in `users/{uid}` after Google sign-in.
- * Enforces unique usernames across all accounts and does NOT grant Student Hub access.
+ * Enforces unique usernames across all accounts and does NOT grant Student Hub access to new accounts,
+ * while strictly preserving existing Student Hub approval flags on returning students.
  */
 export async function ensurePublicUserProfile(
   user: User,
@@ -482,13 +639,22 @@ export async function ensurePublicUserProfile(
         }
       }
 
+      const preserveStudentStatus =
+        existing.accountType === 'student' ||
+        existing.isApprovedStudent === true ||
+        existing.studentAccessStatus === 'approved';
+
       const updatedExisting = buildFallbackBuilderProfile(user, {
         ...existing,
         ...overrides,
         displayName: resolvedDisplayName,
         role: existing.role,
         status: existing.status,
-        accountType: existing.accountType || 'public',
+        accountType: preserveStudentStatus ? 'student' : existing.accountType || 'public',
+        isApprovedStudent: preserveStudentStatus ? true : existing.isApprovedStudent,
+        studentAccessStatus: preserveStudentStatus
+          ? 'approved'
+          : existing.studentAccessStatus,
         createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
       });
@@ -497,9 +663,9 @@ export async function ensurePublicUserProfile(
       } catch (err) {
         console.warn('Could not merge profile updates to Firestore:', err);
       }
-      return updatedExisting;
+      return verifyAndRestoreStudentHubAccess(user, updatedExisting);
     }
-    return existing;
+    return verifyAndRestoreStudentHubAccess(user, existing);
   }
 
   // Brand-new account: verify username uniqueness
@@ -522,6 +688,7 @@ export async function ensurePublicUserProfile(
     ...overrides,
     displayName: uniqueDisplayName,
     accountType: isAdmin ? 'student' : 'public',
+    isApprovedStudent: isAdmin ? true : false,
   });
 
   try {
@@ -559,7 +726,6 @@ export async function registerBuilderProfile(
     {
       primaryInterest: 'Games & Simulations',
       ...overrides,
-      accountType: 'public',
     },
     { strictUniqueName: true }
   );

@@ -159,6 +159,7 @@ function BuildBudsApp() {
   // Student Access & Membership state
   const [membership, setMembership] = useState<CommunityMembership | null>(null);
   const [studentRequest, setStudentRequest] = useState<StudentAccessRequest | null>(null);
+  const [isMembershipChecking, setIsMembershipChecking] = useState<boolean>(false);
 
   // Public Auth Modal state (supports both 'signin' and 'join' modes)
   const [isPublicAuthOpen, setIsPublicAuthOpen] = useState(false);
@@ -261,13 +262,35 @@ function BuildBudsApp() {
     return () => unsubscribe();
   }, []);
 
-  // Real-time listeners for `communityMemberships/{uid}` and `studentAccessRequests/{uid}`
+  // Real-time listeners for `users/{uid}`, `communityMemberships/{uid}`, and `studentAccessRequests/{uid}`
   useEffect(() => {
     if (!currentUser) {
       setMembership(null);
       setStudentRequest(null);
+      setIsMembershipChecking(false);
       return;
     }
+
+    setIsMembershipChecking(true);
+    let memLoaded = false;
+    let reqLoaded = false;
+    const markCheckDone = () => {
+      if (memLoaded && reqLoaded) {
+        setIsMembershipChecking(false);
+      }
+    };
+
+    const unsubUserDoc = onSnapshot(
+      doc(db, 'users', currentUser.uid),
+      (snap) => {
+        if (snap.exists()) {
+          setBuilderProfile(
+            buildFallbackBuilderProfile(currentUser, snap.data() as Partial<BuilderProfile>)
+          );
+        }
+      },
+      () => {}
+    );
 
     const unsubMembership = onSnapshot(
       doc(db, 'communityMemberships', currentUser.uid),
@@ -277,9 +300,13 @@ function BuildBudsApp() {
         } else {
           setMembership(null);
         }
+        memLoaded = true;
+        markCheckDone();
       },
       () => {
         setMembership(null);
+        memLoaded = true;
+        markCheckDone();
       }
     );
 
@@ -291,13 +318,18 @@ function BuildBudsApp() {
         } else {
           setStudentRequest(null);
         }
+        reqLoaded = true;
+        markCheckDone();
       },
       () => {
         setStudentRequest(null);
+        reqLoaded = true;
+        markCheckDone();
       }
     );
 
     return () => {
+      unsubUserDoc();
       unsubMembership();
       unsubRequest();
     };
@@ -710,7 +742,7 @@ function BuildBudsApp() {
 
   // ROUTE 3: PRIVATE REAL-TIME STUDENT HUB (/hub)
   if (cleanPathname === '/hub') {
-    if (isAuthChecking) {
+    if (isAuthChecking || (currentUser && !isApprovedForHub && isMembershipChecking)) {
       return (
         <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
           <img

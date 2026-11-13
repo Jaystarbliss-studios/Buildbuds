@@ -27,6 +27,17 @@ service cloud.firestore {
         );
     }
 
+    function isNotRevokedMembership() {
+      return !exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) ||
+        !(get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.get('status', 'approved') in ['revoked', 'suspended']);
+    }
+
+    function isGlobalModeratorUser() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'];
+    }
+
     function isApprovedStudent() {
       return isAuthenticated() &&
         (
@@ -34,9 +45,16 @@ service cloud.firestore {
           (exists(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)) &&
             get(/databases/$(database)/documents/communityMemberships/$(request.auth.uid)).data.status == 'approved') ||
           (exists(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)).data.status == 'approved') ||
+            get(/databases/$(database)/documents/studentAccessRequests/$(request.auth.uid)).data.status == 'approved' &&
+            isNotRevokedMembership()) ||
           (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'])
+            isNotRevokedMembership() &&
+            (
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') in ['moderator', 'admin'] ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isApprovedStudent', false) == true ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('studentAccessStatus', 'none') == 'approved' ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accountType', 'public') == 'student'
+            ))
         );
     }
 
@@ -443,14 +461,23 @@ service cloud.firestore {
               'updatedAt',
               'hadProfanity'
             ])) ||
+          ((isAdmin() || isChannelModerator(resource.data.channelId) || isGlobalModeratorUser()) &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'isPinned',
+              'pinnedAtMillis',
+              'pinnedBy',
+              'updatedAt'
+            ])) ||
           isAdmin() ||
-          isChannelModerator(resource.data.channelId)
+          isChannelModerator(resource.data.channelId) ||
+          isGlobalModeratorUser()
         );
 
       allow delete: if isApprovedStudent() &&
         (resource.data.authorId == request.auth.uid ||
           isAdmin() ||
-          isChannelModerator(resource.data.channelId));
+          isChannelModerator(resource.data.channelId) ||
+          isGlobalModeratorUser());
 
       // Nested Thread Replies
       match /threadReplies/{replyId} {

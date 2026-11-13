@@ -178,6 +178,8 @@ export function computeEffectiveReplyCount(
 /**
  * Evaluates a touch gesture on mobile viewports to determine whether to open or close
  * the left-hand channel navigation panel.
+ * Only opens the sidebar when swiping right from the very left bezel edge (startX <= 28)
+ * so swiping right on a message bubble triggers WhatsApp-style Swipe-to-Reply instead.
  */
 export function evaluateHorizontalSwipeGesture(
   startX: number,
@@ -194,7 +196,7 @@ export function evaluateHorizontalSwipeGesture(
     return 'none';
   }
 
-  if (!isSidebarOpen && deltaX >= 50 && startX <= 180) {
+  if (!isSidebarOpen && deltaX >= 50 && startX <= 28) {
     return 'open-sidebar';
   }
 
@@ -203,5 +205,101 @@ export function evaluateHorizontalSwipeGesture(
   }
 
   return 'none';
+}
+
+export const SWIPE_TO_REPLY_THRESHOLD_PX = 48;
+export const SWIPE_TO_REPLY_MAX_OFFSET_PX = 72;
+
+export interface MessageSwipeState {
+  offsetPx: number;
+  shouldTriggerReply: boolean;
+  isSwipingHorizontally: boolean;
+}
+
+/**
+ * Evaluates a touch drag gesture on an individual chat message bubble for WhatsApp-style
+ * swipe-to-reply on mobile phones.
+ */
+export function evaluateMessageSwipeToReply(
+  startX: number,
+  startY: number,
+  currentX: number,
+  currentY: number
+): MessageSwipeState {
+  // Ignore edge-bezel swipes reserved for opening the channel drawer
+  if (startX <= 28) {
+    return { offsetPx: 0, shouldTriggerReply: false, isSwipingHorizontally: false };
+  }
+
+  const deltaX = currentX - startX;
+  const deltaY = currentY - startY;
+
+  // Require rightward horizontal drag (like WhatsApp) where horizontal movement dominates vertical scroll
+  if (deltaX <= 6 || Math.abs(deltaY) > Math.abs(deltaX) * 0.85) {
+    return { offsetPx: 0, shouldTriggerReply: false, isSwipingHorizontally: false };
+  }
+
+  const clampedOffset = Math.min(SWIPE_TO_REPLY_MAX_OFFSET_PX, Math.round(deltaX * 0.78));
+  return {
+    offsetPx: clampedOffset,
+    shouldTriggerReply: deltaX >= SWIPE_TO_REPLY_THRESHOLD_PX,
+    isSwipingHorizontally: true,
+  };
+}
+
+/**
+ * Resolves the target message ID to scroll to when a user clicks a tagged/quoted reply banner
+ * or a pinned message preview. Supports exact `replyToId` lookup with a fallback to matching
+ * `replyToAuthor` + `replyToSnippet` for older messages.
+ */
+export function resolveJumpToMessageTarget<
+  T extends { id: string; authorName: string; text: string }
+>(
+  messages: T[],
+  replyToId?: string,
+  replyToAuthor?: string,
+  replyToSnippet?: string
+): string | null {
+  if (replyToId) {
+    const exact = messages.find((m) => m.id === replyToId);
+    if (exact) return exact.id;
+  }
+
+  if (replyToAuthor || replyToSnippet) {
+    const normAuthor = (replyToAuthor || '').trim().toLowerCase();
+    const normSnippet = (replyToSnippet || '').trim().toLowerCase();
+    const fallback = messages.find((m) => {
+      const authorMatches =
+        !normAuthor || m.authorName.trim().toLowerCase() === normAuthor;
+      const textMatches =
+        !normSnippet ||
+        m.text.trim().toLowerCase().startsWith(normSnippet.slice(0, 40)) ||
+        normSnippet.startsWith(m.text.trim().toLowerCase().slice(0, 40));
+      return authorMatches && textMatches;
+    });
+    if (fallback) return fallback.id;
+  }
+
+  return null;
+}
+
+/**
+ * Builds the Firestore update fields when a moderator or admin pins or unpins a message.
+ */
+export function buildPinMessagePatch(
+  currentlyPinned: boolean | undefined,
+  actorDisplayName: string,
+  nowMillis: number = Date.now()
+): {
+  isPinned: boolean;
+  pinnedAtMillis: number;
+  pinnedBy: string;
+} {
+  const nextPinned = !currentlyPinned;
+  return {
+    isPinned: nextPinned,
+    pinnedAtMillis: nextPinned ? nowMillis : 0,
+    pinnedBy: nextPinned ? (actorDisplayName.trim() || 'Moderator').slice(0, 60) : '',
+  };
 }
 
