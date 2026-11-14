@@ -48,6 +48,9 @@ import {
   MoreHorizontal,
   Clock,
   Pin,
+  Copy,
+  Forward,
+  RefreshCw,
 } from 'lucide-react';
 import {
   db,
@@ -56,6 +59,7 @@ import {
   signInWithPopup,
   signOut,
   doc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -63,6 +67,7 @@ import {
   addDoc,
   query,
   where,
+  orderBy,
   limit,
   onSnapshot,
   serverTimestamp,
@@ -78,6 +83,7 @@ import {
   checkUsernameAvailability,
   ensureBuilderProfile,
   handleFirestoreError,
+  isFirestoreQuotaError,
   OperationType,
   User,
 } from '../firebase.ts';
@@ -85,6 +91,7 @@ import {
   filterProfanity,
   extractFirstUrl,
   generateLinkPreview,
+  resolveMessageLinkPreview,
   compressCoverImage,
   CreationCategory,
 } from '../utils/moderation.ts';
@@ -103,6 +110,10 @@ import {
   evaluateMessageSwipeToReply,
   resolveJumpToMessageTarget,
   buildPinMessagePatch,
+  computeVisibleMessageWindow,
+  evaluateChatComposerKeyDown,
+  INITIAL_VISIBLE_MESSAGES_COUNT,
+  SCROLL_UP_LOAD_BATCH_SIZE,
   RawPresenceRecord,
 } from '../utils/messageGrouping.ts';
 import {
@@ -467,11 +478,26 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [composerError, setComposerError] = useState<string | null>(null);
   const [composerNotice, setComposerNotice] = useState<string | null>(null);
 
-  // Inline Message Edit & Action Menu state
+  // Inline Message & Link Edit + Action / Right-Click Context Dropdown Menu state
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState<string>('');
+  const [editingLinkUrl, setEditingLinkUrl] = useState<string>('');
+  const [editingLinkTitle, setEditingLinkTitle] = useState<string>('');
+  const [editingLinkDesc, setEditingLinkDesc] = useState<string>('');
+  const [editingLinkCategory, setEditingLinkCategory] = useState<CreationCategory>('website');
+  const [editingShowLinkFields, setEditingShowLinkFields] = useState<boolean>(false);
   const [isSavingMessageEdit, setIsSavingMessageEdit] = useState<boolean>(false);
   const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
+  const [contextMenuState, setContextMenuState] = useState<{
+    msg: HubMessage;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<HubMessage | null>(null);
+  const [forwardTargetChannelId, setForwardTargetChannelId] = useState<string>('general-chat');
+  const [forwardNoteText, setForwardNoteText] = useState<string>('');
+  const [isForwardingMessage, setIsForwardingMessage] = useState<boolean>(false);
+  const autoDetectedUrlRef = useRef<string>('');
 
   // Inline Thread Reply Edit state
   const [editingThreadReplyId, setEditingThreadReplyId] = useState<string | null>(null);
@@ -522,7 +548,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   );
   const [notificationStatusBanner, setNotificationStatusBanner] = useState<string | null>(null);
 
+  // Progressive Scroll-Up Message Window state (loads only the last few messages initially)
+  const [visibleMessageCount, setVisibleMessageCount] = useState<number>(
+    INITIAL_VISIBLE_MESSAGES_COUNT
+  );
+  const [firestoreFetchLimit, setFirestoreFetchLimit] = useState<number>(15);
+  const [hasMoreServerMessages, setHasMoreServerMessages] = useState<boolean>(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState<boolean>(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollContainerRef = useRef<HTMLDivElement>(null);
+  const reactingMessageIdsRef = useRef<Set<string>>(new Set());
+  const isFetchingOlderBatchRef = useRef<boolean>(false);
+  const prevStreamIdForScrollRef = useRef<string>('');
+  const prevNewestMessageIdRef = useRef<string>('');
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
@@ -764,7 +803,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
   // Real-time listener for Channel Configs & Custom Channels (`/community_channels`)
   useEffect(() => {
-    const q = query(collection(db, 'community_channels'), limit(100));
+    const q = query(collection(db, 'community_channels'), limit(25));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -802,7 +841,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     const q = query(
       collection(db, 'community_groups'),
       where('channelId', '==', activeChannelId),
-      limit(50)
+      limit(20)
     );
     const unsubscribe = onSnapshot(
       q,
@@ -829,7 +868,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Real-time listener for All Platform Users (`/users`) and Approved Memberships (`/communityMemberships`)
   // Unapproved accounts are strictly hidden from `registeredUsers` (Private Chat) and only shown in Admin Center.
   useEffect(() => {
-    const q = query(collection(db, 'users'), limit(200));
+    try {
+      const cachedUsersRaw = window.localStorage.getItem('buildbuds_hub_users_cache');
+      if (cachedUsersRaw) {
+        const parsed = JSON.parse(cachedUsersRaw) as BuilderProfile[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAllPlatformUsers(parsed);
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+
+    const q = query(collection(db, 'users'), limit(60));
     const unsubscribeUsers = onSnapshot(
       q,
       (snapshot) => {
@@ -852,11 +903,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           };
         });
         setAllPlatformUsers(users);
+        try {
+          window.localStorage.setItem('buildbuds_hub_users_cache', JSON.stringify(users));
+        } catch {
+          // Ignore
+        }
       },
       () => {}
     );
 
-    const membershipsQuery = query(collection(db, 'communityMemberships'), limit(300));
+    const membershipsQuery = query(collection(db, 'communityMemberships'), limit(60));
     const unsubscribeMemberships = onSnapshot(
       membershipsQuery,
       (snapshot) => {
@@ -887,7 +943,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   useEffect(() => {
     if (!isSuperAdmin) return;
     const unsubscribeReqs = onSnapshot(
-      collection(db, 'studentAccessRequests'),
+      query(collection(db, 'studentAccessRequests'), limit(40)),
       (snap) => {
         const list: StudentAccessRequest[] = [];
         snap.forEach((d) => list.push({ ...(d.data() as StudentAccessRequest), uid: d.id }));
@@ -952,80 +1008,242 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }));
   }, [registeredUsers]);
 
+  // Reset visible message window and initial fetch limit when switching channels/sub-groups
+  useEffect(() => {
+    setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES_COUNT);
+    setFirestoreFetchLimit(15);
+    setHasMoreServerMessages(false);
+    setIsLoadingOlderMessages(false);
+    isFetchingOlderBatchRef.current = false;
+  }, [activeStreamId]);
+
   // Real-time listener for Messages in the active channel or sub-group (`activeStreamId`).
-  // IMPORTANT: Do NOT attach an unindexed `limit(100)` without `orderBy`, because Firestore orders
-  // unindexed queries by `__name__` (random document ID) and silently drops newly created messages
-  // whose random ID sorts after the first 100 docs!
+  // Strictly bounds initial Firestore reads (`limit(firestoreFetchLimit)`) so opening the app
+  // only loads the latest messages, and fetches older messages progressively as the user scrolls up.
   useEffect(() => {
     setShowPinnedListExpanded(false);
+    initialMessagesSnapshotSeenRef.current = false;
+    knownMessageIdsRef.current.clear();
+
+    const cacheKey = `buildbuds_channel_msgs_${activeStreamId}`;
+    let cachedChannelList: HubMessage[] = [];
+    try {
+      const cachedRaw = window.localStorage.getItem(cacheKey);
+      if (cachedRaw) {
+        const parsed = JSON.parse(cachedRaw) as HubMessage[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          cachedChannelList = parsed;
+          setFirestoreMessages(parsed);
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+
+    const mapDocToHubMessage = (id: string, data: Record<string, any>): HubMessage => {
+      const createdMillis = extractMessageMillis(data);
+      const dateObj = new Date(createdMillis);
+      const hours = String(dateObj.getHours()).padStart(2, '0');
+      const mins = String(dateObj.getMinutes()).padStart(2, '0');
+
+      return {
+        id,
+        channelId: data.channelId,
+        authorId: data.authorId,
+        authorName: data.authorName || 'Builder',
+        authorAvatar: data.authorAvatar || '',
+        authorColor: data.authorColor || '#FFF025',
+        authorRole: data.authorRole || 'member',
+        text: data.text || '',
+        hadProfanity: Boolean(data.hadProfanity),
+        isEdited: Boolean(data.isEdited),
+        replyToId: data.replyToId,
+        replyToAuthor: data.replyToAuthor,
+        replyToColor: data.replyToColor,
+        replyToSnippet: data.replyToSnippet,
+        linkUrl: data.linkUrl,
+        linkTitle: data.linkTitle,
+        linkDescription: data.linkDescription,
+        linkCategory: data.linkCategory,
+        linkDomain: data.linkDomain,
+        coverImageUrl: data.coverImageUrl,
+        showcaseStatus: data.showcaseStatus,
+        publicPostId: data.publicPostId,
+        reactions: data.reactions || {},
+        userReactions: data.userReactions || {},
+        isPinned: Boolean(data.isPinned),
+        pinnedAtMillis: Number(data.pinnedAtMillis || 0),
+        pinnedBy: data.pinnedBy || '',
+        threadCount: Number(data.threadCount || 0),
+        createdAtMillis: createdMillis,
+        timeLabel: `${hours}:${mins}`,
+      };
+    };
+
     const q = query(
       collection(db, 'messages'),
-      where('channelId', '==', activeStreamId)
+      orderBy('createdAt', 'desc'),
+      limit(firestoreFetchLimit)
     );
 
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const confirmedIds = new Set<string>();
-        const loaded: HubMessage[] = snapshot.docs.map((docSnap) => {
-          const data = docSnap.data();
-          confirmedIds.add(docSnap.id);
-          const createdMillis = extractMessageMillis(data);
-          const dateObj = new Date(createdMillis);
-          const hours = String(dateObj.getHours()).padStart(2, '0');
-          const mins = String(dateObj.getMinutes()).padStart(2, '0');
+        setHasMoreServerMessages(snapshot.docs.length >= firestoreFetchLimit);
+        setIsLoadingOlderMessages(false);
+        isFetchingOlderBatchRef.current = false;
 
-          return {
-            id: docSnap.id,
-            channelId: data.channelId,
-            authorId: data.authorId,
-            authorName: data.authorName || 'Builder',
-            authorAvatar: data.authorAvatar || '',
-            authorColor: data.authorColor || '#FFF025',
-            authorRole: data.authorRole || 'member',
-            text: data.text || '',
-            hadProfanity: Boolean(data.hadProfanity),
-            isEdited: Boolean(data.isEdited),
-            replyToId: data.replyToId,
-            replyToAuthor: data.replyToAuthor,
-            replyToColor: data.replyToColor,
-            replyToSnippet: data.replyToSnippet,
-            linkUrl: data.linkUrl,
-            linkTitle: data.linkTitle,
-            linkDescription: data.linkDescription,
-            linkCategory: data.linkCategory,
-            linkDomain: data.linkDomain,
-            coverImageUrl: data.coverImageUrl,
-            showcaseStatus: data.showcaseStatus,
-            publicPostId: data.publicPostId,
-            reactions: data.reactions || {},
-            userReactions: data.userReactions || {},
-            isPinned: Boolean(data.isPinned),
-            pinnedAtMillis: Number(data.pinnedAtMillis || 0),
-            pinnedBy: data.pinnedBy || '',
-            threadCount: Number(data.threadCount || 0),
-            createdAtMillis: createdMillis,
-            timeLabel: `${hours}:${mins}`,
-          };
+        const confirmedIds = new Set<string>();
+        const liveInChannel: HubMessage[] = [];
+
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data.channelId !== activeStreamId) return;
+          confirmedIds.add(docSnap.id);
+          liveInChannel.push(mapDocToHubMessage(docSnap.id, data));
         });
 
-        loaded.sort((a, b) => a.createdAtMillis - b.createdAtMillis);
-        setFirestoreMessages(loaded);
-        setOptimisticMessages((prev) =>
-          prev.filter((m) => m.channelId === activeStreamId && !confirmedIds.has(m.id))
-        );
+        const mergeAndCommit = (channelItems: HubMessage[]) => {
+          const byId = new Map<string, HubMessage>();
+          cachedChannelList.forEach((m) => {
+            if (m.channelId === activeStreamId) byId.set(m.id, m);
+          });
+          channelItems.forEach((m) => byId.set(m.id, m));
+
+          const merged = Array.from(byId.values()).sort(
+            (a, b) => a.createdAtMillis - b.createdAtMillis
+          );
+          cachedChannelList = merged;
+          setFirestoreMessages(merged);
+          setOptimisticMessages((prev) =>
+            prev.filter((m) => m.channelId === activeStreamId && !confirmedIds.has(m.id))
+          );
+
+          try {
+            window.localStorage.setItem(cacheKey, JSON.stringify(merged.slice(-60)));
+          } catch {
+            // Ignore storage quota errors
+          }
+
+          // Merge any showcase links from this channel into allShowcaseMessages
+          const showcaseInChannel = merged.filter((m) => Boolean(m.linkUrl));
+          if (showcaseInChannel.length > 0) {
+            setAllShowcaseMessages((prev) => {
+              const sById = new Map<string, HubMessage>();
+              prev.forEach((item) => sById.set(item.id, item));
+              showcaseInChannel.forEach((item) => sById.set(item.id, item));
+              const sMerged = Array.from(sById.values()).sort(
+                (a, b) => b.createdAtMillis - a.createdAtMillis
+              );
+              try {
+                window.localStorage.setItem(
+                  'buildbuds_showcase_msgs',
+                  JSON.stringify(sMerged.slice(0, 60))
+                );
+              } catch {
+                // Ignore
+              }
+              return sMerged;
+            });
+          }
+        };
+
+        if (liveInChannel.length === 0 && cachedChannelList.length === 0) {
+          // Fallback for quieter secondary channels whose messages are older than the latest global window
+          getDocs(
+            query(
+              collection(db, 'messages'),
+              where('channelId', '==', activeStreamId),
+              limit(firestoreFetchLimit)
+            )
+          )
+            .then((chSnap) => {
+              const fallbackItems: HubMessage[] = [];
+              chSnap.docs.forEach((d) => {
+                confirmedIds.add(d.id);
+                fallbackItems.push(mapDocToHubMessage(d.id, d.data()));
+              });
+              mergeAndCommit(fallbackItems);
+            })
+            .catch(() => {
+              mergeAndCommit([]);
+            });
+        } else {
+          mergeAndCommit(liveInChannel);
+        }
+
+        // Handle real-time browser push notifications on newly added messages without a second collection listener
+        if (!initialMessagesSnapshotSeenRef.current) {
+          snapshot.docs.forEach((docSnap) => {
+            knownMessageIdsRef.current.add(docSnap.id);
+          });
+          initialMessagesSnapshotSeenRef.current = true;
+        } else if (currentUser) {
+          snapshot.docChanges().forEach((change) => {
+            if (change.type !== 'added') return;
+            const docId = change.doc.id;
+            if (knownMessageIdsRef.current.has(docId)) return;
+            knownMessageIdsRef.current.add(docId);
+
+            const data = change.doc.data();
+            const createdMillis = extractMessageMillis(data);
+            if (Date.now() - createdMillis > 60000) return;
+
+            const baseChannelId = String(data.channelId || 'general-chat').split('__group__')[0];
+            const chObj = DEFAULT_COMMUNITY_CHANNELS.find((c) => c.id === baseChannelId);
+            const channelName = chObj?.name || baseChannelId;
+
+            dispatchMessageBrowserNotification({
+              messageId: docId,
+              channelId: String(data.channelId || 'general-chat'),
+              channelName,
+              authorId: String(data.authorId || ''),
+              authorName: String(data.authorName || 'Builder'),
+              authorAvatarUrl: resolveBuilderAvatarUrl(
+                data.authorAvatar,
+                String(data.authorId || 'builder')
+              ),
+              text: String(data.text || ''),
+              currentUserId: currentUser.uid,
+              activeStreamId: activeStreamIdRef.current,
+              preferences: notificationPrefsRef.current,
+              onNavigateToChannel: (targetChannelId) => {
+                setActiveChannelId(targetChannelId);
+                setActiveSubGroupId(null);
+                setViewMode('chat');
+              },
+            });
+          });
+        }
       },
       (error) => {
-        console.error('Error listening to channel messages:', error);
+        setIsLoadingOlderMessages(false);
+        isFetchingOlderBatchRef.current = false;
+        console.warn('Channel messages listener warning (using local cache):', error);
       }
     );
 
     return () => unsubscribe();
-  }, [activeStreamId]);
+  }, [activeStreamId, firestoreFetchLimit, currentUser?.uid]);
 
-  // Real-time listener for Showcase Creations — continuously active across channels
+  // Hydrate Showcase Creations from localStorage on mount, and refresh from Firestore only when viewing Showcase
   useEffect(() => {
-    const q = query(collection(db, 'messages'), limit(150));
+    try {
+      const cachedShowcase = window.localStorage.getItem('buildbuds_showcase_msgs');
+      if (cachedShowcase) {
+        const parsed = JSON.parse(cachedShowcase) as HubMessage[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAllShowcaseMessages(parsed);
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    if (viewMode !== 'showcase') return;
+    const q = query(collection(db, 'messages'), limit(80));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -1062,13 +1280,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         });
         items.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
         setAllShowcaseMessages(items);
+        try {
+          window.localStorage.setItem('buildbuds_showcase_msgs', JSON.stringify(items));
+        } catch {
+          // Ignore
+        }
       },
       (error) => {
-        console.error('Error listening to showcase creations:', error);
+        console.warn('Showcase creations listener warning (using local cache):', error);
       }
     );
     return () => unsubscribe();
-  }, []);
+  }, [viewMode]);
 
   // Mark showcase creations viewed and clear unread badge when entering showcase view
   useEffect(() => {
@@ -1083,65 +1306,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   }, [viewMode]);
 
-  // Real-time listener for incoming messages across all channels to power Browser Push Notifications
-  useEffect(() => {
-    if (!currentUser) return;
-    initialMessagesSnapshotSeenRef.current = false;
-    knownMessageIdsRef.current.clear();
-
-    const q = query(collection(db, 'messages'), limit(100));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        if (!initialMessagesSnapshotSeenRef.current) {
-          snapshot.docs.forEach((docSnap) => {
-            knownMessageIdsRef.current.add(docSnap.id);
-          });
-          initialMessagesSnapshotSeenRef.current = true;
-          return;
-        }
-
-        snapshot.docChanges().forEach((change) => {
-          if (change.type !== 'added') return;
-          const docId = change.doc.id;
-          if (knownMessageIdsRef.current.has(docId)) return;
-          knownMessageIdsRef.current.add(docId);
-
-          const data = change.doc.data();
-          const createdMillis = data.createdAt?.toMillis ? data.createdAt.toMillis() : Date.now();
-          // Only notify for genuinely recent messages (within last 60 seconds)
-          if (Date.now() - createdMillis > 60000) return;
-
-          const baseChannelId = String(data.channelId || 'general-chat').split('__group__')[0];
-          const chObj = DEFAULT_COMMUNITY_CHANNELS.find((c) => c.id === baseChannelId);
-          const channelName = chObj?.name || baseChannelId;
-
-          dispatchMessageBrowserNotification({
-            messageId: docId,
-            channelId: String(data.channelId || 'general-chat'),
-            channelName,
-            authorId: String(data.authorId || ''),
-            authorName: String(data.authorName || 'Builder'),
-            authorAvatarUrl: resolveBuilderAvatarUrl(data.authorAvatar, String(data.authorId || 'builder')),
-            text: String(data.text || ''),
-            currentUserId: currentUser.uid,
-            activeStreamId: activeStreamIdRef.current,
-            preferences: notificationPrefsRef.current,
-            onNavigateToChannel: (targetChannelId) => {
-              setActiveChannelId(targetChannelId);
-              setActiveSubGroupId(null);
-              setViewMode('chat');
-            },
-          });
-        });
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, [currentUser?.uid]);
-
-  // Helper to recompute active online members & typing state quickly (25s window, 10s heartbeat)
+  // Helper to recompute active online members & typing state (95s window, 45s heartbeat)
   // without inflating initial load with stale historical documents
   const syncOnlineMembersFromMeta = () => {
     const localNow = Date.now();
@@ -1158,16 +1323,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       const serverAge = Math.max(0, referenceServerNow - entry.serverLastSeenMillis);
       const directClockAge = Math.abs(localNow - entry.serverLastSeenMillis);
       const hasLiveLocalUpdate =
-        entry.localReceivedMillis > 0 && localNow - entry.localReceivedMillis < 25000;
+        entry.localReceivedMillis > 0 && localNow - entry.localReceivedMillis < 95000;
 
-      // Consider a user online ONLY if their server heartbeat is within the last 25 seconds
-      // OR we received a live real-time heartbeat update from them within the last 25 seconds
-      const isOnline = serverAge < 25000 || directClockAge < 25000 || hasLiveLocalUpdate;
+      const isOnline = serverAge < 95000 || directClockAge < 95000 || hasLiveLocalUpdate;
       if (!isOnline) return;
 
-      // Consider a user actively typing if rawIsTyping is true AND either:
-      // - we received the typing update within the last 7 seconds on our local clock, OR
-      // - their server timestamp is within 10 seconds of referenceServerNow
       const isTypingActive =
         entry.rawIsTyping &&
         ((entry.localTypingReceivedMillis > 0 &&
@@ -1188,10 +1348,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setOnlineMembers(items);
   };
 
-  // Real-time listener for Online Presence (`/presence`) + fast 1-second local expiry ticker
+  // Real-time listener for Online Presence (`/presence`) + fast local expiry ticker
   useEffect(() => {
     initialPresenceSnapshotSeenRef.current = false;
-    const q = query(collection(db, 'presence'), limit(100));
+    const q = query(collection(db, 'presence'), limit(40));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -1258,10 +1418,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
   }, []);
 
-  // Real-time listener for Moderation Reports (for Super Admin / Global Moderators)
+  // Real-time listener for Moderation Reports (only when Super Admin / Global Moderator opens Admin drawer)
   useEffect(() => {
-    if (!isGlobalModerator) return;
-    const q = query(collection(db, 'reports'), limit(50));
+    if (!isGlobalModerator || !showAdminDrawer) return;
+    const q = query(collection(db, 'reports'), limit(20));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -1283,7 +1443,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       () => {}
     );
     return () => unsubscribe();
-  }, [isGlobalModerator]);
+  }, [isGlobalModerator, showAdminDrawer]);
 
   // Update current user's presence heartbeat when signed in.
   // NOTE: Do NOT call deleteDoc(presenceRef) inside beforeunload because on page refresh or
@@ -1320,8 +1480,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
 
     updateHeartbeat();
-    const fastWarmupTimer = window.setTimeout(() => updateHeartbeat(), 1500);
-    const interval = window.setInterval(() => updateHeartbeat(), 10000);
+    const interval = window.setInterval(() => updateHeartbeat(), 45000);
 
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -1332,7 +1491,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
-      window.clearTimeout(fastWarmupTimer);
       window.clearInterval(interval);
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
@@ -1354,45 +1512,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setActiveThreadMessage(latest);
     }
   }, [firestoreMessages, activeThreadMessage?.id]);
-
-  // Automatically sync & self-heal thread reply counts for messages in the active channel
-  // so any message where multiple replies were posted always shows the exact total reply count.
-  const threadedMessageIdsKey = firestoreMessages
-    .filter((m) => m.threadCount > 0)
-    .slice(-15)
-    .map((m) => `${m.id}:${m.threadCount}`)
-    .join(',');
-
-  useEffect(() => {
-    const threadedMessages = firestoreMessages.filter((m) => m.threadCount > 0).slice(-15);
-    if (threadedMessages.length === 0) return;
-
-    const unsubscribes = threadedMessages.map((msg) => {
-      const q = query(collection(db, 'messages', msg.id, 'threadReplies'), limit(100));
-      return onSnapshot(
-        q,
-        (snap) => {
-          const actualCount = snap.size;
-          setLiveThreadCountsByMessageId((prev) =>
-            prev[msg.id] === actualCount ? prev : { ...prev, [msg.id]: actualCount }
-          );
-
-          // Self-heal parent message document if stored threadCount got out of sync (e.g. stuck at 1 when 3 replies exist)
-          if (currentUser && userStatus === 'active' && actualCount > 0 && actualCount !== msg.threadCount) {
-            updateDoc(doc(db, 'messages', msg.id), {
-              threadCount: actualCount,
-              updatedAt: serverTimestamp(),
-            }).catch(() => {});
-          }
-        },
-        () => {}
-      );
-    });
-
-    return () => {
-      unsubscribes.forEach((u) => u());
-    };
-  }, [threadedMessageIdsKey, currentUser?.uid, userStatus]);
 
   // Subscribe to thread replies when a message thread is open
   useEffect(() => {
@@ -1448,16 +1567,28 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           }).catch(() => {});
         }
       },
-      (err) => console.error('Thread listener error:', err)
+      (err) => console.warn('Thread listener warning:', err)
     );
 
     return () => unsubscribe();
   }, [activeThreadMessage?.id]);
 
-  // Auto-scroll to bottom when messages arrive
+  // Auto-scroll to bottom ONLY when switching channels or when a brand-new message arrives at the end
+  // (never when scrolling up to reveal older messages)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [firestoreMessages.length, activeStreamId]);
+    const newestMsg =
+      firestoreMessages.length > 0 ? firestoreMessages[firestoreMessages.length - 1] : null;
+    const newestId = newestMsg?.id || '';
+    const streamChanged = prevStreamIdForScrollRef.current !== activeStreamId;
+    const newestChanged = newestId !== '' && prevNewestMessageIdRef.current !== newestId;
+
+    prevStreamIdForScrollRef.current = activeStreamId;
+    prevNewestMessageIdRef.current = newestId;
+
+    if (streamChanged || newestChanged) {
+      messagesEndRef.current?.scrollIntoView({ behavior: streamChanged ? 'auto' : 'smooth' });
+    }
+  }, [firestoreMessages, activeStreamId]);
 
   // Helper to broadcast typing status cleanly
   const writeTypingPresence = (isTypingNow: boolean) => {
@@ -1525,7 +1656,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setComposerNotice('Your profile settings and character avatar have been saved!');
       window.setTimeout(() => setComposerNotice(null), 3500);
     } catch (err) {
-      console.error('Failed to save profile settings:', err);
+      console.warn('Failed to save profile settings:', err);
       setComposerError(
         err instanceof Error
           ? err.message
@@ -1605,18 +1736,36 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Handle typing indicator broadcast
+  // Handle typing indicator broadcast & live link preview re-checking
   const handleInputChange = (val: string) => {
     setMessageText(val);
     setComposerError(null);
 
     const detectedUrl = extractFirstUrl(val);
-    if (detectedUrl && !linkUrlInput && effectiveEnableLinkPreviews && !effectiveBanLinks) {
-      const preview = generateLinkPreview(detectedUrl, activeChannel.defaultCreationCategory);
-      setLinkUrlInput(preview.url);
-      setLinkTitleInput(preview.title);
-      setLinkDescInput(preview.description);
-      setLinkCategoryInput(preview.category);
+    if (effectiveEnableLinkPreviews && !effectiveBanLinks) {
+      if (detectedUrl) {
+        // Always check and generate link preview whenever a URL is typed or pasted in the composer
+        // (unless the user manually typed a different custom URL in the open attachment drawer)
+        const isManualCustomUrl =
+          showAttachmentDrawer &&
+          linkUrlInput.trim().length > 0 &&
+          linkUrlInput.trim() !== autoDetectedUrlRef.current;
+
+        if (!isManualCustomUrl && (detectedUrl !== autoDetectedUrlRef.current || !linkUrlInput)) {
+          const preview = generateLinkPreview(detectedUrl, activeChannel.defaultCreationCategory);
+          autoDetectedUrlRef.current = preview.url;
+          setLinkUrlInput(preview.url);
+          setLinkTitleInput(preview.title);
+          setLinkDescInput(preview.description);
+          setLinkCategoryInput(preview.category);
+        }
+      } else if (!showAttachmentDrawer && autoDetectedUrlRef.current) {
+        // Clear auto-detected link preview if user removed the URL from message text
+        autoDetectedUrlRef.current = '';
+        setLinkUrlInput('');
+        setLinkTitleInput('');
+        setLinkDescInput('');
+      }
     }
 
     if (currentUser && builderProfile && userStatus === 'active') {
@@ -1676,7 +1825,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setComposerNotice('Community Guidelines accepted! You can now chat and share creations.');
       window.setTimeout(() => setComposerNotice(null), 4000);
     } catch (err) {
-      console.error(err);
+      console.warn(err);
     }
   };
 
@@ -1721,14 +1870,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
 
     const rawText = messageText.trim();
-    const hasAttachment = Boolean(linkUrlInput.trim() || customCoverDataUrl);
+    const detectedUrlInText = extractFirstUrl(rawText);
+    const effectiveLinkUrl = linkUrlInput.trim() || detectedUrlInText || '';
+    const hasAttachment = Boolean(effectiveLinkUrl || customCoverDataUrl);
 
     if (!rawText && !hasAttachment) {
       return;
     }
 
     // Check if links are banned for non-moderators
-    const detectedUrlInText = extractFirstUrl(rawText);
     if (effectiveBanLinks && !isSuperAdmin && !isCurrentChannelModerator) {
       if (detectedUrlInText || linkUrlInput.trim()) {
         setComposerError('Links are currently disabled in this channel by an administrator/moderator.');
@@ -1781,10 +1931,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       payload.replyToSnippet = String(replyingTo.text || '').slice(0, 120);
     }
 
-    if ((linkUrlInput.trim() || customCoverDataUrl) && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
+    if ((effectiveLinkUrl || customCoverDataUrl) && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
       const preview = generateLinkPreview(
-        linkUrlInput.trim() || 'https://buildbuds.community/project',
-        linkCategoryInput,
+        effectiveLinkUrl || 'https://buildbuds.community/project',
+        linkUrlInput.trim() ? linkCategoryInput : activeChannel.defaultCreationCategory,
         linkTitleInput,
         linkDescInput
       );
@@ -1830,8 +1980,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
 
     setOptimisticMessages((prev) => [...prev, optimisticItem]);
+    try {
+      const cacheKey = `buildbuds_channel_msgs_${activeStreamId}`;
+      const existingCached = window.localStorage.getItem(cacheKey);
+      const parsedCached = existingCached ? (JSON.parse(existingCached) as HubMessage[]) : [];
+      const nextCached = [...parsedCached.filter((m) => m.id !== optimisticItem.id), optimisticItem].slice(-100);
+      window.localStorage.setItem(cacheKey, JSON.stringify(nextCached));
+    } catch {
+      // Ignore storage errors
+    }
 
     // Optimistically clear composer immediately so sending feels instant and never stalls
+    autoDetectedUrlRef.current = '';
     setMessageText('');
     setReplyingTo(null);
     setLinkUrlInput('');
@@ -1866,6 +2026,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         window.setTimeout(() => setComposerNotice(null), 4000);
       }
     } catch (error) {
+      if (isFirestoreQuotaError(error)) {
+        // Keep optimistic message visible in stream & local cache while Firestore daily quota resets
+        console.warn('Firestore quota reached during send, keeping message in local stream:', error);
+        return;
+      }
       // Remove optimistic item and restore draft if write genuinely failed
       setOptimisticMessages((prev) => prev.filter((m) => m.id !== newMsgRef.id));
       setMessageText(rawText);
@@ -1875,7 +2040,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Toggle emoji reaction on a message (single reaction per user per emoji)
+  // Toggle emoji reaction on a message (strictly 1 reaction per user per message across all emojis)
   const handleToggleReaction = async (msg: HubMessage, emoji: string) => {
     if (!currentUser) {
       onOpenAuthModal('signin');
@@ -1885,6 +2050,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setComposerError('Suspended or banned accounts cannot add reactions.');
       return;
     }
+    if (reactingMessageIdsRef.current.has(msg.id)) {
+      return;
+    }
+
+    reactingMessageIdsRef.current.add(msg.id);
 
     const { reactions: nextReactions, userReactions: nextUserReactions } =
       toggleMessageReaction({
@@ -1894,6 +2064,32 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         userId: currentUser.uid,
       });
 
+    // Apply instant optimistic update so rapid clicks or offline state never allow duplicate reactions
+    const applyOptimisticReaction = (list: HubMessage[]) =>
+      list.map((item) =>
+        item.id === msg.id
+          ? {
+              ...item,
+              reactions: nextReactions,
+              userReactions: nextUserReactions,
+            }
+          : item
+      );
+
+    setFirestoreMessages((prev) => {
+      const updated = applyOptimisticReaction(prev);
+      try {
+        window.localStorage.setItem(
+          `buildbuds_channel_msgs_${activeStreamId}`,
+          JSON.stringify(updated.slice(-60))
+        );
+      } catch {
+        // Ignore storage errors
+      }
+      return updated;
+    });
+    setOptimisticMessages((prev) => applyOptimisticReaction(prev));
+
     try {
       await updateDoc(doc(db, 'messages', msg.id), {
         reactions: nextReactions,
@@ -1901,7 +2097,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         updatedAt: serverTimestamp(),
       });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
+      if (!isFirestoreQuotaError(error)) {
+        handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
+      }
+    } finally {
+      reactingMessageIdsRef.current.delete(msg.id);
     }
   };
 
@@ -1926,7 +2126,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       setComposerNotice('Showcase request submitted! Our mentors will review and feature it publicly.');
       setTimeout(() => setComposerNotice(null), 5000);
     } catch (err: unknown) {
-      console.error(err);
+      console.warn(err);
       setComposerError('Failed to submit showcase request. Please try again.');
     }
   };
@@ -1973,7 +2173,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       );
       setTimeout(() => setComposerNotice(null), 4000);
     } catch (err) {
-      console.error(err);
+      console.warn(err);
       setComposerError('Failed to curate submission.');
     } finally {
       setIsSubmittingCuration(false);
@@ -2048,39 +2248,273 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Start editing a channel message (Author only)
-  const handleStartEditMessage = (msg: HubMessage) => {
+  // Start editing a channel message and/or its attached link (Author only)
+  const handleStartEditMessage = (msg: HubMessage, focusLink = false) => {
     if (!currentUser || currentUser.uid !== msg.authorId) return;
+    const resolvedLink = resolveMessageLinkPreview(msg, activeChannel.defaultCreationCategory);
     setEditingMessageId(msg.id);
     setEditingMessageText(msg.text);
+    setEditingLinkUrl(resolvedLink?.linkUrl || '');
+    setEditingLinkTitle(resolvedLink?.linkTitle || '');
+    setEditingLinkDesc(resolvedLink?.linkDescription || '');
+    setEditingLinkCategory(
+      resolvedLink?.linkCategory || activeChannel.defaultCreationCategory || 'website'
+    );
+    setEditingShowLinkFields(Boolean(focusLink || resolvedLink));
     setActiveActionMessageId(null);
+    setContextMenuState(null);
   };
 
-  // Save edited channel message
+  // Save edited channel message AND updated link / regenerated link preview
   const handleSaveEditMessage = async (msg: HubMessage) => {
     if (!currentUser || currentUser.uid !== msg.authorId) return;
     const raw = editingMessageText.trim();
-    if (!raw) return;
-    if (raw === msg.text) {
-      setEditingMessageId(null);
-      return;
-    }
+    const rawLinkUrl = editingShowLinkFields
+      ? editingLinkUrl.trim() || extractFirstUrl(raw) || ''
+      : extractFirstUrl(raw) || '';
+
+    if (!raw && !rawLinkUrl) return;
 
     setIsSavingMessageEdit(true);
-    const { filteredText, hadProfanity } = filterProfanity(raw);
+    const { filteredText, hadProfanity } = filterProfanity(
+      raw || (editingLinkTitle ? `Shared a ${editingLinkCategory}: ${editingLinkTitle}` : 'Shared a creation!')
+    );
+
+    const updatePayload: Record<string, unknown> = {
+      text: filteredText.slice(0, 2000),
+      hadProfanity,
+      isEdited: true,
+      updatedAt: serverTimestamp(),
+    };
+
+    let updatedLinkFields: Partial<HubMessage> = {};
+    if (rawLinkUrl) {
+      const urlChanged = rawLinkUrl !== (msg.linkUrl || '');
+      const preview = generateLinkPreview(
+        rawLinkUrl,
+        editingLinkCategory || activeChannel.defaultCreationCategory,
+        urlChanged && editingLinkTitle === (msg.linkTitle || '') ? undefined : editingLinkTitle,
+        urlChanged && editingLinkDesc === (msg.linkDescription || '') ? undefined : editingLinkDesc
+      );
+      const safeTitle = filterProfanity(preview.title).filteredText.slice(0, 160);
+      const safeDesc = filterProfanity(preview.description).filteredText.slice(0, 600);
+      const nextCover =
+        !urlChanged && msg.coverImageUrl ? msg.coverImageUrl : preview.defaultCoverUrl;
+
+      updatePayload.linkUrl = preview.url;
+      updatePayload.linkTitle = safeTitle;
+      updatePayload.linkDescription = safeDesc;
+      updatePayload.linkCategory = preview.category;
+      updatePayload.linkDomain = preview.domain;
+      updatePayload.coverImageUrl = nextCover.slice(0, 350000);
+
+      updatedLinkFields = {
+        linkUrl: preview.url,
+        linkTitle: safeTitle,
+        linkDescription: safeDesc,
+        linkCategory: preview.category,
+        linkDomain: preview.domain,
+        coverImageUrl: nextCover.slice(0, 350000),
+      };
+    } else if (msg.linkUrl && !rawLinkUrl) {
+      updatePayload.linkUrl = '';
+      updatePayload.linkTitle = '';
+      updatePayload.linkDescription = '';
+      updatePayload.linkDomain = '';
+      updatedLinkFields = {
+        linkUrl: undefined,
+        linkTitle: undefined,
+        linkDescription: undefined,
+        linkDomain: undefined,
+      };
+    }
+
+    // Apply optimistic local update immediately
+    const applyLocalEdit = (item: HubMessage): HubMessage =>
+      item.id === msg.id
+        ? {
+            ...item,
+            text: filteredText.slice(0, 2000),
+            hadProfanity,
+            isEdited: true,
+            ...updatedLinkFields,
+          }
+        : item;
+
+    setFirestoreMessages((prev) => prev.map(applyLocalEdit));
+    setOptimisticMessages((prev) => prev.map(applyLocalEdit));
+    setAllShowcaseMessages((prev) => prev.map(applyLocalEdit));
+
     try {
-      await updateDoc(doc(db, 'messages', msg.id), {
-        text: filteredText.slice(0, 2000),
-        hadProfanity,
-        isEdited: true,
-        updatedAt: serverTimestamp(),
-      });
+      await updateDoc(doc(db, 'messages', msg.id), updatePayload);
       setEditingMessageId(null);
       setEditingMessageText('');
+      setEditingLinkUrl('');
+      setEditingLinkTitle('');
+      setEditingLinkDesc('');
+      setEditingShowLinkFields(false);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `messages/${msg.id}`);
     } finally {
       setIsSavingMessageEdit(false);
+    }
+  };
+
+  // Re-check and refresh link preview metadata for any message containing a URL
+  const handleRefreshMessageLinkPreview = async (msg: HubMessage) => {
+    const candidateUrl = (msg.linkUrl || '').trim() || extractFirstUrl(msg.text || '');
+    if (!candidateUrl) return;
+
+    const preview = generateLinkPreview(
+      candidateUrl,
+      msg.linkCategory || activeChannel.defaultCreationCategory
+    );
+
+    const refreshedFields: Partial<HubMessage> = {
+      linkUrl: preview.url,
+      linkTitle: preview.title,
+      linkDescription: preview.description,
+      linkCategory: preview.category,
+      linkDomain: preview.domain,
+      coverImageUrl: preview.defaultCoverUrl,
+    };
+
+    const applyRefresh = (item: HubMessage): HubMessage =>
+      item.id === msg.id ? { ...item, ...refreshedFields } : item;
+
+    setFirestoreMessages((prev) => prev.map(applyRefresh));
+    setOptimisticMessages((prev) => prev.map(applyRefresh));
+    setAllShowcaseMessages((prev) => prev.map(applyRefresh));
+    setContextMenuState(null);
+    setActiveActionMessageId(null);
+    setComposerNotice(`Link preview refreshed for ${preview.domain}!`);
+    window.setTimeout(() => setComposerNotice(null), 3500);
+
+    if (currentUser) {
+      try {
+        await updateDoc(doc(db, 'messages', msg.id), {
+          linkUrl: preview.url,
+          linkTitle: preview.title.slice(0, 160),
+          linkDescription: preview.description.slice(0, 600),
+          linkCategory: preview.category,
+          linkDomain: preview.domain,
+          coverImageUrl: preview.defaultCoverUrl.slice(0, 350000),
+        });
+      } catch {
+        // Local state already updated even if user lacks remote write permission
+      }
+    }
+  };
+
+  // Forward a message (and its resolved link preview) to any accessible channel
+  const handleExecuteForwardMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forwardingMessage || !currentUser || !builderProfile) return;
+
+    setIsForwardingMessage(true);
+    try {
+      const effectiveRole: 'member' | 'moderator' | 'admin' = isSuperAdmin
+        ? 'admin'
+        : isCurrentChannelModerator
+          ? 'moderator'
+          : builderProfile.role || 'member';
+
+      const chosenAvatarId =
+        builderProfile.avatarUrl || getDefaultPresetAvatar(currentUser.uid).id;
+      const safeAuthorName = (
+        builderProfile.displayName ||
+        currentUser.displayName ||
+        'Builder'
+      ).slice(0, 60);
+      const safeAuthorColor = (builderProfile.avatarColor || '#FFF025').slice(0, 30);
+      const nowMillis = Date.now();
+
+      const notePrefix = forwardNoteText.trim()
+        ? `${filterProfanity(forwardNoteText.trim()).filteredText}\n\n`
+        : '';
+      const forwardedBody = `${notePrefix}↪ Forwarded from @${forwardingMessage.authorName}:\n${forwardingMessage.text}`;
+      const resolvedLink = resolveMessageLinkPreview(
+        forwardingMessage,
+        activeChannel.defaultCreationCategory
+      );
+
+      const targetChannel = (forwardTargetChannelId || activeStreamId || 'general-chat').slice(
+        0,
+        128
+      );
+
+      const payload: Record<string, unknown> = {
+        channelId: targetChannel,
+        authorId: currentUser.uid,
+        authorName: safeAuthorName,
+        authorAvatar: chosenAvatarId.slice(0, 4000),
+        authorColor: safeAuthorColor,
+        authorRole: effectiveRole,
+        text: forwardedBody.slice(0, 2000),
+        hadProfanity: false,
+        reactions: {},
+        threadCount: 0,
+        createdAtMillis: nowMillis,
+        createdAt: serverTimestamp(),
+      };
+
+      if (resolvedLink) {
+        payload.linkUrl = resolvedLink.linkUrl;
+        payload.linkTitle = resolvedLink.linkTitle.slice(0, 160);
+        payload.linkDescription = resolvedLink.linkDescription.slice(0, 600);
+        payload.linkCategory = resolvedLink.linkCategory;
+        payload.linkDomain = resolvedLink.linkDomain;
+        payload.coverImageUrl = resolvedLink.coverImageUrl.slice(0, 350000);
+      }
+
+      const newMsgRef = doc(collection(db, 'messages'));
+      const nowDateObj = new Date(nowMillis);
+      const optimisticForward: HubMessage = {
+        id: newMsgRef.id,
+        channelId: targetChannel,
+        authorId: currentUser.uid,
+        authorName: safeAuthorName,
+        authorAvatar: chosenAvatarId.slice(0, 4000),
+        authorColor: safeAuthorColor,
+        authorRole: effectiveRole,
+        text: String(payload.text),
+        hadProfanity: false,
+        linkUrl: resolvedLink?.linkUrl,
+        linkTitle: resolvedLink?.linkTitle,
+        linkDescription: resolvedLink?.linkDescription,
+        linkCategory: resolvedLink?.linkCategory,
+        linkDomain: resolvedLink?.linkDomain,
+        coverImageUrl: resolvedLink?.coverImageUrl,
+        reactions: {},
+        userReactions: {},
+        isPinned: false,
+        threadCount: 0,
+        createdAtMillis: nowMillis,
+        timeLabel: `${String(nowDateObj.getHours()).padStart(2, '0')}:${String(
+          nowDateObj.getMinutes()
+        ).padStart(2, '0')}`,
+      };
+
+      if (targetChannel === activeStreamId) {
+        setOptimisticMessages((prev) => [...prev, optimisticForward]);
+      } else if (targetChannel.includes('__group__')) {
+        const [parentCh, subId] = targetChannel.split('__group__');
+        setActiveChannelId(parentCh || 'general-chat');
+        setActiveSubGroupId(subId || null);
+      } else {
+        setActiveSubGroupId(null);
+        setActiveChannelId(targetChannel);
+      }
+
+      await setDoc(newMsgRef, payload);
+      setForwardingMessage(null);
+      setForwardNoteText('');
+      setComposerNotice('Message forwarded!');
+      window.setTimeout(() => setComposerNotice(null), 3500);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'messages');
+    } finally {
+      setIsForwardingMessage(false);
     }
   };
 
@@ -2257,7 +2691,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       }
       onProfileUpdated(profile);
     } catch (err) {
-      console.error('Google Sign-In error:', err);
+      console.warn('Google Sign-In warning:', err);
       onOpenAuthModal('signin');
     }
   };
@@ -2765,6 +3199,65 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     [combinedChannelMessages]
   );
 
+  // Progressive window of visible messages: only show the last few messages initially,
+  // and reveal older batches one after another as the user scrolls up.
+  const visibleMessageWindow = React.useMemo(
+    () =>
+      computeVisibleMessageWindow(
+        combinedChannelMessages,
+        visibleMessageCount,
+        SCROLL_UP_LOAD_BATCH_SIZE
+      ),
+    [combinedChannelMessages, visibleMessageCount]
+  );
+
+  const canLoadOlderMessages =
+    visibleMessageWindow.hasOlderMessages || hasMoreServerMessages;
+
+  // Load the next batch of older messages while preserving the user's scroll position
+  const handleLoadOlderMessages = () => {
+    if (isFetchingOlderBatchRef.current || !canLoadOlderMessages) return;
+    isFetchingOlderBatchRef.current = true;
+    setIsLoadingOlderMessages(true);
+
+    const container = chatScrollContainerRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
+    const prevScrollTop = container?.scrollTop ?? 0;
+
+    const nextVisible = visibleMessageWindow.nextVisibleCount;
+    setVisibleMessageCount((prev) => Math.max(prev + SCROLL_UP_LOAD_BATCH_SIZE, nextVisible));
+
+    if (
+      !visibleMessageWindow.hasOlderMessages ||
+      nextVisible >= combinedChannelMessages.length
+    ) {
+      if (hasMoreServerMessages) {
+        setFirestoreFetchLimit((prev) => prev + 15);
+      }
+    }
+
+    window.requestAnimationFrame(() => {
+      const el = chatScrollContainerRef.current;
+      if (el && prevScrollHeight > 0) {
+        const heightDelta = el.scrollHeight - prevScrollHeight;
+        if (heightDelta > 0) {
+          el.scrollTop = prevScrollTop + heightDelta;
+        }
+      }
+      window.setTimeout(() => {
+        isFetchingOlderBatchRef.current = false;
+        setIsLoadingOlderMessages(false);
+      }, 220);
+    });
+  };
+
+  const handleMessageStreamScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop <= 48 && canLoadOlderMessages && !isFetchingOlderBatchRef.current) {
+      handleLoadOlderMessages();
+    }
+  };
+
   // Smoothly scroll to a replied-to, tagged, or pinned message and highlight it
   const handleJumpToMessage = (
     replyToId?: string,
@@ -2782,23 +3275,33 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       window.setTimeout(() => setComposerNotice(null), 3500);
       return;
     }
-    const el = document.getElementById(`chat-msg-${targetId}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setHighlightedMessageId(targetId);
-      window.setTimeout(() => {
-        setHighlightedMessageId((prev) => (prev === targetId ? null : prev));
-      }, 2600);
-    } else {
-      setComposerNotice('Original message is not currently visible.');
-      window.setTimeout(() => setComposerNotice(null), 3500);
+
+    const targetIdx = combinedChannelMessages.findIndex((m) => m.id === targetId);
+    const neededCount =
+      targetIdx >= 0 ? combinedChannelMessages.length - targetIdx + 2 : visibleMessageCount;
+    if (neededCount > visibleMessageCount) {
+      setVisibleMessageCount(neededCount);
     }
+
+    window.setTimeout(() => {
+      const el = document.getElementById(`chat-msg-${targetId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedMessageId(targetId);
+        window.setTimeout(() => {
+          setHighlightedMessageId((prev) => (prev === targetId ? null : prev));
+        }, 2600);
+      } else {
+        setComposerNotice('Original message is not currently visible.');
+        window.setTimeout(() => setComposerNotice(null), 3500);
+      }
+    }, 40);
   };
 
-  // Annotate messages with Discord-style consecutive grouping metadata
+  // Annotate ONLY the visible message window with Discord-style consecutive grouping metadata
   const groupedMessages = React.useMemo(
-    () => annotateMessageGrouping(combinedChannelMessages),
-    [combinedChannelMessages]
+    () => annotateMessageGrouping(visibleMessageWindow.visibleMessages),
+    [visibleMessageWindow.visibleMessages]
   );
 
   // Typing users in current stream (excluding self)
@@ -3690,8 +4193,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   </div>
                 </div>
               ) : (
-                /* Scrollable Real-Time Message Stream with Discord-Style Consecutive Grouping */
+                /* Scrollable Real-Time Message Stream with Progressive Scroll-Up Loading & Consecutive Grouping */
                 <div
+                  ref={chatScrollContainerRef}
+                  onScroll={handleMessageStreamScroll}
                   onClick={() => setActiveActionMessageId(null)}
                   className="flex-1 overflow-y-auto hub-scroll px-3 sm:px-6 py-4 select-text"
                 >
@@ -3714,6 +4219,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     </div>
                   ) : (
                     <div className="space-y-0.5">
+                      {canLoadOlderMessages ? (
+                        <div className="flex justify-center pb-3 pt-1">
+                          <button
+                            type="button"
+                            onClick={handleLoadOlderMessages}
+                            disabled={isLoadingOlderMessages}
+                            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-mono text-white/70 hover:text-[#FFF025] transition-colors cursor-pointer"
+                          >
+                            <span>
+                              {isLoadingOlderMessages
+                                ? 'Loading previous messages...'
+                                : visibleMessageWindow.hiddenOlderCount > 0
+                                  ? `↑ Scroll up or tap to load previous messages (${visibleMessageWindow.hiddenOlderCount} older)`
+                                  : '↑ Scroll up or tap to load older messages'}
+                            </span>
+                          </button>
+                        </div>
+                      ) : combinedChannelMessages.length > INITIAL_VISIBLE_MESSAGES_COUNT ? (
+                        <div className="text-center pb-3 pt-1">
+                          <span className="inline-block px-3 py-1 rounded-full bg-white/[0.03] border border-white/5 text-[10px] font-mono text-white/40">
+                            Beginning of #{activeChannel.name} history
+                          </span>
+                        </div>
+                      ) : null}
                       {groupedMessages.map(({ message: msg, isFirstInGroup }) => {
                         const isOwnMessage = currentUser?.uid === msg.authorId;
                         const resolvedAvatarUrl = getLiveUserAvatarUrl(
@@ -3745,12 +4274,26 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           swipingMessageState?.id === msg.id
                             ? swipingMessageState.offsetPx
                             : 0;
+                        const resolvedLink = resolveMessageLinkPreview(
+                          msg,
+                          activeChannel.defaultCreationCategory
+                        );
 
                         return (
                           <div
                             key={msg.id}
                             id={`chat-msg-${msg.id}`}
                             data-grouped={isFirstInGroup ? 'false' : 'true'}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setActiveActionMessageId(null);
+                              setContextMenuState({
+                                msg,
+                                x: e.clientX,
+                                y: e.clientY,
+                              });
+                            }}
                             onTouchStart={(e) => {
                               if (e.touches.length !== 1) return;
                               const t = e.touches[0];
@@ -3934,17 +4477,25 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                       </span>
                                     </div>
 
-                                    {/* Mobile / Touch Action Menu Trigger */}
+                                    {/* Action Dropdown Menu Trigger */}
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setActiveActionMessageId((prev) =>
-                                          prev === msg.id ? null : msg.id
+                                        const rect = e.currentTarget.getBoundingClientRect();
+                                        setActiveActionMessageId(null);
+                                        setContextMenuState((prev) =>
+                                          prev?.msg.id === msg.id
+                                            ? null
+                                            : {
+                                                msg,
+                                                x: rect.left - 180,
+                                                y: rect.bottom + 6,
+                                              }
                                         );
                                       }}
                                       aria-label="Message Actions"
-                                      title="Message Actions (Reply, Edit, Delete, React)"
+                                      title="Message Actions (Right-click or click for Reply, Forward, Edit, Link Preview, Delete)"
                                       className="p-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
                                     >
                                       <MoreHorizontal className="w-4 h-4" />
@@ -3952,7 +4503,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 )}
 
-                                {/* Multi-Line Message Edit Textarea OR Rendered Message Text */}
+                                {/* Multi-Line Message & Link Edit Form OR Rendered Message Text */}
                                 {isEditingThisMessage ? (
                                   <form
                                     onSubmit={(e) => {
@@ -3960,7 +4511,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                       handleSaveEditMessage(msg);
                                     }}
                                     onClick={(e) => e.stopPropagation()}
-                                    className="mt-1 space-y-2 max-w-xl"
+                                    className="mt-1.5 space-y-2.5 max-w-xl p-3 rounded-2xl bg-[#12141c] border border-[#FFF025]/50 shadow-xl"
                                   >
                                     <div className="relative">
                                       <MentionAutocompletePopover
@@ -3979,17 +4530,174 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         )}
                                         autoFocus
                                         value={editingMessageText}
-                                        onChange={(e) => setEditingMessageText(e.target.value)}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Escape') {
-                                            setEditingMessageId(null);
-                                            setEditingMessageText('');
+                                        onChange={(e) => {
+                                          const nextText = e.target.value;
+                                          setEditingMessageText(nextText);
+                                          const detectedInEdit = extractFirstUrl(nextText);
+                                          if (detectedInEdit && !editingLinkUrl) {
+                                            const prev = generateLinkPreview(
+                                              detectedInEdit,
+                                              editingLinkCategory
+                                            );
+                                            setEditingLinkUrl(prev.url);
+                                            setEditingLinkTitle(prev.title);
+                                            setEditingLinkDesc(prev.description);
+                                            setEditingLinkCategory(prev.category);
+                                            setEditingShowLinkFields(true);
                                           }
                                         }}
-                                        placeholder="Edit message (press Enter for a new line, click Save when done)..."
-                                        className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-[#FFF025] text-sm font-mono text-white focus:outline-none resize-y"
+                                        onKeyDown={(e) => {
+                                          const action = evaluateChatComposerKeyDown({
+                                            key: e.key,
+                                            ctrlKey: e.ctrlKey,
+                                            metaKey: e.metaKey,
+                                            shiftKey: e.shiftKey,
+                                            isComposing: e.nativeEvent.isComposing,
+                                          });
+                                          if (action === 'cancel') {
+                                            setEditingMessageId(null);
+                                            setEditingMessageText('');
+                                            setEditingShowLinkFields(false);
+                                          } else if (action === 'send') {
+                                            e.preventDefault();
+                                            handleSaveEditMessage(msg);
+                                          }
+                                        }}
+                                        placeholder="Edit message (Enter for new line, Ctrl+Enter to save)..."
+                                        className="w-full px-3 py-2 rounded-xl bg-[#0b0c10] border border-white/20 focus:border-[#FFF025] text-sm font-mono text-white focus:outline-none resize-y"
                                       />
                                     </div>
+
+                                    {/* Toggle / Edit Attached Link & Link Preview Fields */}
+                                    {editingShowLinkFields ? (
+                                      <div className="p-2.5 rounded-xl bg-black/40 border border-white/15 space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-[10px] font-black uppercase tracking-wider text-[#FFF025] flex items-center gap-1.5">
+                                            <LinkIcon className="w-3 h-3" />
+                                            <span>Edit Link & Preview Details</span>
+                                          </span>
+                                          <div className="flex items-center gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                const targetUrl =
+                                                  editingLinkUrl.trim() ||
+                                                  extractFirstUrl(editingMessageText) ||
+                                                  '';
+                                                if (targetUrl) {
+                                                  const fresh = generateLinkPreview(
+                                                    targetUrl,
+                                                    editingLinkCategory
+                                                  );
+                                                  setEditingLinkUrl(fresh.url);
+                                                  setEditingLinkTitle(fresh.title);
+                                                  setEditingLinkDesc(fresh.description);
+                                                  setEditingLinkCategory(fresh.category);
+                                                }
+                                              }}
+                                              className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/15 text-[10px] font-bold text-sky-300 flex items-center gap-1 cursor-pointer"
+                                              title="Re-check URL and regenerate preview title & description"
+                                            >
+                                              <RefreshCw className="w-2.5 h-2.5" />
+                                              <span>Re-check Preview</span>
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setEditingLinkUrl('');
+                                                setEditingLinkTitle('');
+                                                setEditingLinkDesc('');
+                                                setEditingShowLinkFields(false);
+                                              }}
+                                              className="text-[10px] font-bold text-rose-400 hover:underline cursor-pointer px-1"
+                                            >
+                                              Remove Link
+                                            </button>
+                                          </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                                          <div className="sm:col-span-4">
+                                            <select
+                                              value={editingLinkCategory}
+                                              onChange={(e) =>
+                                                setEditingLinkCategory(
+                                                  e.target.value as CreationCategory
+                                                )
+                                              }
+                                              className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-white/15 text-xs text-white focus:outline-none focus:border-[#FFF025]"
+                                            >
+                                              <option value="game">🎮 Game Link</option>
+                                              <option value="website">🌐 Website Link</option>
+                                              <option value="video">🎬 Video Link</option>
+                                              <option value="novel">📚 Novel / Story Link</option>
+                                              <option value="other">🔗 General Link</option>
+                                            </select>
+                                          </div>
+                                          <div className="sm:col-span-8">
+                                            <input
+                                              type="text"
+                                              value={editingLinkUrl}
+                                              onChange={(e) => {
+                                                const nextUrl = e.target.value;
+                                                setEditingLinkUrl(nextUrl);
+                                                if (nextUrl.trim()) {
+                                                  const fresh = generateLinkPreview(
+                                                    nextUrl,
+                                                    editingLinkCategory
+                                                  );
+                                                  setEditingLinkTitle(fresh.title);
+                                                  setEditingLinkDesc(fresh.description);
+                                                  setEditingLinkCategory(fresh.category);
+                                                }
+                                              }}
+                                              placeholder="https://your-link-url.com"
+                                              className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                          <input
+                                            type="text"
+                                            value={editingLinkTitle}
+                                            onChange={(e) => setEditingLinkTitle(e.target.value)}
+                                            placeholder="Link preview title"
+                                            className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-white/15 text-xs text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]"
+                                          />
+                                          <input
+                                            type="text"
+                                            value={editingLinkDesc}
+                                            onChange={(e) => setEditingLinkDesc(e.target.value)}
+                                            placeholder="Link preview description"
+                                            className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-white/15 text-xs text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]"
+                                          />
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const detected = extractFirstUrl(editingMessageText);
+                                          if (detected) {
+                                            const prev = generateLinkPreview(
+                                              detected,
+                                              activeChannel.defaultCreationCategory
+                                            );
+                                            setEditingLinkUrl(prev.url);
+                                            setEditingLinkTitle(prev.title);
+                                            setEditingLinkDesc(prev.description);
+                                            setEditingLinkCategory(prev.category);
+                                          }
+                                          setEditingShowLinkFields(true);
+                                        }}
+                                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] font-bold text-[#FFF025] cursor-pointer"
+                                      >
+                                        <LinkIcon className="w-3 h-3" />
+                                        <span>+ Add or Edit Attached Link</span>
+                                      </button>
+                                    )}
+
                                     <div className="flex items-center gap-2 text-[11px]">
                                       <button
                                         type="submit"
@@ -3997,20 +4705,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         className="px-3 py-1 rounded-lg bg-[#FFF025] text-black font-black cursor-pointer flex items-center gap-1"
                                       >
                                         <Check className="w-3 h-3" />
-                                        <span>{isSavingMessageEdit ? 'Saving...' : 'Save'}</span>
+                                        <span>{isSavingMessageEdit ? 'Saving...' : 'Save Changes'}</span>
                                       </button>
                                       <button
                                         type="button"
                                         onClick={() => {
                                           setEditingMessageId(null);
                                           setEditingMessageText('');
+                                          setEditingShowLinkFields(false);
                                         }}
                                         className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/80 font-bold cursor-pointer"
                                       >
                                         Cancel
                                       </button>
                                       <span className="text-[10px] text-white/40 ml-auto">
-                                        Enter = new line • Click Save when done
+                                        Enter = new line • Ctrl+Enter = save
                                       </span>
                                     </div>
                                   </form>
@@ -4044,12 +4753,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         type="button"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setActiveActionMessageId((prev) =>
-                                            prev === msg.id ? null : msg.id
+                                          const rect = e.currentTarget.getBoundingClientRect();
+                                          setActiveActionMessageId(null);
+                                          setContextMenuState((prev) =>
+                                            prev?.msg.id === msg.id
+                                              ? null
+                                              : {
+                                                  msg,
+                                                  x: rect.left - 180,
+                                                  y: rect.bottom + 6,
+                                                }
                                           );
                                         }}
                                         aria-label="Message Actions"
-                                        title="Message Actions (Reply, Edit, Delete, React)"
+                                        title="Message Actions (Right-click or click for Reply, Forward, Edit, Link Preview, Delete)"
                                         className="p-1 rounded-lg text-white/40 hover:text-white hover:bg-white/10 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity cursor-pointer shrink-0"
                                       >
                                         <MoreHorizontal className="w-4 h-4" />
@@ -4058,59 +4775,83 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 )}
 
-                                {/* Rich Link Preview & Uploaded Cover Card (Rendered when Link Previews are enabled) */}
-                                {msg.linkUrl && effectiveEnableLinkPreviews && (
+                                {/* Rich Link Preview & Uploaded Cover Card (Always resolves for any attached or in-text URL, even if sent before) */}
+                                {resolvedLink && effectiveEnableLinkPreviews && (
                                   <div className="mt-2.5 max-w-xl rounded-2xl bg-[#101115] border-l-4 border-l-[#FFF025] border border-white/15 overflow-hidden shadow-lg">
                                     <div className="grid grid-cols-1 sm:grid-cols-12">
-                                      {msg.coverImageUrl && (
+                                      {resolvedLink.coverImageUrl && (
                                         <div className="sm:col-span-5 h-36 sm:h-auto bg-black/50 overflow-hidden">
                                           <img
-                                            src={msg.coverImageUrl}
-                                            alt={msg.linkTitle || 'Creation preview'}
+                                            src={resolvedLink.coverImageUrl}
+                                            alt={resolvedLink.linkTitle || 'Creation preview'}
                                             className="w-full h-full object-cover"
                                           />
                                         </div>
                                       )}
                                       <div
                                         className={`${
-                                          msg.coverImageUrl ? 'sm:col-span-7' : 'sm:col-span-12'
+                                          resolvedLink.coverImageUrl ? 'sm:col-span-7' : 'sm:col-span-12'
                                         } p-3.5 flex flex-col justify-between gap-2`}
                                       >
                                         <div>
                                           <div className="flex items-center justify-between gap-2 mb-1">
                                             <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-white/10 text-[#FFF025] font-bold">
-                                              {msg.linkCategory || 'creation'}
+                                              {resolvedLink.linkCategory || 'creation'}
                                             </span>
-                                            <span className="text-[11px] font-mono text-white/45 truncate">
-                                              {msg.linkDomain}
-                                            </span>
+                                            <div className="flex items-center gap-1.5 min-w-0">
+                                              <span className="text-[11px] font-mono text-white/45 truncate">
+                                                {resolvedLink.linkDomain}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRefreshMessageLinkPreview(msg);
+                                                }}
+                                                title="Refresh Link Preview"
+                                                className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#FFF025] cursor-pointer"
+                                              >
+                                                <RefreshCw className="w-3 h-3" />
+                                              </button>
+                                            </div>
                                           </div>
                                           <a
-                                            href={msg.linkUrl}
+                                            href={resolvedLink.linkUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="text-sm font-bold text-sky-400 hover:underline line-clamp-1 flex items-center gap-1"
                                           >
-                                            <span>{msg.linkTitle || msg.linkUrl}</span>
+                                            <span>{resolvedLink.linkTitle || resolvedLink.linkUrl}</span>
                                             <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                                           </a>
-                                          {msg.linkDescription && (
+                                          {resolvedLink.linkDescription && (
                                             <p className="text-xs text-white/65 mt-1 line-clamp-2 leading-relaxed">
-                                              {msg.linkDescription}
+                                              {resolvedLink.linkDescription}
                                             </p>
                                           )}
                                         </div>
 
                                         <div className="pt-1 flex flex-wrap items-center gap-2">
                                           <a
-                                            href={msg.linkUrl}
+                                            href={resolvedLink.linkUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
                                             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
                                           >
-                                            <span>Open Creation</span>
+                                            <span>Open Link</span>
                                             <ExternalLink className="w-3 h-3" />
                                           </a>
+                                          {isOwnMessage && userStatus === 'active' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleStartEditMessage(msg, true)}
+                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[#FFF025] text-xs font-bold cursor-pointer"
+                                              title="Edit Link URL, Title, or Description"
+                                            >
+                                              <Pencil className="w-3 h-3" />
+                                              <span>Edit Link</span>
+                                            </button>
+                                          )}
                                           <button
                                             type="button"
                                             onClick={() => {
@@ -4159,15 +4900,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 )}
 
                                 {/* Plain Link Fallback when Link Previews are turned off by Admin */}
-                                {msg.linkUrl && !effectiveEnableLinkPreviews && (
+                                {resolvedLink && !effectiveEnableLinkPreviews && (
                                   <div className="mt-1">
                                     <a
-                                      href={msg.linkUrl}
+                                      href={resolvedLink.linkUrl}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="inline-flex items-center gap-1 text-xs font-mono text-sky-400 hover:underline"
                                     >
-                                      <span>{msg.linkUrl}</span>
+                                      <span>{resolvedLink.linkUrl}</span>
                                       <ExternalLink className="w-3 h-3" />
                                     </a>
                                   </div>
@@ -4252,6 +4993,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-white cursor-pointer shrink-0"
                               >
                                 <Reply className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setForwardingMessage(msg);
+                                  setForwardTargetChannelId(activeStreamId || 'general-chat');
+                                  setForwardNoteText('');
+                                  setActiveActionMessageId(null);
+                                }}
+                                title="Forward Message"
+                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-sky-400 cursor-pointer shrink-0"
+                              >
+                                <Forward className="w-3.5 h-3.5" />
                               </button>
 
                               <button
@@ -4458,6 +5213,66 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   </div>
                 )}
 
+                {/* Auto-Detected Live Link Preview Banner (shown when typing/pasting any URL even if attachment drawer is closed) */}
+                {!showAttachmentDrawer &&
+                  linkUrlInput &&
+                  effectiveEnableLinkPreviews &&
+                  (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator) && (
+                    <div className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-[#1a1c24] border border-[#FFF025]/40 text-xs">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <LinkIcon className="w-3.5 h-3.5 text-[#FFF025] shrink-0" />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sky-400 truncate">
+                              {linkTitleInput || linkUrlInput}
+                            </span>
+                            <span className="text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-white/10 text-[#FFF025]">
+                              {linkCategoryInput}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-white/55 truncate">{linkUrlInput}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const fresh = generateLinkPreview(linkUrlInput, linkCategoryInput);
+                            setLinkUrlInput(fresh.url);
+                            setLinkTitleInput(fresh.title);
+                            setLinkDescInput(fresh.description);
+                            setLinkCategoryInput(fresh.category);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/80 font-bold text-[11px] flex items-center gap-1 cursor-pointer"
+                          title="Re-check Link Preview"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span className="hidden sm:inline">Re-check</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowAttachmentDrawer(true)}
+                          className="px-2.5 py-1 rounded-lg bg-[#FFF025]/20 hover:bg-[#FFF025]/30 text-[#FFF025] font-bold text-[11px] cursor-pointer"
+                        >
+                          Customize Link
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            autoDetectedUrlRef.current = '';
+                            setLinkUrlInput('');
+                            setLinkTitleInput('');
+                            setLinkDescInput('');
+                          }}
+                          className="p-1 text-white/45 hover:text-white cursor-pointer"
+                          title="Dismiss Link Preview"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                 {/* Attach Link & Upload Cover Art Drawer */}
                 {showAttachmentDrawer && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator) && (
                   <div className="p-3.5 rounded-2xl bg-[#1c1e26] border border-white/15 space-y-3">
@@ -4616,6 +5431,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       disabled={!canUserSendMessageInChannel}
                       value={messageText}
                       onChange={(e) => handleInputChange(e.target.value)}
+                      onKeyDown={(e) => {
+                        const action = evaluateChatComposerKeyDown({
+                          key: e.key,
+                          ctrlKey: e.ctrlKey,
+                          metaKey: e.metaKey,
+                          shiftKey: e.shiftKey,
+                          isComposing: e.nativeEvent.isComposing,
+                        });
+                        if (action === 'send') {
+                          e.preventDefault();
+                          handleSendMessage(e as unknown as React.FormEvent);
+                        }
+                      }}
                       placeholder={
                         !currentUser
                           ? 'Sign in to send messages...'
@@ -4624,8 +5452,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             : !canUserSendMessageInChannel
                               ? 'Channel is locked or restricted'
                               : activeSubGroup
-                                ? `Message #${activeSubGroup.name} (type @ to tag, Enter for new line)...`
-                                : `Message #${activeChannel.name} (type @ to tag, Enter for new line)...`
+                                ? `Message #${activeSubGroup.name} (Enter = new line, Ctrl+Enter = send)...`
+                                : `Message #${activeChannel.name} (Enter = new line, Ctrl+Enter = send)...`
                       }
                       className="w-full px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]/70 disabled:opacity-50 resize-none leading-relaxed max-h-36 overflow-y-auto"
                     />
@@ -4643,11 +5471,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       (cooldownRemaining > 0 && !isSuperAdmin && !isCurrentChannelModerator)
                     }
                     className="p-3 rounded-xl bg-[#eab308] hover:bg-[#facc15] disabled:opacity-40 text-black font-black border border-black/30 cursor-pointer transition-transform active:scale-95 shrink-0"
-                    title="Send Message"
+                    title="Send Message (Ctrl + Enter)"
                   >
                     <Send className="w-4 h-4 stroke-[2.5]" />
                   </button>
                 </form>
+                <div className="hidden sm:flex items-center justify-between px-1 text-[10px] font-mono text-white/35">
+                  <span>Enter = new line • Ctrl + Enter = send message</span>
+                  <span>Type @ to mention a builder or @all</span>
+                </div>
               </div>
             </>
           )}
@@ -5834,9 +6666,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                       value={editingThreadReplyText}
                                       onChange={(e) => setEditingThreadReplyText(e.target.value)}
                                       onKeyDown={(e) => {
-                                        if (e.key === 'Escape') {
+                                        const action = evaluateChatComposerKeyDown({
+                                          key: e.key,
+                                          ctrlKey: e.ctrlKey,
+                                          metaKey: e.metaKey,
+                                          shiftKey: e.shiftKey,
+                                          isComposing: e.nativeEvent.isComposing,
+                                        });
+                                        if (action === 'cancel') {
                                           setEditingThreadReplyId(null);
                                           setEditingThreadReplyText('');
+                                        } else if (action === 'send') {
+                                          e.preventDefault();
+                                          handleSaveEditThreadReply(reply);
                                         }
                                       }}
                                       className="w-full px-2.5 py-1.5 rounded-lg bg-[#101218] border border-[#FFF025] text-xs font-mono text-white focus:outline-none resize-y"
@@ -5971,10 +6813,23 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       disabled={userStatus === 'suspended'}
                       value={threadInput}
                       onChange={(e) => setThreadInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        const action = evaluateChatComposerKeyDown({
+                          key: e.key,
+                          ctrlKey: e.ctrlKey,
+                          metaKey: e.metaKey,
+                          shiftKey: e.shiftKey,
+                          isComposing: e.nativeEvent.isComposing,
+                        });
+                        if (action === 'send') {
+                          e.preventDefault();
+                          handleSendThreadReply(e as unknown as React.FormEvent);
+                        }
+                      }}
                       placeholder={
                         userStatus === 'suspended'
                           ? 'Suspended (Read-Only)'
-                          : 'Reply to thread (type @ to tag, Enter for new line)...'
+                          : 'Reply to thread (Enter = new line, Ctrl+Enter = send)...'
                       }
                       className="w-full px-3 py-2 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50 resize-none leading-relaxed"
                     />
@@ -5982,6 +6837,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   <button
                     type="submit"
                     disabled={userStatus === 'suspended'}
+                    title="Send Reply (Ctrl + Enter)"
                     className="px-3.5 py-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer disabled:opacity-40 shrink-0"
                   >
                     Reply
@@ -7048,6 +7904,363 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* RIGHT-CLICK / ACTION DROPDOWN CONTEXT MENU FOR MESSAGES */}
+      {contextMenuState && (
+        <div
+          className="fixed inset-0 z-[195]"
+          onClick={() => setContextMenuState(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setContextMenuState(null);
+          }}
+        >
+          {(() => {
+            const targetMsg = contextMenuState.msg;
+            const isTargetOwn = Boolean(currentUser && currentUser.uid === targetMsg.authorId);
+            const targetResolvedLink = resolveMessageLinkPreview(
+              targetMsg,
+              activeChannel.defaultCreationCategory
+            );
+            const menuWidth = 248;
+            const menuHeight = 380;
+            const safeLeft =
+              typeof window !== 'undefined'
+                ? Math.max(12, Math.min(contextMenuState.x, window.innerWidth - menuWidth - 12))
+                : contextMenuState.x;
+            const safeTop =
+              typeof window !== 'undefined'
+                ? Math.max(12, Math.min(contextMenuState.y, window.innerHeight - menuHeight - 12))
+                : contextMenuState.y;
+
+            return (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{ left: `${safeLeft}px`, top: `${safeTop}px` }}
+                className="fixed w-60 rounded-2xl bg-[#181a22] border border-white/15 shadow-[0_16px_48px_rgba(0,0,0,0.75)] py-1.5 text-xs font-mono text-white z-[196] overflow-hidden"
+              >
+                {/* Quick Reaction Row inside Dropdown */}
+                <div className="px-2.5 py-1.5 border-b border-white/10 flex items-center justify-between gap-1">
+                  {QUICK_EMOJIS.slice(0, 6).map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => {
+                        handleToggleReaction(targetMsg, emoji);
+                        setContextMenuState(null);
+                      }}
+                      className="p-1 rounded-lg hover:bg-white/10 cursor-pointer transition-transform hover:scale-125"
+                      title={`React with ${emoji}`}
+                    >
+                      <Emote3DIcon emote={emoji} size={18} />
+                    </button>
+                  ))}
+                </div>
+
+                {/* Primary Message Actions */}
+                <div className="py-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReplyingTo(targetMsg);
+                      setContextMenuState(null);
+                      window.setTimeout(() => composerTextareaRef.current?.focus(), 50);
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
+                  >
+                    <Reply className="w-3.5 h-3.5 text-[#FFF025]" />
+                    <span>Reply to Message</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForwardingMessage(targetMsg);
+                      setForwardTargetChannelId(activeStreamId || 'general-chat');
+                      setForwardNoteText('');
+                      setContextMenuState(null);
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
+                  >
+                    <Forward className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Forward Message...</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminDrawer(false);
+                      setShowMembersDrawer(false);
+                      setActiveThreadMessage(targetMsg);
+                      setContextMenuState(null);
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Open Discussion Thread</span>
+                  </button>
+
+                  {isTargetOwn && userStatus === 'active' && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartEditMessage(targetMsg, false)}
+                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-[#FFF025] cursor-pointer font-bold"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>Edit Message{targetResolvedLink ? ' & Link' : ''}</span>
+                    </button>
+                  )}
+
+                  {isTargetOwn && userStatus === 'active' && (
+                    <button
+                      type="button"
+                      onClick={() => handleStartEditMessage(targetMsg, true)}
+                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-sky-300 cursor-pointer"
+                    >
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      <span>{targetResolvedLink ? 'Edit Link & Preview' : 'Attach Link to Message'}</span>
+                    </button>
+                  )}
+
+                  {targetResolvedLink && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleRefreshMessageLinkPreview(targetMsg)}
+                        className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-[#FFF025] cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5 text-[#FFF025]" />
+                        <span>Refresh Link Preview</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (navigator.clipboard) {
+                            navigator.clipboard.writeText(targetResolvedLink.linkUrl);
+                          }
+                          setContextMenuState(null);
+                          setComposerNotice('Link URL copied to clipboard!');
+                          window.setTimeout(() => setComposerNotice(null), 3000);
+                        }}
+                        className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-white cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5 text-white/60" />
+                        <span>Copy Link URL</span>
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (navigator.clipboard) {
+                        navigator.clipboard.writeText(targetMsg.text || '');
+                      }
+                      setContextMenuState(null);
+                      setComposerNotice('Message text copied to clipboard!');
+                      window.setTimeout(() => setComposerNotice(null), 3000);
+                    }}
+                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-white cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-white/60" />
+                    <span>Copy Message Text</span>
+                  </button>
+
+                  {(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleTogglePinMessage(targetMsg);
+                        setContextMenuState(null);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-[#FFF025] cursor-pointer"
+                    >
+                      <Pin className="w-3.5 h-3.5 text-[#FFF025]" />
+                      <span>{targetMsg.isPinned ? 'Unpin Message' : 'Pin Message'}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Moderation / Danger Zone */}
+                <div className="border-t border-white/10 pt-1">
+                  {!isTargetOwn && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleReportMessage(targetMsg);
+                        setContextMenuState(null);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-amber-500/15 flex items-center gap-2.5 text-amber-300 cursor-pointer"
+                    >
+                      <Flag className="w-3.5 h-3.5" />
+                      <span>Report Message</span>
+                    </button>
+                  )}
+
+                  {(isTargetOwn ||
+                    isSuperAdmin ||
+                    isCurrentChannelModerator ||
+                    isGlobalModerator) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleDeleteMessage(targetMsg);
+                        setContextMenuState(null);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-rose-500/20 flex items-center gap-2.5 text-rose-400 font-bold cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Message</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* FORWARD MESSAGE MODAL */}
+      {forwardingMessage && (
+        <div
+          className="fixed inset-0 z-[200] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => {
+            if (!isForwardingMessage) {
+              setForwardingMessage(null);
+              setForwardNoteText('');
+            }
+          }}
+        >
+          <form
+            onSubmit={handleExecuteForwardMessage}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl bg-[#181920] border-2 border-white/15 shadow-2xl p-6 space-y-4 text-white"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-sky-500/20 border border-sky-500/40 flex items-center justify-center text-sky-400 shrink-0">
+                  <Forward className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-display font-black text-lg text-white">Forward Message</h3>
+                  <p className="text-xs text-white/60">
+                    Share this message and its link preview to another channel.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isForwardingMessage}
+                onClick={() => {
+                  setForwardingMessage(null);
+                  setForwardNoteText('');
+                }}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-black/40 border border-white/10 p-3.5 space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-mono font-bold text-[#FFF025]">
+                  @{forwardingMessage.authorName}
+                </span>
+                <span className="text-[10px] font-mono text-white/40">
+                  {forwardingMessage.timeLabel}
+                </span>
+              </div>
+              <p className="text-xs font-mono text-white/80 line-clamp-3 whitespace-pre-wrap break-words">
+                {forwardingMessage.text}
+              </p>
+              {(forwardingMessage.linkUrl || extractFirstUrl(forwardingMessage.text)) && (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-mono text-sky-400 truncate">
+                  <LinkIcon className="w-3 h-3 shrink-0" />
+                  <span className="truncate">
+                    {forwardingMessage.linkUrl || extractFirstUrl(forwardingMessage.text)}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-white/60 mb-1">
+                  Destination Channel
+                </label>
+                <select
+                  value={forwardTargetChannelId}
+                  onChange={(e) => setForwardTargetChannelId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/15 text-xs font-mono text-white focus:outline-none focus:border-[#FFF025]"
+                >
+                  {allChannels.map((ch) => (
+                    <option key={ch.id} value={ch.id}>
+                      {ch.emoji} #{ch.name}
+                    </option>
+                  ))}
+                  {channelSubGroups.map((sg) => (
+                    <option
+                      key={sg.id}
+                      value={`${sg.channelId || activeChannelId}__group__${sg.id}`}
+                    >
+                      🔒 {sg.name} (Sub-Group)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-white/60 mb-1">
+                  Add an Optional Note
+                </label>
+                <textarea
+                  rows={2}
+                  value={forwardNoteText}
+                  onChange={(e) => setForwardNoteText(e.target.value)}
+                  onKeyDown={(e) => {
+                    const action = evaluateChatComposerKeyDown({
+                      key: e.key,
+                      ctrlKey: e.ctrlKey,
+                      metaKey: e.metaKey,
+                      shiftKey: e.shiftKey,
+                      isComposing: e.nativeEvent.isComposing,
+                    });
+                    if (action === 'send') {
+                      e.preventDefault();
+                      handleExecuteForwardMessage(e);
+                    }
+                  }}
+                  placeholder="Optional comment (Enter = new line, Ctrl+Enter = forward)..."
+                  className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isForwardingMessage}
+                onClick={() => {
+                  setForwardingMessage(null);
+                  setForwardNoteText('');
+                }}
+                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white/85 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isForwardingMessage}
+                className="px-5 py-2 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer transition-transform active:scale-95 flex items-center gap-1.5"
+              >
+                <Forward className="w-3.5 h-3.5" />
+                <span>{isForwardingMessage ? 'Forwarding...' : 'Forward Message'}</span>
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

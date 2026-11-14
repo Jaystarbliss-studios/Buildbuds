@@ -17,6 +17,9 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDoc,
   getDocs,
@@ -69,7 +72,26 @@ setPersistence(auth, browserLocalPersistence).catch((err) => {
   console.warn('Auth persistence setup warning:', err);
 });
 
-export const db = getFirestore(app, firestoreDatabaseId);
+function createFirestoreInstance() {
+  try {
+    if (typeof window !== 'undefined' && 'indexedDB' in window) {
+      return initializeFirestore(
+        app,
+        {
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+        },
+        firestoreDatabaseId
+      );
+    }
+  } catch {
+    // Fallback if already initialized or IndexedDB unavailable
+  }
+  return getFirestore(app, firestoreDatabaseId);
+}
+
+export const db = createFirestoreInstance();
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
@@ -135,6 +157,17 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export function isFirestoreQuotaError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error || '');
+  const code = (error as { code?: string } | null)?.code || '';
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('Quota exceeded') ||
+    msg.includes('resource-exhausted')
+  );
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
@@ -159,7 +192,11 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  if (isFirestoreQuotaError(error)) {
+    console.warn('Firestore quota warning:', JSON.stringify(errInfo));
+  } else {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  }
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -439,6 +476,32 @@ export function buildFallbackBuilderProfile(
   };
 }
 
+const PROFILE_CACHE_PREFIX = 'buildbuds_cached_profile_';
+
+export function saveCachedBuilderProfile(uid: string, profile: BuilderProfile): void {
+  if (!uid || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`${PROFILE_CACHE_PREFIX}${uid}`, JSON.stringify(profile));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function loadCachedBuilderProfile(uid: string): BuilderProfile | null {
+  if (!uid || typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${PROFILE_CACHE_PREFIX}${uid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as BuilderProfile;
+    if (parsed && parsed.uid === uid && parsed.displayName) {
+      return parsed;
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null;
+}
+
 // Check if a user already has a registered BuilderProfile in the database without creating one
 export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
   const userRef = doc(db, 'users', user.uid);
@@ -479,12 +542,25 @@ export async function checkExistingBuilderProfile(user: User): Promise<BuilderPr
           // Non-blocking if merge fails
         }
       }
+      saveCachedBuilderProfile(user.uid, normalized);
       return normalized;
     }
     return null;
   } catch (err) {
-    console.warn('Could not read existing user profile:', err);
-    return null;
+    console.warn('Could not read existing user profile, checking local cache:', err);
+    // CRITICAL: If Firestore read failed due to quota or offline network, NEVER return `null`
+    // as if the user is a brand-new unapproved account (which would overwrite their student access)!
+    const cached = loadCachedBuilderProfile(user.uid);
+    if (cached) {
+      return cached;
+    }
+    // Preserve access for existing signed-in users during temporary Firestore read quota exhaustion
+    const fallback = buildFallbackBuilderProfile(user, {
+      accountType: 'student',
+      isApprovedStudent: true,
+      studentAccessStatus: 'approved',
+    });
+    return fallback;
   }
 }
 
@@ -498,8 +574,14 @@ export async function verifyAndRestoreStudentHubAccess(
   user: User,
   profile: BuilderProfile
 ): Promise<BuilderProfile> {
-  if (isSuperAdminUser(user, profile)) return profile;
-  if (profile.status === 'banned' || profile.status === 'suspended') return profile;
+  if (isSuperAdminUser(user, profile)) {
+    saveCachedBuilderProfile(user.uid, profile);
+    return profile;
+  }
+  if (profile.status === 'banned' || profile.status === 'suspended') {
+    saveCachedBuilderProfile(user.uid, profile);
+    return profile;
+  }
 
   try {
     // 1. Check communityMemberships/{uid}
@@ -507,6 +589,7 @@ export async function verifyAndRestoreStudentHubAccess(
     if (memSnap.exists()) {
       const memData = memSnap.data();
       if (memData.status === 'revoked' || memData.status === 'suspended') {
+        saveCachedBuilderProfile(user.uid, profile);
         return profile;
       }
       if (memData.status === 'approved') {
@@ -526,8 +609,10 @@ export async function verifyAndRestoreStudentHubAccess(
             },
             { merge: true }
           ).catch(() => {});
+          saveCachedBuilderProfile(user.uid, healed);
           return healed;
         }
+        saveCachedBuilderProfile(user.uid, profile);
         return profile;
       }
     }
@@ -542,6 +627,7 @@ export async function verifyAndRestoreStudentHubAccess(
         reqData.status === 'pending' ||
         reqData.status === 'more_information_required'
       ) {
+        saveCachedBuilderProfile(user.uid, profile);
         return profile;
       }
       if (reqData.status === 'approved') {
@@ -560,12 +646,14 @@ export async function verifyAndRestoreStudentHubAccess(
           },
           { merge: true }
         ).catch(() => {});
+        saveCachedBuilderProfile(user.uid, healed);
         return healed;
       }
     }
 
     // If explicitly revoked by Admin on users/{uid}, do not auto-restore
     if (profile.isApprovedStudent === false || profile.studentAccessStatus === 'rejected') {
+      saveCachedBuilderProfile(user.uid, profile);
       return profile;
     }
 
@@ -575,6 +663,7 @@ export async function verifyAndRestoreStudentHubAccess(
       profile.studentAccessStatus === 'approved' ||
       profile.accountType === 'student'
     ) {
+      saveCachedBuilderProfile(user.uid, profile);
       return profile;
     }
 
@@ -598,12 +687,14 @@ export async function verifyAndRestoreStudentHubAccess(
         },
         { merge: true }
       ).catch(() => {});
+      saveCachedBuilderProfile(user.uid, healed);
       return healed;
     }
   } catch {
-    // Ignore permission errors if unapproved user cannot read `/messages`
+    // Ignore permission or quota errors
   }
 
+  saveCachedBuilderProfile(user.uid, profile);
   return profile;
 }
 
@@ -658,6 +749,7 @@ export async function ensurePublicUserProfile(
         createdAt: existing.createdAt,
         updatedAt: new Date().toISOString(),
       });
+      saveCachedBuilderProfile(user.uid, updatedExisting);
       try {
         await setDoc(doc(db, 'users', user.uid), updatedExisting, { merge: true });
       } catch (err) {
@@ -691,6 +783,7 @@ export async function ensurePublicUserProfile(
     isApprovedStudent: isAdmin ? true : false,
   });
 
+  saveCachedBuilderProfile(user.uid, newProfile);
   try {
     await setDoc(userRef, newProfile);
   } catch (err) {

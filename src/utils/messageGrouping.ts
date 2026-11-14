@@ -303,3 +303,76 @@ export function buildPinMessagePatch(
   };
 }
 
+export const INITIAL_VISIBLE_MESSAGES_COUNT = 12;
+export const SCROLL_UP_LOAD_BATCH_SIZE = 8;
+
+export interface VisibleMessageWindow<T> {
+  visibleMessages: T[];
+  hiddenOlderCount: number;
+  hasOlderMessages: boolean;
+  nextVisibleCount: number;
+}
+
+/**
+ * Slices a chronologically sorted message stream so only the most recent `visibleCount`
+ * messages are rendered initially, and older messages are progressively revealed in batches
+ * as the user scrolls up toward the top of the conversation.
+ */
+export function computeVisibleMessageWindow<T>(
+  allMessages: T[],
+  visibleCount: number = INITIAL_VISIBLE_MESSAGES_COUNT,
+  batchSize: number = SCROLL_UP_LOAD_BATCH_SIZE
+): VisibleMessageWindow<T> {
+  const safeCount = Math.max(1, visibleCount);
+  const total = allMessages.length;
+  if (total <= safeCount) {
+    return {
+      visibleMessages: allMessages,
+      hiddenOlderCount: 0,
+      hasOlderMessages: false,
+      nextVisibleCount: total,
+    };
+  }
+
+  const startIndex = total - safeCount;
+  const visibleMessages = allMessages.slice(startIndex);
+  const hiddenOlderCount = startIndex;
+  return {
+    visibleMessages,
+    hiddenOlderCount,
+    hasOlderMessages: hiddenOlderCount > 0,
+    nextVisibleCount: Math.min(total, safeCount + Math.max(1, batchSize)),
+  };
+}
+
+export interface ComposerKeyDownInput {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  isComposing?: boolean;
+}
+
+export type ComposerKeyDownAction = 'send' | 'newline' | 'cancel' | 'noop';
+
+/**
+ * Evaluates keyboard shortcuts inside chat, thread reply, edit, and comment textareas:
+ * - Plain `Enter` (or `Shift+Enter`): returns `'newline'` so the textarea inserts a new line naturally.
+ * - `Ctrl+Enter` (or `Cmd+Enter` on macOS): returns `'send'` so the message is sent immediately.
+ * - `Escape`: returns `'cancel'`.
+ */
+export function evaluateChatComposerKeyDown(
+  input: ComposerKeyDownInput
+): ComposerKeyDownAction {
+  if (input.isComposing) return 'noop';
+  if (input.key === 'Escape') return 'cancel';
+  if (input.key === 'Enter') {
+    if (input.ctrlKey || input.metaKey) {
+      return 'send';
+    }
+    return 'newline';
+  }
+  return 'noop';
+}
+
+

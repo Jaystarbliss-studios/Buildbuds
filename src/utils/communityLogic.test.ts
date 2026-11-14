@@ -147,50 +147,66 @@ test('validateJoinForm validates required student onboarding fields', () => {
   assert.equal(Object.keys(valid.errors).length, 0);
 });
 
-test('toggleMessageReaction restricts each user to 1 reaction per emoji per message', () => {
+test('toggleMessageReaction restricts each user to strictly 1 reaction per message across all emojis', () => {
   const user1 = 'user-abc';
   const user2 = 'user-xyz';
-  const emoji = '🔥';
+  const fire = '🔥';
+  const rocket = '🚀';
 
-  // 1. First reaction by User 1 (toggle ON)
+  // 1. First reaction by User 1 on 🔥 (toggle ON)
   const step1 = toggleMessageReaction({
     reactions: {},
     userReactions: {},
-    emoji,
+    emoji: fire,
     userId: user1,
   });
 
-  assert.equal(step1.reactions[emoji], 1);
-  assert.deepEqual(step1.userReactions[emoji], [user1]);
+  assert.equal(step1.reactions[fire], 1);
+  assert.deepEqual(step1.userReactions[fire], [user1]);
   assert.equal(step1.hasReacted, true);
 
-  // 2. Second reaction by User 1 (toggle OFF)
-  const step2 = toggleMessageReaction({
+  // 2. User 1 clicks a DIFFERENT emoji 🚀 on the same message -> moves reaction from 🔥 to 🚀 (never 2 reactions!)
+  const stepSwitch = toggleMessageReaction({
     reactions: step1.reactions,
     userReactions: step1.userReactions,
-    emoji,
+    emoji: rocket,
     userId: user1,
   });
 
-  assert.equal(step2.reactions[emoji], undefined);
-  assert.equal(step2.userReactions[emoji], undefined);
+  assert.equal(stepSwitch.reactions[fire], undefined);
+  assert.equal(stepSwitch.userReactions[fire], undefined);
+  assert.equal(stepSwitch.reactions[rocket], 1);
+  assert.deepEqual(stepSwitch.userReactions[rocket], [user1]);
+  assert.equal(stepSwitch.hasReacted, true);
+
+  // 3. User 1 clicks 🚀 again (toggle OFF)
+  const step2 = toggleMessageReaction({
+    reactions: stepSwitch.reactions,
+    userReactions: stepSwitch.userReactions,
+    emoji: rocket,
+    userId: user1,
+  });
+
+  assert.equal(step2.reactions[rocket], undefined);
+  assert.equal(step2.userReactions[rocket], undefined);
   assert.equal(step2.hasReacted, false);
 
-  // 3. User 1 reacts again, then User 2 reacts
+  // 4. User 1 reacts with 🔥, then User 2 reacts with 🔥
   const step3 = toggleMessageReaction({
     reactions: step2.reactions,
     userReactions: step2.userReactions,
-    emoji,
+    emoji: fire,
     userId: user1,
   });
 
   const step4 = toggleMessageReaction({
     reactions: step3.reactions,
     userReactions: step3.userReactions,
-    emoji,
+    emoji: fire,
     userId: user2,
   });
 
-  assert.equal(step4.reactions[emoji], 2);
-  assert.deepEqual(step4.userReactions[emoji], [user1, user2]);
+  assert.equal(step4.reactions[fire], 2);
+  assert.deepEqual(step4.userReactions[fire], [user1, user2]);
 });
+

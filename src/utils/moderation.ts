@@ -67,9 +67,35 @@ const DEFAULT_COVERS: Record<CreationCategory, string> = {
   other: '/assets/aistudio/extracted/card-pixel.png',
 };
 
+export function cleanExtractedUrl(raw: string): string {
+  // Strip trailing sentence punctuation that is not part of the URL
+  let cleaned = raw.trim().replace(/[.,!?;:'"\])>]+$/, '');
+  if (!/^https?:\/\//i.test(cleaned)) {
+    cleaned = `https://${cleaned}`;
+  }
+  return cleaned;
+}
+
 export function extractFirstUrl(text: string): string | null {
-  const match = text.match(/https?:\/\/[^\s<>"]+/i);
-  return match ? match[0] : null;
+  if (!text) return null;
+  // 1. Explicit http:// or https:// URL
+  const explicitMatch = text.match(/https?:\/\/[^\s<>"]+/i);
+  if (explicitMatch) {
+    return cleanExtractedUrl(explicitMatch[0]);
+  }
+  // 2. www. domain URL
+  const wwwMatch = text.match(/(?:^|\s)(www\.[^\s<>"]+)/i);
+  if (wwwMatch) {
+    return cleanExtractedUrl(wwwMatch[1]);
+  }
+  // 3. Bare domain URLs for common creator platforms & TLDs (avoiding @mentions and emails)
+  const bareMatch = text.match(
+    /(?:^|\s)((?![a-z0-9._%+-]+@)(?:[a-z0-9-]+\.)+(?:vercel\.app|netlify\.app|github\.io|github\.com|itch\.io|scratch\.mit\.edu|roblox\.com|youtube\.com|youtu\.be|vimeo\.com|loom\.com|wattpad\.com|docs\.google\.com|replit\.com|codepen\.io|codesandbox\.io|com|org|net|io|app|dev|edu|gg)(?:\/[^\s<>"]*)?)/i
+  );
+  if (bareMatch) {
+    return cleanExtractedUrl(bareMatch[1]);
+  }
+  return null;
 }
 
 export function generateLinkPreview(
@@ -78,17 +104,16 @@ export function generateLinkPreview(
   customTitle?: string,
   customDescription?: string
 ): LinkPreviewMetadata {
-  let normalizedUrl = rawUrl.trim();
-  if (!/^https?:\/\//i.test(normalizedUrl)) {
-    normalizedUrl = `https://${normalizedUrl}`;
-  }
+  const normalizedUrl = cleanExtractedUrl(rawUrl);
 
   let domain = 'buildbuds.community';
   let pathname = '';
+  let searchParams: URLSearchParams | null = null;
   try {
     const parsed = new URL(normalizedUrl);
     domain = parsed.hostname.replace(/^www\./i, '');
     pathname = parsed.pathname.replace(/^\/+|\/+$/g, '');
+    searchParams = parsed.searchParams;
   } catch {
     domain = 'creator-link.app';
   }
@@ -97,7 +122,7 @@ export function generateLinkPreview(
   const lowerPath = pathname.toLowerCase();
 
   let detectedCategory: CreationCategory = overrideCategory || 'website';
-  if (!overrideCategory) {
+  if (!overrideCategory || overrideCategory === 'other') {
     if (
       lowerHost.includes('itch.io') ||
       lowerHost.includes('scratch.mit.edu') ||
@@ -129,24 +154,41 @@ export function generateLinkPreview(
       lowerPath.includes('chapter')
     ) {
       detectedCategory = 'novel';
-    } else {
+    } else if (!overrideCategory) {
       detectedCategory = 'website';
     }
   }
 
-  // Build readable title from path or domain if not provided
-  const slugSegment = pathname.split('/').filter(Boolean).pop() || '';
+  // Build readable title from path, query id, or domain if not provided
+  const rawSlugSegment = pathname.split('/').filter(Boolean).pop() || '';
+  const slugSegment =
+    rawSlugSegment === 'watch' && searchParams?.get('v')
+      ? `Video ${searchParams.get('v')}`
+      : rawSlugSegment;
   const humanizedSlug = slugSegment
     ? slugSegment
         .replace(/[-_]+/g, ' ')
         .replace(/\b\w/g, (l) => l.toUpperCase())
     : '';
 
+  const DomainLabel = domain
+    .split('.')[0]
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+
   const categoryTitles: Record<CreationCategory, string> = {
-    game: humanizedSlug ? `${humanizedSlug} — Playable Build` : `Playable Game on ${domain}`,
-    website: humanizedSlug ? `${humanizedSlug} — Web App` : `Interactive Website (${domain})`,
-    video: humanizedSlug ? `${humanizedSlug} — Creator Video` : `Creator Video Showcase (${domain})`,
-    novel: humanizedSlug ? `${humanizedSlug} — Original Story` : `Original Story & Novel (${domain})`,
+    game: humanizedSlug
+      ? `${humanizedSlug} — Playable Build`
+      : `${DomainLabel || 'Creator'} Playable Game (${domain})`,
+    website: humanizedSlug
+      ? `${humanizedSlug} — Live Web App`
+      : `${DomainLabel || 'Interactive'} Web App (${domain})`,
+    video: humanizedSlug
+      ? `${humanizedSlug} — Creator Video`
+      : `Creator Video Showcase (${domain})`,
+    novel: humanizedSlug
+      ? `${humanizedSlug} — Original Story`
+      : `Original Story & Novel (${domain})`,
     other: humanizedSlug || `Creator Project on ${domain}`,
   };
 
@@ -162,11 +204,74 @@ export function generateLinkPreview(
     url: normalizedUrl.slice(0, 2000),
     domain: domain.slice(0, 120),
     title: (customTitle?.trim() || categoryTitles[detectedCategory]).slice(0, 160),
-    description: (customDescription?.trim() || categoryDescriptions[detectedCategory]).slice(0, 600),
+    description: (
+      customDescription?.trim() || categoryDescriptions[detectedCategory]
+    ).slice(0, 600),
     category: detectedCategory,
     defaultCoverUrl: DEFAULT_COVERS[detectedCategory],
   };
 }
+
+export interface MessageWithOptionalLink {
+  text?: string;
+  linkUrl?: string;
+  linkTitle?: string;
+  linkDescription?: string;
+  linkCategory?: CreationCategory;
+  linkDomain?: string;
+  coverImageUrl?: string;
+}
+
+export interface ResolvedMessageLinkPreview {
+  linkUrl: string;
+  linkTitle: string;
+  linkDescription: string;
+  linkCategory: CreationCategory;
+  linkDomain: string;
+  coverImageUrl: string;
+}
+
+/**
+ * Resolves a complete link preview for ANY message that either has `linkUrl` set
+ * OR contains a URL inside `text` — ensuring that links sent previously, repeated links,
+ * or edited links ALWAYS display a complete link preview card.
+ */
+export function resolveMessageLinkPreview(
+  msg: MessageWithOptionalLink,
+  defaultCategory?: CreationCategory
+): ResolvedMessageLinkPreview | null {
+  const extractedFromText = extractFirstUrl(msg.text || '');
+  const rawUrl = (msg.linkUrl || '').trim() || extractedFromText || '';
+  if (!rawUrl) return null;
+
+  const normalizedStored = msg.linkUrl ? cleanExtractedUrl(msg.linkUrl) : '';
+  const urlChangedInText =
+    Boolean(extractedFromText) &&
+    Boolean(normalizedStored) &&
+    extractedFromText !== normalizedStored &&
+    msg.text?.includes(extractedFromText || '');
+
+  const targetUrl = urlChangedInText && extractedFromText ? extractedFromText : rawUrl;
+  const generated = generateLinkPreview(
+    targetUrl,
+    msg.linkCategory || defaultCategory,
+    urlChangedInText ? undefined : msg.linkTitle,
+    urlChangedInText ? undefined : msg.linkDescription
+  );
+
+  return {
+    linkUrl: generated.url,
+    linkTitle: generated.title,
+    linkDescription: generated.description,
+    linkCategory: generated.category,
+    linkDomain: msg.linkDomain && !urlChangedInText ? msg.linkDomain : generated.domain,
+    coverImageUrl:
+      msg.coverImageUrl && !urlChangedInText
+        ? msg.coverImageUrl
+        : generated.defaultCoverUrl,
+  };
+}
+
 
 /**
  * Compresses an uploaded image file via HTML5 Canvas into a compact JPEG Data URL (<100KB)

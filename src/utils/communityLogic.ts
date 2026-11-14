@@ -65,7 +65,10 @@ export function toggleReaction(
 }
 
 /**
- * Toggle reaction on a chat message ensuring each user can react at most ONCE per emoji (pure transform)
+ * Toggle reaction on a chat message ensuring each user can react at most ONCE per message.
+ * - Clicking the same emoji the user already reacted with removes their reaction.
+ * - Clicking a different emoji when the user already reacted on the message moves their single
+ *   reaction from the previous emoji to the new emoji.
  */
 export interface ToggleMessageReactionParams {
   reactions?: Record<string, number>;
@@ -87,31 +90,44 @@ export function toggleMessageReaction({
   userId,
 }: ToggleMessageReactionParams): ToggleMessageReactionResult {
   const nextReactions: Record<string, number> = { ...reactions };
-  const nextUserReactions: Record<string, string[]> = { ...userReactions };
-  const userList = [...(nextUserReactions[emoji] || [])];
+  const nextUserReactions: Record<string, string[]> = {};
 
-  const userIdx = userList.indexOf(userId);
-  let hasReacted = false;
-
-  if (userIdx >= 0) {
-    // Already reacted -> remove reaction (toggle OFF)
-    userList.splice(userIdx, 1);
-    nextReactions[emoji] = Math.max(0, (nextReactions[emoji] || 1) - 1);
-    if (nextReactions[emoji] === 0) {
-      delete nextReactions[emoji];
+  // Clone and deduplicate existing user arrays per emoji
+  for (const [k, arr] of Object.entries(userReactions)) {
+    if (Array.isArray(arr)) {
+      const unique = Array.from(new Set(arr.filter(Boolean)));
+      if (unique.length > 0) {
+        nextUserReactions[k] = unique;
+      }
     }
-    hasReacted = false;
-  } else {
-    // Not reacted yet -> add reaction (toggle ON)
-    userList.push(userId);
-    nextReactions[emoji] = (nextReactions[emoji] || 0) + 1;
-    hasReacted = true;
   }
 
-  if (userList.length > 0) {
-    nextUserReactions[emoji] = userList;
-  } else {
-    delete nextUserReactions[emoji];
+  const wasReactedToThisEmoji = (nextUserReactions[emoji] || []).includes(userId);
+
+  // Remove userId from ALL emojis on this message so the user can never have more than 1 reaction on a message
+  for (const existingEmoji of Object.keys(nextUserReactions)) {
+    const list = nextUserReactions[existingEmoji];
+    if (list && list.includes(userId)) {
+      const filtered = list.filter((id) => id !== userId);
+      if (filtered.length > 0) {
+        nextUserReactions[existingEmoji] = filtered;
+      } else {
+        delete nextUserReactions[existingEmoji];
+      }
+      nextReactions[existingEmoji] = Math.max(0, (nextReactions[existingEmoji] || 1) - 1);
+      if (nextReactions[existingEmoji] === 0) {
+        delete nextReactions[existingEmoji];
+      }
+    }
+  }
+
+  let hasReacted = false;
+  if (!wasReactedToThisEmoji) {
+    // Toggle ON for the selected emoji
+    const updatedList = [...(nextUserReactions[emoji] || []), userId];
+    nextUserReactions[emoji] = updatedList;
+    nextReactions[emoji] = (nextReactions[emoji] || 0) + 1;
+    hasReacted = true;
   }
 
   return {

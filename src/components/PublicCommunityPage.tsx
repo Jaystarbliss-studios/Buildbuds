@@ -38,12 +38,14 @@ import { useTheme } from '../utils/themeContext.tsx';
 import {
   db,
   doc,
+  getDoc,
   setDoc,
   updateDoc,
   collection,
   onSnapshot,
   query,
   orderBy,
+  limit,
   BuilderProfile,
   User,
   isSuperAdminUser,
@@ -70,6 +72,7 @@ import {
 import { INITIAL_PUBLIC_COMMUNITY_POSTS } from '../data/publicCommunitySeeds.ts';
 import {
   getCloudinaryResponsiveUrl,
+  computeSinglePostReactionTransition,
   togglePublicPostReaction,
   toggleBookmarkPublicPost,
   seedDefaultCategoriesIfNeeded,
@@ -269,11 +272,17 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     setSelectedPostId(initialPostId);
   }, [initialPostId]);
 
-  // Subscribe to publicPosts, publicCategories, and public_config
+  const reactingPostIdsRef = React.useRef<Set<string>>(new Set());
+
+  // Subscribe to publicPosts (bounded to latest 20), publicCategories, and public_config
   useEffect(() => {
     seedDefaultCategoriesIfNeeded();
 
-    const postsQuery = query(collection(db, 'publicPosts'), orderBy('createdAt', 'desc'));
+    const postsQuery = query(
+      collection(db, 'publicPosts'),
+      orderBy('createdAt', 'desc'),
+      limit(20)
+    );
     const unsubPosts = onSnapshot(
       postsQuery,
       (snap) => {
@@ -327,7 +336,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     };
   }, []);
 
-  // Subscribe to signed-in user's notifications
+  // Subscribe to signed-in user's notifications (bounded to latest 15)
   useEffect(() => {
     if (!currentUser) {
       setNotifications([]);
@@ -335,7 +344,8 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     }
     const q = query(
       collection(db, 'userNotifications', currentUser.uid, 'items'),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(15)
     );
     const unsub = onSnapshot(
       q,
@@ -363,36 +373,67 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     return Array.from(map.values());
   }, [firestorePosts]);
 
-  // Subscribe to current user's reactions for visible posts
+  // Load current user's reactions from localStorage cache + lightweight one-time fetch for top visible posts
+  // (avoids opening 30 concurrent onSnapshot listeners on every page load)
   useEffect(() => {
     if (!currentUser || allMergedPosts.length === 0) {
       setUserReactionsMap({});
       return;
     }
 
-    const unsubs = allMergedPosts.slice(0, 30).map((post) =>
-      onSnapshot(
-        doc(db, 'publicPosts', post.id, 'reactions', currentUser.uid),
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data() as PublicReactionDoc;
-            setUserReactionsMap((prev) => ({
-              ...prev,
-              [post.id]: data.types || [],
-            }));
-          } else {
-            setUserReactionsMap((prev) => ({
-              ...prev,
-              [post.id]: [],
-            }));
+    const storageKey = `buildbuds_post_reactions_${currentUser.uid}`;
+    let cachedMap: Record<string, PublicReactionType[]> = {};
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw) {
+        cachedMap = JSON.parse(raw) as Record<string, PublicReactionType[]>;
+        setUserReactionsMap(cachedMap);
+      }
+    } catch {
+      // Ignore parse errors
+    }
+
+    let cancelled = false;
+    const postsToCheck = allMergedPosts
+      .slice(0, 8)
+      .filter((p) => cachedMap[p.id] === undefined);
+
+    if (postsToCheck.length > 0) {
+      Promise.all(
+        postsToCheck.map(async (post) => {
+          try {
+            const snap = await getDoc(
+              doc(db, 'publicPosts', post.id, 'reactions', currentUser.uid)
+            );
+            const types = snap.exists()
+              ? ((snap.data() as PublicReactionDoc).types || []).slice(0, 1)
+              : [];
+            return { postId: post.id, types };
+          } catch {
+            return null;
           }
-        },
-        () => {}
-      )
-    );
+        })
+      ).then((results) => {
+        if (cancelled) return;
+        setUserReactionsMap((prev) => {
+          const next = { ...prev };
+          for (const res of results) {
+            if (res) {
+              next[res.postId] = res.types;
+            }
+          }
+          try {
+            window.localStorage.setItem(storageKey, JSON.stringify(next));
+          } catch {
+            // Ignore
+          }
+          return next;
+        });
+      });
+    }
 
     return () => {
-      unsubs.forEach((u) => u());
+      cancelled = true;
     };
   }, [currentUser?.uid, allMergedPosts.length]);
 
@@ -596,10 +637,73 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
       onRequireAuth('react to community posts');
       return;
     }
+    if (reactingPostIdsRef.current.has(postId)) {
+      return;
+    }
+    reactingPostIdsRef.current.add(postId);
+
+    const targetPost = allMergedPosts.find((p) => p.id === postId);
+    const existingTypes = userReactionsMap[postId] || [];
+    if (targetPost) {
+      const optimistic = computeSinglePostReactionTransition(
+        targetPost.reactionCounts,
+        existingTypes,
+        type
+      );
+      setUserReactionsMap((prev) => {
+        const next = { ...prev, [postId]: optimistic.updatedTypes };
+        try {
+          window.localStorage.setItem(
+            `buildbuds_post_reactions_${currentUser.uid}`,
+            JSON.stringify(next)
+          );
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
+      setFirestorePosts((prev) => {
+        const existsInList = prev.some((p) => p.id === postId);
+        if (existsInList) {
+          return prev.map((p) =>
+            p.id === postId
+              ? {
+                  ...p,
+                  reactionCounts: optimistic.reactionCounts,
+                  totalReactions: optimistic.totalReactions,
+                }
+              : p
+          );
+        }
+        return [
+          ...prev,
+          {
+            ...targetPost,
+            reactionCounts: optimistic.reactionCounts,
+            totalReactions: optimistic.totalReactions,
+          },
+        ];
+      });
+    }
+
     try {
-      await togglePublicPostReaction(postId, type);
+      const res = await togglePublicPostReaction(postId, type);
+      setUserReactionsMap((prev) => {
+        const next = { ...prev, [postId]: res.updatedTypes };
+        try {
+          window.localStorage.setItem(
+            `buildbuds_post_reactions_${currentUser.uid}`,
+            JSON.stringify(next)
+          );
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
     } catch {
-      // Handled in UI
+      // Optimistic state already applied
+    } finally {
+      reactingPostIdsRef.current.delete(postId);
     }
   };
 
@@ -736,7 +840,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
         setSelectedChallenge(null);
       }
     } catch (err) {
-      console.error('Failed to delete challenge:', err);
+      console.warn('Failed to delete challenge:', err);
     }
   };
 
@@ -808,7 +912,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
       });
       setCuratingSubmission(null);
     } catch (err) {
-      console.error('Failed to curate submission:', err);
+      console.warn('Failed to curate submission:', err);
     } finally {
       setIsSubmittingCuration(false);
     }

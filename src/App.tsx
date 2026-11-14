@@ -94,21 +94,25 @@ function BuildBudsApp() {
   useEffect(() => {
     const q = query(
       collection(db, 'publicPosts'),
-      where('status', '==', 'published'),
       orderBy('createdAt', 'desc'),
-      limit(24)
+      limit(12)
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const liveItems: ProjectItem[] = snap.docs.map((docSnap) => {
-          const p = docSnap.data() as PublicPost;
-          const cat =
-            p.categoryId === 'games'
-              ? 'games'
-              : p.categoryId === 'websites'
-              ? 'websites'
-              : 'experiments';
+        const liveItems: ProjectItem[] = snap.docs
+          .filter((docSnap) => {
+            const p = docSnap.data() as PublicPost;
+            return !p.status || p.status === 'published';
+          })
+          .map((docSnap) => {
+            const p = docSnap.data() as PublicPost;
+            const cat =
+              p.categoryId === 'games'
+                ? 'games'
+                : p.categoryId === 'websites'
+                ? 'websites'
+                : 'experiments';
           return {
             id: docSnap.id,
             title: p.title,
@@ -246,7 +250,7 @@ function BuildBudsApp() {
           const profile = await ensurePublicUserProfile(user);
           setBuilderProfile(profile);
         } catch (err) {
-          console.error('Fallback to local auth profile:', err);
+          console.warn('Fallback to local auth profile:', err);
           setBuilderProfile((prev) => prev || buildFallbackBuilderProfile(user));
         } finally {
           setIsAuthChecking(false);
@@ -296,7 +300,16 @@ function BuildBudsApp() {
       doc(db, 'communityMemberships', currentUser.uid),
       (snap) => {
         if (snap.exists()) {
-          setMembership(snap.data() as CommunityMembership);
+          const memData = snap.data() as CommunityMembership;
+          setMembership(memData);
+          try {
+            window.localStorage.setItem(
+              `buildbuds_membership_${currentUser.uid}`,
+              JSON.stringify(memData)
+            );
+          } catch {
+            // Ignore storage errors
+          }
         } else {
           setMembership(null);
         }
@@ -304,7 +317,16 @@ function BuildBudsApp() {
         markCheckDone();
       },
       () => {
-        setMembership(null);
+        try {
+          const cachedMem = window.localStorage.getItem(
+            `buildbuds_membership_${currentUser.uid}`
+          );
+          if (cachedMem) {
+            setMembership(JSON.parse(cachedMem) as CommunityMembership);
+          }
+        } catch {
+          // Ignore
+        }
         memLoaded = true;
         markCheckDone();
       }
@@ -322,7 +344,6 @@ function BuildBudsApp() {
         markCheckDone();
       },
       () => {
-        setStudentRequest(null);
         reqLoaded = true;
         markCheckDone();
       }
@@ -397,16 +418,14 @@ function BuildBudsApp() {
     return () => navigator.serviceWorker.removeEventListener('message', handleSwMessage);
   }, [navigateTo]);
 
-  // Global real-time desktop/PC notification listener for:
-  // 1) New Public Community Posts / Updates (`publicPosts`)
-  // 2) New Chat Messages (`messages`) when user is outside `/hub`
+  // Global real-time desktop/PC notification listener for newly published Public Community Posts (`publicPosts`)
+  // Uses a minimal limit(5) query so opening the app does not consume extra read quota.
   useEffect(() => {
     if (!currentUser) return;
 
-    // 1. Listen for new community posts/updates
     initialPostsSnapshotSeenRef.current = false;
     knownPostIdsRef.current.clear();
-    const postsQ = query(collection(db, 'publicPosts'), orderBy('createdAt', 'desc'), limit(30));
+    const postsQ = query(collection(db, 'publicPosts'), orderBy('createdAt', 'desc'), limit(5));
     const unsubPosts = onSnapshot(
       postsQ,
       (snap) => {
@@ -445,64 +464,10 @@ function BuildBudsApp() {
       () => {}
     );
 
-    // 2. Listen for new chat messages when user is not currently on `/hub` (since `/hub` has its own listener)
-    const isOnHubPage = currentPath.split('?')[0] === '/hub';
-    let unsubMsgs = () => {};
-    if (!isOnHubPage) {
-      initialGlobalMessagesSeenRef.current = false;
-      knownGlobalMessageIdsRef.current.clear();
-      const msgsQ = query(collection(db, 'messages'), limit(80));
-      unsubMsgs = onSnapshot(
-        msgsQ,
-        (snap) => {
-          if (!initialGlobalMessagesSeenRef.current) {
-            snap.docs.forEach((d) => knownGlobalMessageIdsRef.current.add(d.id));
-            initialGlobalMessagesSeenRef.current = true;
-            return;
-          }
-          snap.docChanges().forEach((change) => {
-            if (change.type !== 'added') return;
-            const msgId = change.doc.id;
-            if (knownGlobalMessageIdsRef.current.has(msgId)) return;
-            knownGlobalMessageIdsRef.current.add(msgId);
-
-            const data = change.doc.data();
-            const createdMs = data.createdAt?.toMillis
-              ? data.createdAt.toMillis()
-              : Number(data.createdAtMillis || Date.now());
-            if (Date.now() - createdMs > 60000) return;
-
-            const baseChannelId = String(data.channelId || 'general-chat').split('__group__')[0];
-            dispatchMessageBrowserNotification({
-              messageId: msgId,
-              channelId: String(data.channelId || 'general-chat'),
-              channelName: baseChannelId,
-              authorId: String(data.authorId || ''),
-              authorName: String(data.authorName || 'Builder'),
-              authorAvatarUrl: resolveBuilderAvatarUrl(
-                data.authorAvatar,
-                String(data.authorId || 'builder')
-              ),
-              text: String(data.text || ''),
-              currentUserId: currentUser.uid,
-              currentUserDisplayName: builderProfile?.displayName,
-              preferences: loadNotificationPreferences(),
-              onNavigateToChannel: (targetCh) => {
-                setHubChannelId(targetCh);
-                navigateTo(`/hub?channel=${encodeURIComponent(targetCh)}`);
-              },
-            });
-          });
-        },
-        () => {}
-      );
-    }
-
     return () => {
       unsubPosts();
-      unsubMsgs();
     };
-  }, [currentUser?.uid, builderProfile?.displayName, currentPath, navigateTo]);
+  }, [currentUser?.uid, navigateTo]);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
 

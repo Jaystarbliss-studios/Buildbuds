@@ -10,6 +10,10 @@ import {
   evaluateMessageSwipeToReply,
   resolveJumpToMessageTarget,
   buildPinMessagePatch,
+  computeVisibleMessageWindow,
+  evaluateChatComposerKeyDown,
+  INITIAL_VISIBLE_MESSAGES_COUNT,
+  SCROLL_UP_LOAD_BATCH_SIZE,
   GROUPING_TIME_WINDOW_MS,
   SWIPE_TO_REPLY_THRESHOLD_PX,
   SWIPE_TO_REPLY_MAX_OFFSET_PX,
@@ -20,6 +24,12 @@ import {
   findPresetAvatar,
   resolveBuilderAvatarUrl,
 } from './avatars';
+import {
+  cleanExtractedUrl,
+  extractFirstUrl,
+  generateLinkPreview,
+  resolveMessageLinkPreview,
+} from './moderation';
 
 test('Discord-style consecutive message grouping combines same-user messages within 5 minutes', () => {
   const baseTime = 1_700_000_000_000;
@@ -289,4 +299,126 @@ test('Mention detection supports @all, dynamic @username filtering, and multi-li
   assert.deepEqual(detect('Line one\n@all'), { startIndex: 9, query: 'all' });
 });
 
+test('computeVisibleMessageWindow renders only the last few messages initially and loads older batches on scroll up', () => {
+  const allMessages = Array.from({ length: 28 }, (_, i) => ({
+    id: `m-${i + 1}`,
+    text: `Message #${i + 1}`,
+  }));
+
+  // 1. Initial load: only last 12 messages (m-17 through m-28) are visible
+  const step1 = computeVisibleMessageWindow(
+    allMessages,
+    INITIAL_VISIBLE_MESSAGES_COUNT,
+    SCROLL_UP_LOAD_BATCH_SIZE
+  );
+  assert.equal(step1.visibleMessages.length, 12);
+  assert.equal(step1.visibleMessages[0].id, 'm-17');
+  assert.equal(step1.visibleMessages[11].id, 'm-28');
+  assert.equal(step1.hiddenOlderCount, 16);
+  assert.equal(step1.hasOlderMessages, true);
+  assert.equal(step1.nextVisibleCount, 20);
+
+  // 2. First scroll up: reveals 8 older messages (now 20 visible: m-9 through m-28)
+  const step2 = computeVisibleMessageWindow(
+    allMessages,
+    step1.nextVisibleCount,
+    SCROLL_UP_LOAD_BATCH_SIZE
+  );
+  assert.equal(step2.visibleMessages.length, 20);
+  assert.equal(step2.visibleMessages[0].id, 'm-9');
+  assert.equal(step2.hiddenOlderCount, 8);
+  assert.equal(step2.hasOlderMessages, true);
+  assert.equal(step2.nextVisibleCount, 28);
+
+  // 3. Second scroll up: reveals remaining 8 messages (all 28 visible: m-1 through m-28)
+  const step3 = computeVisibleMessageWindow(
+    allMessages,
+    step2.nextVisibleCount,
+    SCROLL_UP_LOAD_BATCH_SIZE
+  );
+  assert.equal(step3.visibleMessages.length, 28);
+  assert.equal(step3.visibleMessages[0].id, 'm-1');
+  assert.equal(step3.hiddenOlderCount, 0);
+  assert.equal(step3.hasOlderMessages, false);
+});
+
+test('evaluateChatComposerKeyDown maps Enter to newline and Ctrl+Enter / Cmd+Enter to send', () => {
+  // Plain Enter moves to a new line
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter' }), 'newline');
+  // Shift + Enter also moves to a new line
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', shiftKey: true }), 'newline');
+  // Ctrl + Enter sends the message
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', ctrlKey: true }), 'send');
+  // Cmd + Enter (macOS) sends the message
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', metaKey: true }), 'send');
+  // IME composition does not trigger send
+  assert.equal(
+    evaluateChatComposerKeyDown({ key: 'Enter', ctrlKey: true, isComposing: true }),
+    'noop'
+  );
+  // Escape cancels inline edit/reply
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Escape' }), 'cancel');
+});
+
+test('extractFirstUrl and cleanExtractedUrl detect https, www, and bare creator URLs while stripping trailing punctuation', () => {
+  assert.equal(
+    extractFirstUrl('Check out my new build at https://pixel-racer.vercel.app/play!'),
+    'https://pixel-racer.vercel.app/play'
+  );
+  assert.equal(
+    extractFirstUrl('Visit www.itch.io/my-space-game, let me know what you think.'),
+    'https://www.itch.io/my-space-game'
+  );
+  assert.equal(
+    extractFirstUrl('Repo is live: github.com/buildbuds/engine-v2)'),
+    'https://github.com/buildbuds/engine-v2'
+  );
+  assert.equal(cleanExtractedUrl('https://youtube.com/watch?v=abc123...'), 'https://youtube.com/watch?v=abc123');
+});
+
+test('resolveMessageLinkPreview always generates link previews for repeated links, in-text links, and edited links', () => {
+  const repeatedUrl = 'https://buildbuds-quest.itch.io/cyber-runner';
+
+  // 1st message sent with explicit linkUrl
+  const firstMsgPreview = resolveMessageLinkPreview(
+    { text: `First time sharing ${repeatedUrl}`, linkUrl: repeatedUrl },
+    'game'
+  );
+  assert.ok(firstMsgPreview);
+  assert.equal(firstMsgPreview.linkUrl, repeatedUrl);
+  assert.equal(firstMsgPreview.linkCategory, 'game');
+  assert.equal(firstMsgPreview.linkDomain, 'buildbuds-quest.itch.io');
+  assert.ok(firstMsgPreview.coverImageUrl.length > 0);
+
+  // 2nd message sent with the exact same URL pasted into text (even if linkUrl field wasn't stored)
+  const secondMsgPreview = resolveMessageLinkPreview(
+    { text: `Sending the link again for new members: ${repeatedUrl}!` },
+    'other'
+  );
+  assert.ok(secondMsgPreview);
+  assert.equal(secondMsgPreview.linkUrl, repeatedUrl);
+  assert.equal(secondMsgPreview.linkCategory, 'game');
+  assert.equal(secondMsgPreview.linkDomain, 'buildbuds-quest.itch.io');
+  assert.equal(secondMsgPreview.linkTitle, firstMsgPreview.linkTitle);
+
+  // Editing the link on an existing message regenerates the preview for the new destination
+  const editedUrl = 'https://youtu.be/demo987';
+  const editedPreview = generateLinkPreview(editedUrl, 'video');
+  const resolvedAfterEdit = resolveMessageLinkPreview(
+    {
+      text: 'Updated link to video walkthrough',
+      linkUrl: editedPreview.url,
+      linkTitle: editedPreview.title,
+      linkDescription: editedPreview.description,
+      linkCategory: editedPreview.category,
+      linkDomain: editedPreview.domain,
+      coverImageUrl: editedPreview.defaultCoverUrl,
+    },
+    'other'
+  );
+  assert.ok(resolvedAfterEdit);
+  assert.equal(resolvedAfterEdit.linkUrl, editedUrl);
+  assert.equal(resolvedAfterEdit.linkCategory, 'video');
+  assert.equal(resolvedAfterEdit.linkDomain, 'youtu.be');
+});
 

@@ -33,6 +33,7 @@ import {
   User,
   isSuperAdminUser,
 } from '../firebase.ts';
+import { evaluateChatComposerKeyDown } from '../utils/messageGrouping.ts';
 import {
   PublicPost,
   PublicComment,
@@ -151,15 +152,21 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   const getReplies = (parentId: string) =>
     comments.filter((c) => c.parentCommentId === parentId);
 
+  const isReactingRef = React.useRef(false);
+
   const handleReact = async (type: PublicReactionType) => {
     if (!currentUser || !builderProfile) {
       onRequireAuth('react to this post');
       return;
     }
+    if (isReactingRef.current) return;
+    isReactingRef.current = true;
     try {
       await togglePublicPostReaction(post.id, type);
     } catch (err) {
       setFeedbackBanner(err instanceof Error ? err.message : 'Could not update reaction.');
+    } finally {
+      isReactingRef.current = false;
     }
   };
 
@@ -767,7 +774,20 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                     rows={3}
                     value={newCommentText}
                     onChange={(e) => setNewCommentText(e.target.value)}
-                    placeholder="Share constructive feedback, type @ to tag a builder or @all, or press Enter for a new line..."
+                    onKeyDown={(e) => {
+                      const action = evaluateChatComposerKeyDown({
+                        key: e.key,
+                        ctrlKey: e.ctrlKey,
+                        metaKey: e.metaKey,
+                        shiftKey: e.shiftKey,
+                        isComposing: e.nativeEvent.isComposing,
+                      });
+                      if (action === 'send') {
+                        e.preventDefault();
+                        handleAddTopLevelComment(e as unknown as React.FormEvent);
+                      }
+                    }}
+                    placeholder="Share constructive feedback (Enter = new line, Ctrl+Enter = post, type @ to tag)..."
                     className={`w-full px-4 py-3 text-sm rounded-2xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
                       isDark
                         ? 'bg-[#1b1b2f] text-white placeholder:text-slate-400'
@@ -775,10 +795,14 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                     }`}
                   />
                 </div>
-                <div className="flex justify-end">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={`text-[11px] font-mono ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Enter = new line • Ctrl + Enter = post comment
+                  </span>
                   <button
                     type="submit"
                     disabled={isSubmittingComment || !newCommentText.trim()}
+                    title="Post Comment (Ctrl + Enter)"
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer disabled:opacity-50"
                   >
                     <Send className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -1012,7 +1036,22 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                               rows={2}
                               value={replyText}
                               onChange={(e) => setReplyText(e.target.value)}
-                              placeholder={`Reply to ${comment.authorName} (type @ to tag, Enter for new line)...`}
+                              onKeyDown={(e) => {
+                                const action = evaluateChatComposerKeyDown({
+                                  key: e.key,
+                                  ctrlKey: e.ctrlKey,
+                                  metaKey: e.metaKey,
+                                  shiftKey: e.shiftKey,
+                                  isComposing: e.nativeEvent.isComposing,
+                                });
+                                if (action === 'cancel') {
+                                  setReplyingToId(null);
+                                } else if (action === 'send') {
+                                  e.preventDefault();
+                                  handleAddReply(comment.id);
+                                }
+                              }}
+                              placeholder={`Reply to ${comment.authorName} (Enter = new line, Ctrl+Enter = send)...`}
                               className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${
                                 isDark ? 'bg-[#121222] text-white' : 'bg-slate-50 text-black'
                               }`}

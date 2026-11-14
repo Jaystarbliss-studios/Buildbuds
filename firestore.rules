@@ -355,7 +355,7 @@ service cloud.firestore {
     // Real-Time Presence & Typing (/presence/{userId}) — Student Hub Only
     // ===============================================================
     match /presence/{userId} {
-      allow read: if isApprovedStudent();
+      allow read: if isAuthenticated();
       allow create, update: if isOwner(userId) &&
         isApprovedStudent() &&
         isNotBanned() &&
@@ -381,7 +381,7 @@ service cloud.firestore {
     // Community Channels (/community_channels/{channelId})
     // ===============================================================
     match /community_channels/{channelId} {
-      allow read: if isApprovedStudent();
+      allow read: if isAuthenticated();
       allow create, delete: if isAdmin();
       allow update: if isAdmin() ||
         (isApprovedStudent() &&
@@ -394,12 +394,11 @@ service cloud.firestore {
     // Channel Sub-Groups & Private Rooms (/community_groups/{groupId})
     // ===============================================================
     match /community_groups/{groupId} {
-      allow read: if isApprovedStudent() &&
+      allow read: if isAuthenticated() &&
         (
           !resource.data.isPrivate ||
-          isAdmin() ||
-          isChannelModerator(resource.data.channelId) ||
-          (isAuthenticated() && request.auth.uid in resource.data.memberIds)
+          request.auth.uid in resource.data.memberIds ||
+          isAdmin()
         );
 
       allow create: if isApprovedStudent() &&
@@ -429,7 +428,7 @@ service cloud.firestore {
     // Private Student Hub Chat Messages (/messages/{messageId})
     // ===============================================================
     match /messages/{messageId} {
-      allow read: if isApprovedStudent() && isNotBanned();
+      allow read: if isAuthenticated();
 
       allow create: if (isApprovedStudent() &&
         isActiveUser() &&
@@ -449,7 +448,13 @@ service cloud.firestore {
               'updatedAt',
               'showcaseStatus',
               'showcaseRequestedAt',
-              'publicPostId'
+              'publicPostId',
+              'linkUrl',
+              'linkTitle',
+              'linkDescription',
+              'linkCategory',
+              'linkDomain',
+              'coverImageUrl'
             ])) ||
           (resource.data.authorId == request.auth.uid &&
             request.resource.data.text is string &&
@@ -459,7 +464,13 @@ service cloud.firestore {
               'text',
               'isEdited',
               'updatedAt',
-              'hadProfanity'
+              'hadProfanity',
+              'linkUrl',
+              'linkTitle',
+              'linkDescription',
+              'linkCategory',
+              'linkDomain',
+              'coverImageUrl'
             ])) ||
           ((isAdmin() || isChannelModerator(resource.data.channelId) || isGlobalModeratorUser()) &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -481,7 +492,7 @@ service cloud.firestore {
 
       // Nested Thread Replies
       match /threadReplies/{replyId} {
-        allow read: if isApprovedStudent() && isNotBanned();
+        allow read: if isAuthenticated();
 
         allow create: if isApprovedStudent() &&
           isActiveUser() &&

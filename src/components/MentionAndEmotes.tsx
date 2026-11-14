@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { db, collection, query, limit, onSnapshot, isApprovedStudentMember } from '../firebase.ts';
+import { db, collection, query, limit, getDocs, isApprovedStudentMember } from '../firebase.ts';
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 
 // ============================================================================
@@ -639,6 +639,11 @@ const rebuildDirectoryUsers = () => {
   }
   list.sort((a, b) => a.displayName.localeCompare(b.displayName));
   cachedDirectoryUsers = list;
+  try {
+    window.localStorage.setItem('buildbuds_mention_directory_cache', JSON.stringify(list));
+  } catch {
+    // Ignore storage quota errors
+  }
   directorySubscribers.forEach((cb) => cb(list));
 };
 
@@ -646,37 +651,47 @@ const ensureDirectorySubscription = () => {
   if (isDirectoryListening) return;
   isDirectoryListening = true;
 
-  const membershipsQuery = query(collection(db, 'communityMemberships'), limit(300));
-  onSnapshot(
-    membershipsQuery,
-    (snap) => {
-      approvedDirectoryMembershipUids.clear();
-      snap.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data?.status === 'approved') {
-          approvedDirectoryMembershipUids.add(data.uid || docSnap.id);
-        }
-      });
-      rebuildDirectoryUsers();
-    },
-    () => {}
-  );
+  try {
+    const cachedRaw = window.localStorage.getItem('buildbuds_mention_directory_cache');
+    if (cachedRaw) {
+      const parsed = JSON.parse(cachedRaw) as MentionableUser[];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        cachedDirectoryUsers = parsed;
+        directorySubscribers.forEach((cb) => cb(parsed));
+      }
+    }
+  } catch {
+    // Ignore storage read errors
+  }
 
-  const q = query(collection(db, 'users'), limit(200));
-  onSnapshot(
-    q,
-    (snap) => {
-      const nextRaw: Array<{ uid: string; data: Record<string, any> }> = [];
-      snap.forEach((docSnap) => {
-        const d = docSnap.data();
-        const uid = d.uid || docSnap.id;
-        nextRaw.push({ uid, data: d });
-      });
-      rawDirectoryDocs = nextRaw;
-      rebuildDirectoryUsers();
-    },
-    () => {}
-  );
+  Promise.all([
+    getDocs(query(collection(db, 'communityMemberships'), limit(60))).catch(() => null),
+    getDocs(query(collection(db, 'users'), limit(60))).catch(() => null),
+  ])
+    .then(([membershipsSnap, usersSnap]) => {
+      if (membershipsSnap) {
+        approvedDirectoryMembershipUids.clear();
+        membershipsSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data?.status === 'approved') {
+            approvedDirectoryMembershipUids.add(data.uid || docSnap.id);
+          }
+        });
+      }
+      if (usersSnap) {
+        const nextRaw: Array<{ uid: string; data: Record<string, any> }> = [];
+        usersSnap.forEach((docSnap) => {
+          const d = docSnap.data();
+          const uid = d.uid || docSnap.id;
+          nextRaw.push({ uid, data: d });
+        });
+        rawDirectoryDocs = nextRaw;
+      }
+      if (membershipsSnap || usersSnap) {
+        rebuildDirectoryUsers();
+      }
+    })
+    .catch(() => {});
 };
 
 export const useMentionableUsers = (overrideUsers?: MentionableUser[]): MentionableUser[] => {

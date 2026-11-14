@@ -9,6 +9,7 @@ import {
   getCloudinaryResponsiveUrl,
   canUserPublishPublicContent,
   doesPostMatchCategoryFilter,
+  computeSinglePostReactionTransition,
   MAX_IMAGE_SIZE_BYTES,
 } from './communityService.ts';
 import { signCloudinaryParameters } from '../../api/_lib/firebaseAuthVerifier.ts';
@@ -216,3 +217,40 @@ test('Hardened firestore.rules separates Public Community from Private Student H
   // Ensure newly registered accounts with a schoolName are NOT automatically granted Student Hub access without Admin approval
   assert.ok(!rulesText.includes("get('schoolName', '') != ''"));
 });
+
+test('computeSinglePostReactionTransition enforces strictly 1 reaction per user per public post across all reaction types', () => {
+  // 1. User clicks 'fire' when they have no active reactions
+  const step1 = computeSinglePostReactionTransition({ fire: 2, rocket: 1 }, [], 'fire');
+  assert.equal(step1.added, true);
+  assert.deepEqual(step1.updatedTypes, ['fire']);
+  assert.equal(step1.reactionCounts.fire, 3);
+  assert.equal(step1.reactionCounts.rocket, 1);
+  assert.equal(step1.totalReactions, 4);
+
+  // 2. User clicks 'rocket' on the same post -> switches reaction from 'fire' (-1) to 'rocket' (+1)
+  const step2 = computeSinglePostReactionTransition(
+    step1.reactionCounts,
+    step1.updatedTypes,
+    'rocket'
+  );
+  assert.equal(step2.added, true);
+  assert.deepEqual(step2.updatedTypes, ['rocket']);
+  assert.equal(step2.reactionCounts.fire, 2);
+  assert.equal(step2.reactionCounts.rocket, 2);
+  assert.equal(step2.totalReactions, 4);
+
+  // 3. User clicks 'rocket' again -> removes their reaction completely
+  const step3 = computeSinglePostReactionTransition(
+    step2.reactionCounts,
+    step2.updatedTypes,
+    'rocket'
+  );
+  assert.equal(step3.added, false);
+  assert.deepEqual(step3.updatedTypes, []);
+  assert.equal(step3.reactionCounts.rocket, 1);
+  assert.equal(step3.totalReactions, 3);
+});
+
+
+
+

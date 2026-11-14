@@ -479,8 +479,51 @@ export async function savePublicPost(params: {
 }
 
 /**
+ * Pure helper that enforces at most 1 reaction per user on a public community post.
+ * Clicking the same reaction type removes it; clicking a different reaction type replaces
+ * the user's previous reaction on that post.
+ */
+export function computeSinglePostReactionTransition(
+  currentCountsInput: Record<string, number> | undefined,
+  existingTypesInput: PublicReactionType[] | undefined,
+  reactionType: PublicReactionType
+): {
+  added: boolean;
+  updatedTypes: PublicReactionType[];
+  reactionCounts: Record<string, number>;
+  totalReactions: number;
+} {
+  const currentCounts: Record<string, number> = { ...(currentCountsInput || {}) };
+  const existingTypes: PublicReactionType[] = Array.from(new Set(existingTypesInput || []));
+  const wasReactedWithSameType = existingTypes.includes(reactionType);
+
+  // Remove any existing reactions by this user on this post
+  for (const prevType of existingTypes) {
+    currentCounts[prevType] = Math.max(0, (currentCounts[prevType] || 1) - 1);
+    if (currentCounts[prevType] === 0) {
+      delete currentCounts[prevType];
+    }
+  }
+
+  let updatedTypes: PublicReactionType[] = [];
+  if (!wasReactedWithSameType) {
+    updatedTypes = [reactionType];
+    currentCounts[reactionType] = (currentCounts[reactionType] || 0) + 1;
+  }
+
+  const totalReactions = Object.values(currentCounts).reduce((sum, n) => sum + (n || 0), 0);
+  return {
+    added: !wasReactedWithSameType,
+    updatedTypes,
+    reactionCounts: currentCounts,
+    totalReactions,
+  };
+}
+
+/**
  * Toggles a reaction on a public post for the authenticated user.
- * Stores user's reaction set in `publicPosts/{postId}/reactions/{uid}` and updates aggregate counts on the post.
+ * Strictly enforces at most ONE reaction per user per post in `publicPosts/{postId}/reactions/{uid}`
+ * and updates aggregate counts on the post.
  */
 export async function togglePublicPostReaction(
   postId: string,
@@ -509,26 +552,21 @@ export async function togglePublicPostReaction(
       postData = { ...seedMatch };
     }
 
-    const currentCounts: Record<string, number> = { ...(postData.reactionCounts || {}) };
     const existingTypes: PublicReactionType[] = reactionSnap.exists()
       ? ((reactionSnap.data() as PublicReactionDoc).types || [])
       : [];
 
-    const hasReacted = existingTypes.includes(reactionType);
-    let updatedTypes: PublicReactionType[];
+    const {
+      added,
+      updatedTypes,
+      reactionCounts: currentCounts,
+      totalReactions,
+    } = computeSinglePostReactionTransition(
+      postData.reactionCounts,
+      existingTypes,
+      reactionType
+    );
 
-    if (hasReacted) {
-      updatedTypes = existingTypes.filter((t) => t !== reactionType);
-      currentCounts[reactionType] = Math.max(0, (currentCounts[reactionType] || 1) - 1);
-      if (currentCounts[reactionType] === 0) {
-        delete currentCounts[reactionType];
-      }
-    } else {
-      updatedTypes = [...existingTypes, reactionType];
-      currentCounts[reactionType] = (currentCounts[reactionType] || 0) + 1;
-    }
-
-    const totalReactions = Object.values(currentCounts).reduce((sum, n) => sum + (n || 0), 0);
     const nowIso = new Date().toISOString();
 
     tx.set(reactionRef, {
@@ -553,7 +591,7 @@ export async function togglePublicPostReaction(
       });
     }
 
-    return { added: !hasReacted, updatedTypes };
+    return { added, updatedTypes };
   });
 }
 
