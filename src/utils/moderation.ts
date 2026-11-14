@@ -59,13 +59,40 @@ export interface LinkPreviewMetadata {
   defaultCoverUrl: string;
 }
 
-const DEFAULT_COVERS: Record<CreationCategory, string> = {
-  game: '/assets/aistudio/extracted/card-galaxy.png',
-  website: '/assets/aistudio/extracted/card-math.png',
-  video: '/assets/aistudio/extracted/community-collab.png',
-  novel: '/assets/aistudio/extracted/card-eco.png',
-  other: '/assets/aistudio/extracted/card-pixel.png',
+export const DEFAULT_COVERS: Record<CreationCategory, string> = {
+  game: '/assets/aistudio/extracted/galaxy-explorer.png',
+  website: '/assets/aistudio/extracted/my-portfolio.png',
+  video: '/assets/aistudio/extracted/sound-shapes.png',
+  novel: '/assets/aistudio/extracted/forest-quest.png',
+  other: '/assets/aistudio/extracted/doodle-studio.png',
 };
+
+const BROKEN_LEGACY_COVER_PATHS: Record<string, CreationCategory> = {
+  '/assets/aistudio/extracted/card-galaxy.png': 'game',
+  '/assets/aistudio/extracted/card-math.png': 'website',
+  '/assets/aistudio/extracted/card-eco.png': 'novel',
+  '/assets/aistudio/extracted/card-pixel.png': 'other',
+};
+
+/**
+ * Ensures any legacy or missing cover image URL resolves to a guaranteed valid image asset
+ * so broken image icons never render in the chat or shared links directory.
+ */
+export function normalizeCoverImageUrl(
+  rawCoverUrl: string | undefined | null,
+  category: CreationCategory = 'other'
+): string {
+  const trimmed = (rawCoverUrl || '').trim();
+  if (!trimmed) {
+    return DEFAULT_COVERS[category] || DEFAULT_COVERS.other;
+  }
+  const lower = trimmed.toLowerCase();
+  const mappedLegacy = BROKEN_LEGACY_COVER_PATHS[lower];
+  if (mappedLegacy) {
+    return DEFAULT_COVERS[category] || DEFAULT_COVERS[mappedLegacy] || DEFAULT_COVERS.other;
+  }
+  return trimmed;
+}
 
 export function cleanExtractedUrl(raw: string): string {
   // Strip trailing sentence punctuation that is not part of the URL
@@ -74,6 +101,35 @@ export function cleanExtractedUrl(raw: string): string {
     cleaned = `https://${cleaned}`;
   }
   return cleaned;
+}
+
+/**
+ * Produces a canonical comparison key for a URL so identical links shared with minor formatting
+ * differences (http vs https, www., trailing slash, UTM tracking parameters, uppercase host)
+ * are recognized as the exact same link and deduplicated reliably.
+ */
+export function normalizeLinkKey(rawUrl: string | undefined | null): string {
+  const raw = (rawUrl || '').trim();
+  if (!raw) return '';
+  const cleaned = cleanExtractedUrl(raw);
+  try {
+    const parsed = new URL(cleaned);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const path = parsed.pathname.replace(/\/+$/, '') || '';
+    const keptParams = new URLSearchParams();
+    Array.from(parsed.searchParams.entries())
+      .filter(([k]) => !/^utm_/i.test(k) && k.toLowerCase() !== 'fbclid' && k.toLowerCase() !== 'gclid')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .forEach(([k, v]) => keptParams.append(k, v));
+    const search = keptParams.toString();
+    return `${host}${path.toLowerCase()}${search ? `?${search}` : ''}`;
+  } catch {
+    return cleaned
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .replace(/\/+$/, '');
+  }
 }
 
 export function extractFirstUrl(text: string): string | null {
@@ -94,6 +150,24 @@ export function extractFirstUrl(text: string): string | null {
   );
   if (bareMatch) {
     return cleanExtractedUrl(bareMatch[1]);
+  }
+  return null;
+}
+
+export function inferCategoryFromHintText(hintText: string): CreationCategory | null {
+  const lower = (hintText || '').toLowerCase();
+  if (!lower.trim()) return null;
+  if (/\b(game|games|game link|game links|playable|arcade|roblox|scratch|itch)\b/.test(lower)) {
+    return 'game';
+  }
+  if (/\b(video|videos|devlog|youtube|youtu\.be|vimeo|animation|trailer|reel)\b/.test(lower)) {
+    return 'video';
+  }
+  if (/\b(novel|novels|story|stories|chapter|chapters|fiction|book|lore)\b/.test(lower)) {
+    return 'novel';
+  }
+  if (/\b(website|websites|website link|website links|web app|webapp|site|portfolio|landing page)\b/.test(lower)) {
+    return 'website';
   }
   return null;
 }
@@ -120,10 +194,15 @@ export function generateLinkPreview(
 
   const lowerHost = domain.toLowerCase();
   const lowerPath = pathname.toLowerCase();
+  const titleHintCategory = inferCategoryFromHintText(
+    `${customTitle || ''} ${customDescription || ''}`
+  );
 
   let detectedCategory: CreationCategory = overrideCategory || 'website';
   if (!overrideCategory || overrideCategory === 'other') {
-    if (
+    if (titleHintCategory) {
+      detectedCategory = titleHintCategory;
+    } else if (
       lowerHost.includes('itch.io') ||
       lowerHost.includes('scratch.mit.edu') ||
       lowerHost.includes('roblox.com') ||
@@ -234,7 +313,7 @@ export interface ResolvedMessageLinkPreview {
 /**
  * Resolves a complete link preview for ANY message that either has `linkUrl` set
  * OR contains a URL inside `text` — ensuring that links sent previously, repeated links,
- * or edited links ALWAYS display a complete link preview card.
+ * or edited links ALWAYS display a complete link preview card with valid cover art.
  */
 export function resolveMessageLinkPreview(
   msg: MessageWithOptionalLink,
@@ -248,16 +327,28 @@ export function resolveMessageLinkPreview(
   const urlChangedInText =
     Boolean(extractedFromText) &&
     Boolean(normalizedStored) &&
-    extractedFromText !== normalizedStored &&
+    normalizeLinkKey(extractedFromText) !== normalizeLinkKey(normalizedStored) &&
     msg.text?.includes(extractedFromText || '');
 
   const targetUrl = urlChangedInText && extractedFromText ? extractedFromText : rawUrl;
+  const textHintCategory = inferCategoryFromHintText(
+    `${msg.linkTitle || ''} ${msg.text || ''}`
+  );
+  const effectiveExplicitCategory =
+    msg.linkCategory && msg.linkCategory !== 'other'
+      ? msg.linkCategory
+      : textHintCategory || defaultCategory;
+
   const generated = generateLinkPreview(
     targetUrl,
-    msg.linkCategory || defaultCategory,
+    effectiveExplicitCategory,
     urlChangedInText ? undefined : msg.linkTitle,
     urlChangedInText ? undefined : msg.linkDescription
   );
+
+  const safeCover = urlChangedInText
+    ? generated.defaultCoverUrl
+    : normalizeCoverImageUrl(msg.coverImageUrl, generated.category);
 
   return {
     linkUrl: generated.url,
@@ -265,11 +356,110 @@ export function resolveMessageLinkPreview(
     linkDescription: generated.description,
     linkCategory: generated.category,
     linkDomain: msg.linkDomain && !urlChangedInText ? msg.linkDomain : generated.domain,
-    coverImageUrl:
-      msg.coverImageUrl && !urlChangedInText
-        ? msg.coverImageUrl
-        : generated.defaultCoverUrl,
+    coverImageUrl: safeCover,
   };
+}
+
+export interface DeduplicatableSharedLinkMessage extends MessageWithOptionalLink {
+  id: string;
+  channelId: string;
+  createdAtMillis: number;
+  threadCount?: number;
+  showcaseStatus?: 'pending' | 'approved' | 'rejected';
+}
+
+export type DeduplicatedSharedLinkItem<T extends DeduplicatableSharedLinkMessage> = T &
+  ResolvedMessageLinkPreview & {
+    normalizedLinkKey: string;
+    duplicateCount: number;
+  };
+
+/**
+ * Finds an existing message in the target channel (or sub-group) that already shares the same canonical URL.
+ */
+export function findDuplicateLinkMessage<
+  T extends { id: string; channelId: string; text?: string; linkUrl?: string }
+>(messages: T[], candidateUrl: string | undefined | null, targetChannelId?: string): T | null {
+  const key = normalizeLinkKey(candidateUrl);
+  if (!key) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (targetChannelId && m.channelId !== targetChannelId) continue;
+    const msgUrl = (m.linkUrl || '').trim() || extractFirstUrl(m.text || '');
+    if (normalizeLinkKey(msgUrl) === key) {
+      return m;
+    }
+  }
+  return null;
+}
+
+/**
+ * Deduplicates shared creation links by canonical URL so identical links are never repeated
+ * over and over again in All Shared Links or category link directories.
+ */
+export function deduplicateSharedLinks<T extends DeduplicatableSharedLinkMessage>(
+  items: T[],
+  channelDefaultCategories: Record<string, CreationCategory> = {
+    games: 'game',
+    websites: 'website',
+    videos: 'video',
+    novels: 'novel',
+  }
+): Array<DeduplicatedSharedLinkItem<T>> {
+  const byKey = new Map<string, DeduplicatedSharedLinkItem<T>>();
+
+  for (const item of items) {
+    const baseChannel = String(item.channelId || '').split('__group__')[0];
+    const resolved = resolveMessageLinkPreview(item, channelDefaultCategories[baseChannel]);
+    if (!resolved) continue;
+
+    const key = normalizeLinkKey(resolved.linkUrl);
+    if (!key) continue;
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, {
+        ...item,
+        ...resolved,
+        normalizedLinkKey: key,
+        duplicateCount: 1,
+      });
+      continue;
+    }
+
+    const nextCount = existing.duplicateCount + 1;
+    const preferIncoming = item.createdAtMillis >= existing.createdAtMillis;
+    const bestBase = preferIncoming ? item : existing;
+    const bestResolved = preferIncoming ? resolved : existing;
+
+    // Preserve a custom cover if either entry has a non-default uploaded cover
+    const defaultSet = new Set(Object.values(DEFAULT_COVERS));
+    const preferredCover =
+      !defaultSet.has(resolved.coverImageUrl)
+        ? resolved.coverImageUrl
+        : !defaultSet.has(existing.coverImageUrl)
+          ? existing.coverImageUrl
+          : bestResolved.coverImageUrl;
+
+    byKey.set(key, {
+      ...bestBase,
+      linkUrl: bestResolved.linkUrl,
+      linkTitle: bestResolved.linkTitle,
+      linkDescription: bestResolved.linkDescription,
+      linkCategory: bestResolved.linkCategory,
+      linkDomain: bestResolved.linkDomain,
+      coverImageUrl: preferredCover,
+      threadCount: Math.max(Number(existing.threadCount || 0), Number(item.threadCount || 0)),
+      showcaseStatus:
+        existing.showcaseStatus === 'approved' || item.showcaseStatus === 'approved'
+          ? 'approved'
+          : bestBase.showcaseStatus,
+      normalizedLinkKey: key,
+      duplicateCount: nextCount,
+    });
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => b.createdAtMillis - a.createdAtMillis);
 }
 
 

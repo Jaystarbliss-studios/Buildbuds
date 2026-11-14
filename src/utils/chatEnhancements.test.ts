@@ -12,6 +12,7 @@ import {
   buildPinMessagePatch,
   computeVisibleMessageWindow,
   evaluateChatComposerKeyDown,
+  shouldShowScrollToBottomButton,
   INITIAL_VISIBLE_MESSAGES_COUNT,
   SCROLL_UP_LOAD_BATCH_SIZE,
   GROUPING_TIME_WINDOW_MS,
@@ -25,10 +26,16 @@ import {
   resolveBuilderAvatarUrl,
 } from './avatars';
 import {
+  DEFAULT_COVERS,
   cleanExtractedUrl,
   extractFirstUrl,
   generateLinkPreview,
   resolveMessageLinkPreview,
+  normalizeCoverImageUrl,
+  normalizeLinkKey,
+  inferCategoryFromHintText,
+  findDuplicateLinkMessage,
+  deduplicateSharedLinks,
 } from './moderation';
 
 test('Discord-style consecutive message grouping combines same-user messages within 5 minutes', () => {
@@ -421,4 +428,110 @@ test('resolveMessageLinkPreview always generates link previews for repeated link
   assert.equal(resolvedAfterEdit.linkCategory, 'video');
   assert.equal(resolvedAfterEdit.linkDomain, 'youtu.be');
 });
+
+test('normalizeCoverImageUrl remaps missing legacy card-*.png covers and empty covers to valid assets', () => {
+  assert.equal(normalizeCoverImageUrl('/assets/aistudio/extracted/card-galaxy.png', 'game'), DEFAULT_COVERS.game);
+  assert.equal(normalizeCoverImageUrl('/assets/aistudio/extracted/card-math.png', 'website'), DEFAULT_COVERS.website);
+  assert.equal(normalizeCoverImageUrl('/assets/aistudio/extracted/card-eco.png', 'novel'), DEFAULT_COVERS.novel);
+  assert.equal(normalizeCoverImageUrl('/assets/aistudio/extracted/card-pixel.png', 'other'), DEFAULT_COVERS.other);
+  assert.equal(normalizeCoverImageUrl('', 'video'), DEFAULT_COVERS.video);
+  assert.equal(
+    normalizeCoverImageUrl('data:image/jpeg;base64,customCoverData', 'game'),
+    'data:image/jpeg;base64,customCoverData'
+  );
+});
+
+test('normalizeLinkKey canonicalizes http/https, www., trailing slash, case, and tracking params', () => {
+  assert.equal(
+    normalizeLinkKey('https://www.No-Escape-In-The-Game.vercel.app/?utm_source=chat&ref=1'),
+    normalizeLinkKey('http://no-escape-in-the-game.vercel.app?ref=1')
+  );
+  assert.equal(
+    normalizeLinkKey('https://itch.io/my-game/'),
+    normalizeLinkKey('https://www.itch.io/my-game')
+  );
+});
+
+test('inferCategoryFromHintText and resolveMessageLinkPreview route game links and website links into their categories', () => {
+  assert.equal(inferCategoryFromHintText('Here are my game links for playtesting'), 'game');
+  assert.equal(inferCategoryFromHintText('Check out my website links portfolio'), 'website');
+
+  const resolvedGame = resolveMessageLinkPreview(
+    {
+      text: 'Game links: https://my-new-creation.vercel.app',
+      linkTitle: 'Game links',
+      linkUrl: 'https://my-new-creation.vercel.app',
+    },
+    'other'
+  );
+  assert.equal(resolvedGame?.linkCategory, 'game');
+
+  const resolvedWebsite = resolveMessageLinkPreview(
+    {
+      text: 'Sharing my website links here https://portfolio-demo.vercel.app',
+      linkTitle: 'Website links',
+      linkUrl: 'https://portfolio-demo.vercel.app',
+    },
+    'other'
+  );
+  assert.equal(resolvedWebsite?.linkCategory, 'website');
+});
+
+test('findDuplicateLinkMessage and deduplicateSharedLinks prevent repeated links and preserve custom covers & max counts', () => {
+  const messages = [
+    {
+      id: 'm1',
+      channelId: 'general-chat',
+      createdAtMillis: 1_000,
+      text: 'Play this game!',
+      linkUrl: 'https://no-escape.vercel.app/',
+      linkTitle: 'No Escape',
+      linkCategory: 'game' as const,
+      coverImageUrl: 'data:image/jpeg;base64,customArt',
+      threadCount: 2,
+    },
+    {
+      id: 'm2',
+      channelId: 'general-chat',
+      createdAtMillis: 2_000,
+      text: 'Replying with same link https://www.no-escape.vercel.app?utm_medium=share',
+      linkUrl: 'https://www.no-escape.vercel.app?utm_medium=share',
+      linkTitle: 'No Escape — Playable Build',
+      linkCategory: 'game' as const,
+      coverImageUrl: '/assets/aistudio/extracted/card-galaxy.png',
+      threadCount: 5,
+    },
+    {
+      id: 'm3',
+      channelId: 'websites',
+      createdAtMillis: 3_000,
+      text: 'Check out my site',
+      linkUrl: 'https://studio-portfolio.vercel.app',
+      linkTitle: 'Website links',
+      linkCategory: 'other' as const,
+    },
+  ];
+
+  const dup = findDuplicateLinkMessage(messages, 'https://NO-ESCAPE.vercel.app', 'general-chat');
+  assert.equal(dup?.id, 'm2');
+  assert.equal(findDuplicateLinkMessage(messages, 'https://brand-new-url.com', 'general-chat'), null);
+
+  const deduped = deduplicateSharedLinks(messages);
+  assert.equal(deduped.length, 2);
+  // Sorted newest first: m3 (website) then merged m2/m1 (game)
+  assert.equal(deduped[0].linkCategory, 'website');
+  assert.equal(deduped[1].duplicateCount, 2);
+  assert.equal(deduped[1].coverImageUrl, 'data:image/jpeg;base64,customArt');
+  assert.equal(deduped[1].threadCount, 5);
+});
+
+test('shouldShowScrollToBottomButton shows button only when scrolled up beyond threshold', () => {
+  // At bottom
+  assert.equal(shouldShowScrollToBottomButton(1200, 700, 500), false);
+  // Slightly scrolled (80px <= 140px threshold)
+  assert.equal(shouldShowScrollToBottomButton(1200, 620, 500), false);
+  // Scrolled well above bottom (250px > 140px threshold)
+  assert.equal(shouldShowScrollToBottomButton(1200, 450, 500), true);
+});
+
 

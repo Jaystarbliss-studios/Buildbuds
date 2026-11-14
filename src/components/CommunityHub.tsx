@@ -51,6 +51,9 @@ import {
   Copy,
   Forward,
   RefreshCw,
+  ArrowDown,
+  ArrowUpDown,
+  Search,
 } from 'lucide-react';
 import {
   db,
@@ -92,6 +95,12 @@ import {
   extractFirstUrl,
   generateLinkPreview,
   resolveMessageLinkPreview,
+  normalizeCoverImageUrl,
+  normalizeLinkKey,
+  findDuplicateLinkMessage,
+  deduplicateSharedLinks,
+  inferCategoryFromHintText,
+  DEFAULT_COVERS,
   compressCoverImage,
   CreationCategory,
 } from '../utils/moderation.ts';
@@ -112,6 +121,7 @@ import {
   buildPinMessagePatch,
   computeVisibleMessageWindow,
   evaluateChatComposerKeyDown,
+  shouldShowScrollToBottomButton,
   INITIAL_VISIBLE_MESSAGES_COUNT,
   SCROLL_UP_LOAD_BATCH_SIZE,
   RawPresenceRecord,
@@ -394,6 +404,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [activeSubGroupId, setActiveSubGroupId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'chat' | 'showcase'>('chat');
   const [showcaseFilter, setShowcaseFilter] = useState<'all' | CreationCategory>('all');
+  const [showcaseSortOrder, setShowcaseSortOrder] = useState<'newest' | 'oldest'>('newest');
+  const [showcaseSearchQuery, setShowcaseSearchQuery] = useState<string>('');
+  const [showChannelLinksPanel, setShowChannelLinksPanel] = useState<boolean>(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Real-time Firestore state (100% real data, zero seed/demo users) + instant optimistic buffer
@@ -415,15 +428,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [curateSummary, setCurateSummary] = useState('');
   const [curateCategory, setCurateCategory] = useState('project-showcases');
   const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
-
-  const unreadShowcaseCount = useMemo(() => {
-    if (viewMode === 'showcase') return 0;
-    return allShowcaseMessages.filter(
-      (m) =>
-        m.createdAtMillis > lastViewedShowcaseTime &&
-        m.authorId !== currentUser?.uid
-    ).length;
-  }, [allShowcaseMessages, lastViewedShowcaseTime, viewMode, currentUser?.uid]);
 
   const [onlineMembers, setOnlineMembers] = useState<PresenceItem[]>([]);
   const [allPlatformUsers, setAllPlatformUsers] = useState<BuilderProfile[]>([]);
@@ -548,13 +552,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   );
   const [notificationStatusBanner, setNotificationStatusBanner] = useState<string | null>(null);
 
-  // Progressive Scroll-Up Message Window state (loads only the last few messages initially)
+  // Progressive Scroll-Up Message Window & Floating Scroll-to-Bottom Button state
   const [visibleMessageCount, setVisibleMessageCount] = useState<number>(
     INITIAL_VISIBLE_MESSAGES_COUNT
   );
   const [firestoreFetchLimit, setFirestoreFetchLimit] = useState<number>(15);
   const [hasMoreServerMessages, setHasMoreServerMessages] = useState<boolean>(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState<boolean>(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatScrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1014,6 +1019,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setFirestoreFetchLimit(15);
     setHasMoreServerMessages(false);
     setIsLoadingOlderMessages(false);
+    setShowScrollToBottom(false);
+    setShowChannelLinksPanel(false);
     isFetchingOlderBatchRef.current = false;
   }, [activeStreamId]);
 
@@ -1125,8 +1132,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             // Ignore storage quota errors
           }
 
-          // Merge any showcase links from this channel into allShowcaseMessages
-          const showcaseInChannel = merged.filter((m) => Boolean(m.linkUrl));
+          // Merge any showcase or text links from this channel into allShowcaseMessages
+          const showcaseInChannel = merged.filter((m) =>
+            Boolean(m.linkUrl || extractFirstUrl(m.text || ''))
+          );
           if (showcaseInChannel.length > 0) {
             setAllShowcaseMessages((prev) => {
               const sById = new Map<string, HubMessage>();
@@ -1138,7 +1147,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               try {
                 window.localStorage.setItem(
                   'buildbuds_showcase_msgs',
-                  JSON.stringify(sMerged.slice(0, 60))
+                  JSON.stringify(sMerged.slice(0, 200))
                 );
               } catch {
                 // Ignore
@@ -1226,24 +1235,96 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     return () => unsubscribe();
   }, [activeStreamId, firestoreFetchLimit, currentUser?.uid]);
 
-  // Hydrate Showcase Creations from localStorage on mount, and refresh from Firestore only when viewing Showcase
+  // Hydrate ALL Shared Links from localStorage on mount and fetch ONLY link documents once
+  // (using `where('linkUrl', '>', '')`) so Shared Links & channel category badges ALWAYS reflect
+  // every link ever shared, without loading full chat message history or exhausting Firestore quota.
   useEffect(() => {
+    const mapShowcaseDoc = (docSnap: { id: string; data: () => Record<string, any> }): HubMessage | null => {
+      const data = docSnap.data();
+      if (!data.linkUrl) return null;
+      const createdMillis = extractMessageMillis(data);
+      const dateObj = new Date(createdMillis);
+      return {
+        id: docSnap.id,
+        channelId: data.channelId || 'general-chat',
+        authorId: data.authorId || '',
+        authorName: data.authorName || 'Builder',
+        authorAvatar: data.authorAvatar || '',
+        authorColor: data.authorColor || '#FFF025',
+        authorRole: data.authorRole || 'member',
+        text: data.text || '',
+        linkUrl: data.linkUrl,
+        linkTitle: data.linkTitle,
+        linkDescription: data.linkDescription,
+        linkCategory: data.linkCategory,
+        linkDomain: data.linkDomain,
+        coverImageUrl: data.coverImageUrl,
+        showcaseStatus: data.showcaseStatus,
+        publicPostId: data.publicPostId,
+        reactions: data.reactions || {},
+        threadCount: Number(data.threadCount || 0),
+        createdAtMillis: createdMillis,
+        timeLabel: `${String(dateObj.getHours()).padStart(2, '0')}:${String(
+          dateObj.getMinutes()
+        ).padStart(2, '0')}`,
+      };
+    };
+
+    let hasFreshCache = false;
     try {
       const cachedShowcase = window.localStorage.getItem('buildbuds_showcase_msgs');
+      const fetchedAt = Number(window.localStorage.getItem('buildbuds_showcase_msgs_at') || '0');
       if (cachedShowcase) {
         const parsed = JSON.parse(cachedShowcase) as HubMessage[];
         if (Array.isArray(parsed) && parsed.length > 0) {
           setAllShowcaseMessages(parsed);
+          hasFreshCache = Date.now() - fetchedAt < 120000;
         }
       }
     } catch {
       // Ignore storage errors
     }
+
+    if (hasFreshCache) return;
+
+    const linksQuery = query(
+      collection(db, 'messages'),
+      where('linkUrl', '>', ''),
+      limit(250)
+    );
+    getDocs(linksQuery)
+      .then((snapshot) => {
+        const items: HubMessage[] = [];
+        snapshot.docs.forEach((docSnap) => {
+          const mapped = mapShowcaseDoc(docSnap);
+          if (mapped) items.push(mapped);
+        });
+        setAllShowcaseMessages((prev) => {
+          const byId = new Map<string, HubMessage>();
+          prev.forEach((p) => byId.set(p.id, p));
+          items.forEach((p) => byId.set(p.id, p));
+          const merged = Array.from(byId.values()).sort(
+            (a, b) => b.createdAtMillis - a.createdAtMillis
+          );
+          try {
+            window.localStorage.setItem('buildbuds_showcase_msgs', JSON.stringify(merged.slice(0, 250)));
+            window.localStorage.setItem('buildbuds_showcase_msgs_at', String(Date.now()));
+          } catch {
+            // Ignore
+          }
+          return merged;
+        });
+      })
+      .catch((err) => {
+        console.warn('Initial shared links fetch warning (using local cache):', err);
+      });
   }, []);
 
+  // Keep Showcase listener active while viewing Shared Links (`viewMode === 'showcase'`),
+  // scoped strictly to documents containing `linkUrl` so text chat never crowds out older links.
   useEffect(() => {
     if (viewMode !== 'showcase') return;
-    const q = query(collection(db, 'messages'), limit(80));
+    const q = query(collection(db, 'messages'), where('linkUrl', '>', ''), limit(250));
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -1255,9 +1336,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           const dateObj = new Date(createdMillis);
           items.push({
             id: docSnap.id,
-            channelId: data.channelId,
+            channelId: data.channelId || 'general-chat',
             authorId: data.authorId,
-            authorName: data.authorName,
+            authorName: data.authorName || 'Builder',
             authorAvatar: data.authorAvatar || '',
             authorColor: data.authorColor || '#FFF025',
             authorRole: data.authorRole || 'member',
@@ -1279,12 +1360,25 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           });
         });
         items.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
-        setAllShowcaseMessages(items);
-        try {
-          window.localStorage.setItem('buildbuds_showcase_msgs', JSON.stringify(items));
-        } catch {
-          // Ignore
-        }
+        setAllShowcaseMessages((prev) => {
+          const byId = new Map<string, HubMessage>();
+          prev.forEach((p) => {
+            if (!p.linkUrl && extractFirstUrl(p.text || '')) {
+              byId.set(p.id, p);
+            }
+          });
+          items.forEach((p) => byId.set(p.id, p));
+          const merged = Array.from(byId.values()).sort(
+            (a, b) => b.createdAtMillis - a.createdAtMillis
+          );
+          try {
+            window.localStorage.setItem('buildbuds_showcase_msgs', JSON.stringify(merged.slice(0, 250)));
+            window.localStorage.setItem('buildbuds_showcase_msgs_at', String(Date.now()));
+          } catch {
+            // Ignore
+          }
+          return merged;
+        });
       },
       (error) => {
         console.warn('Showcase creations listener warning (using local cache):', error);
@@ -1752,7 +1846,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           linkUrlInput.trim() !== autoDetectedUrlRef.current;
 
         if (!isManualCustomUrl && (detectedUrl !== autoDetectedUrlRef.current || !linkUrlInput)) {
-          const preview = generateLinkPreview(detectedUrl, activeChannel.defaultCreationCategory);
+          const textHintCategory = inferCategoryFromHintText(val);
+          const preview = generateLinkPreview(
+            detectedUrl,
+            textHintCategory || activeChannel.defaultCreationCategory
+          );
           autoDetectedUrlRef.current = preview.url;
           setLinkUrlInput(preview.url);
           setLinkTitleInput(preview.title);
@@ -1886,6 +1984,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       }
     }
 
+    // Prevent sending the exact same link repeatedly in the same channel chat / Billboard
+    if (effectiveLinkUrl && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
+      const duplicateMsg =
+        findDuplicateLinkMessage(combinedChannelMessages, effectiveLinkUrl, activeStreamId) ||
+        findDuplicateLinkMessage(allShowcaseMessages, effectiveLinkUrl, activeStreamId);
+      if (duplicateMsg) {
+        setComposerError(
+          `This link has already been shared in #${activeChannel.name} by ${duplicateMsg.authorName}. Jump to it below instead of posting it again.`
+        );
+        handleJumpToMessage(duplicateMsg.id, duplicateMsg.authorName, duplicateMsg.text);
+        return;
+      }
+    }
+
     const { filteredText, hadProfanity } = filterProfanity(
       rawText || (linkTitleInput ? `Shared a ${linkCategoryInput}: ${linkTitleInput}` : 'Shared a project creation!')
     );
@@ -1932,9 +2044,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
 
     if ((effectiveLinkUrl || customCoverDataUrl) && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
+      const inferredCategoryFromText = inferCategoryFromHintText(
+        `${linkTitleInput} ${rawText}`
+      );
+      const preferredCategory = showAttachmentDrawer
+        ? linkCategoryInput
+        : inferredCategoryFromText ||
+          (linkUrlInput.trim() ? linkCategoryInput : activeChannel.defaultCreationCategory);
+
       const preview = generateLinkPreview(
         effectiveLinkUrl || 'https://buildbuds.community/project',
-        linkUrlInput.trim() ? linkCategoryInput : activeChannel.defaultCreationCategory,
+        preferredCategory,
         linkTitleInput,
         linkDescInput
       );
@@ -1943,7 +2063,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       payload.linkDescription = filterProfanity(preview.description).filteredText.slice(0, 600);
       payload.linkCategory = preview.category;
       payload.linkDomain = preview.domain;
-      payload.coverImageUrl = (customCoverDataUrl || preview.defaultCoverUrl).slice(0, 350000);
+      payload.coverImageUrl = normalizeCoverImageUrl(
+        customCoverDataUrl || preview.defaultCoverUrl,
+        preview.category
+      ).slice(0, 350000);
     }
 
     // Pre-generate document ref and render optimistically in 0ms so messages NEVER fail to appear
@@ -1980,6 +2103,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
 
     setOptimisticMessages((prev) => [...prev, optimisticItem]);
+    if (optimisticItem.linkUrl) {
+      setAllShowcaseMessages((prev) => {
+        const next = [optimisticItem, ...prev.filter((m) => m.id !== optimisticItem.id)];
+        try {
+          window.localStorage.setItem('buildbuds_showcase_msgs', JSON.stringify(next.slice(0, 250)));
+        } catch {
+          // Ignore
+        }
+        return next;
+      });
+    }
     try {
       const cacheKey = `buildbuds_channel_msgs_${activeStreamId}`;
       const existingCached = window.localStorage.getItem(cacheKey);
@@ -2298,8 +2432,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       );
       const safeTitle = filterProfanity(preview.title).filteredText.slice(0, 160);
       const safeDesc = filterProfanity(preview.description).filteredText.slice(0, 600);
-      const nextCover =
-        !urlChanged && msg.coverImageUrl ? msg.coverImageUrl : preview.defaultCoverUrl;
+      const nextCover = normalizeCoverImageUrl(
+        !urlChanged && msg.coverImageUrl ? msg.coverImageUrl : preview.defaultCoverUrl,
+        preview.category
+      );
 
       updatePayload.linkUrl = preview.url;
       updatePayload.linkTitle = safeTitle;
@@ -2635,6 +2771,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setIsDeletingItem(true);
     try {
       setOptimisticMessages((prev) => prev.filter((m) => m.id !== msg.id));
+      setAllShowcaseMessages((prev) => prev.filter((m) => m.id !== msg.id));
       await deleteDoc(doc(db, 'messages', msg.id));
       if (activeThreadMessage?.id === msg.id) {
         setActiveThreadMessage(null);
@@ -3085,11 +3222,78 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       (currentUser && g.memberIds.includes(currentUser.uid))
   );
 
-  // Filter Showcase Creations (real Firestore creations only)
-  const filteredCreations =
-    showcaseFilter === 'all'
-      ? allShowcaseMessages
-      : allShowcaseMessages.filter((m) => m.linkCategory === showcaseFilter);
+  // Deduplicate all shared creation links across the entire Hub so identical links NEVER repeat,
+  // and ensure links titled/categorized as Games, Websites, Videos, or Novels always count accurately.
+  const deduplicatedSharedLinks = useMemo(() => {
+    const channelDefaults: Record<string, CreationCategory> = {
+      games: 'game',
+      websites: 'website',
+      videos: 'video',
+      novels: 'novel',
+    };
+    const combinedRaw: HubMessage[] = [
+      ...allShowcaseMessages,
+      ...firestoreMessages.filter((m) => Boolean(m.linkUrl || extractFirstUrl(m.text || ''))),
+      ...optimisticMessages.filter((m) => Boolean(m.linkUrl || extractFirstUrl(m.text || ''))),
+    ];
+    return deduplicateSharedLinks(combinedRaw, channelDefaults);
+  }, [allShowcaseMessages, firestoreMessages, optimisticMessages]);
+
+  const sharedLinkCountsByCategory = useMemo(() => {
+    const counts: Record<'all' | CreationCategory, number> = {
+      all: deduplicatedSharedLinks.length,
+      game: 0,
+      website: 0,
+      video: 0,
+      novel: 0,
+      other: 0,
+    };
+    deduplicatedSharedLinks.forEach((item) => {
+      const cat = item.linkCategory || 'other';
+      counts[cat] = (counts[cat] || 0) + 1;
+    });
+    return counts;
+  }, [deduplicatedSharedLinks]);
+
+  const unreadShowcaseCount = useMemo(() => {
+    if (viewMode === 'showcase') return 0;
+    return deduplicatedSharedLinks.filter(
+      (m) => m.createdAtMillis > lastViewedShowcaseTime && m.authorId !== currentUser?.uid
+    ).length;
+  }, [deduplicatedSharedLinks, lastViewedShowcaseTime, viewMode, currentUser?.uid]);
+
+  // Active category links for `#Games`, `#Websites`, `#Videos`, `#Novels` channels
+  const activeChannelCategoryLinks = useMemo(() => {
+    const cat = activeChannel.defaultCreationCategory;
+    if (!cat) return [];
+    return deduplicatedSharedLinks.filter((item) => item.linkCategory === cat);
+  }, [deduplicatedSharedLinks, activeChannel.defaultCreationCategory]);
+
+  // Filter & Sort Showcase Creations (deduplicated real Firestore creations only)
+  const filteredCreations = useMemo(() => {
+    const base =
+      showcaseFilter === 'all'
+        ? deduplicatedSharedLinks
+        : deduplicatedSharedLinks.filter((m) => m.linkCategory === showcaseFilter);
+
+    const q = showcaseSearchQuery.trim().toLowerCase();
+    const searched = q
+      ? base.filter(
+          (m) =>
+            (m.linkTitle || '').toLowerCase().includes(q) ||
+            (m.linkDescription || '').toLowerCase().includes(q) ||
+            (m.linkDomain || '').toLowerCase().includes(q) ||
+            (m.linkUrl || '').toLowerCase().includes(q) ||
+            (m.authorName || '').toLowerCase().includes(q)
+        )
+      : base;
+
+    return [...searched].sort((a, b) =>
+      showcaseSortOrder === 'newest'
+        ? b.createdAtMillis - a.createdAtMillis
+        : a.createdAtMillis - b.createdAtMillis
+    );
+  }, [deduplicatedSharedLinks, showcaseFilter, showcaseSearchQuery, showcaseSortOrder]);
 
   // Dynamically resolve any user's latest graphical avatar URL from live `registeredUsers` first,
   // falling back to stored message/presence avatar or deterministic preset portrait.
@@ -3253,9 +3457,22 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
 
   const handleMessageStreamScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
+    setShowScrollToBottom(
+      shouldShowScrollToBottomButton(el.scrollHeight, el.scrollTop, el.clientHeight)
+    );
     if (el.scrollTop <= 48 && canLoadOlderMessages && !isFetchingOlderBatchRef.current) {
       handleLoadOlderMessages();
     }
+  };
+
+  const handleScrollToBottom = () => {
+    const el = chatScrollContainerRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    setShowScrollToBottom(false);
   };
 
   // Smoothly scroll to a replied-to, tagged, or pinned message and highlight it
@@ -3659,6 +3876,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       const isChannelLocked = chCfg?.isLocked || globalSettings.globalChatLocked;
                       const isModForThisChannel =
                         currentUser && chCfg?.moderatorIds?.includes(currentUser.uid);
+                      const categoryLinkCount = channel.defaultCreationCategory
+                        ? sharedLinkCountsByCategory[channel.defaultCreationCategory] || 0
+                        : 0;
 
                       return (
                         <div key={channel.id} className="space-y-0.5">
@@ -3667,6 +3887,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             onClick={() => {
                               setActiveChannelId(channel.id);
                               setActiveSubGroupId(null);
+                              setShowChannelLinksPanel(false);
                               setViewMode('chat');
                               setMobileSidebarOpen(false);
                             }}
@@ -3686,13 +3907,27 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               <span className="truncate">{channel.name}</span>
                             </div>
 
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center gap-1.5 shrink-0">
                               {isModForThisChannel && (
                                 <span
                                   title="You are a Moderator for this channel"
                                   className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-black"
                                 >
                                   MOD
+                                </span>
+                              )}
+                              {channel.category === 'CREATOR SHOWCASES' && (
+                                <span
+                                  title={`${categoryLinkCount} ${channel.name.toLowerCase()} link${
+                                    categoryLinkCount === 1 ? '' : 's'
+                                  } shared`}
+                                  className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full tabular-nums ${
+                                    isSelected
+                                      ? 'bg-[#FFF025]/20 text-[#FFF025] font-bold'
+                                      : 'bg-white/5 text-white/60'
+                                  }`}
+                                >
+                                  {categoryLinkCount}
                                 </span>
                               )}
                               {isChannelLocked && (
@@ -3741,6 +3976,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       <button
                         type="button"
                         onClick={() => {
+                          setShowcaseFilter('all');
                           setViewMode('showcase');
                           setMobileSidebarOpen(false);
                         }}
@@ -3760,8 +3996,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               {unreadShowcaseCount}
                             </span>
                           )}
-                          <span className="text-[10px] font-mono text-white/45">
-                            {allShowcaseMessages.length}
+                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-white/10 text-white/80 font-bold tabular-nums">
+                            {deduplicatedSharedLinks.length}
                           </span>
                         </div>
                       </button>
@@ -3853,149 +4089,237 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         {/* CENTER COLUMN: Live Chat Stream OR Shared Creations Directory */}
         <main className="flex-1 flex flex-col min-w-0 bg-[#16171b]">
           {viewMode === 'showcase' ? (
-            /* SHARED LINKS & COVERS DIRECTORY VIEW */
-            <div className="flex-1 overflow-y-auto hub-scroll p-4 sm:p-6 space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
-                <div>
-                  <h2 className="font-chewy text-2xl sm:text-3xl text-white">
-                    Community Creation Links & Cover Showcase
-                  </h2>
-                  <p className="text-xs sm:text-sm text-white/65 mt-0.5">
-                    Explore real games, websites, videos, and novels uploaded by signed-in Build Buds creators.
-                  </p>
-                </div>
+            /* SHARED LINKS & COVERS DIRECTORY VIEW (CLEAN LIST LAYOUT WITH SIDE PREVIEW) */
+            <div className="flex-1 overflow-y-auto hub-scroll p-4 sm:p-6">
+              <div className="max-w-5xl mx-auto space-y-5">
+                {/* Header + Back + Search + Latest/Oldest Sort */}
+                <div className="border-b border-white/10 pb-4 space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-chewy text-2xl sm:text-3xl text-white">
+                        All Shared Creation Links
+                      </h2>
+                      <p className="text-xs sm:text-sm text-white/65 mt-0.5">
+                        Unique games, websites, videos, and novels shared across Build Buds ({deduplicatedSharedLinks.length} unique links).
+                      </p>
+                    </div>
 
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('chat')}
-                    className="px-3 py-1.5 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-white cursor-pointer"
-                  >
-                    ← Back to Chat
-                  </button>
-                  {(
-                    [
-                      { id: 'all', label: 'All Creations' },
-                      { id: 'game', label: '🎮 Games' },
-                      { id: 'website', label: '🌐 Websites' },
-                      { id: 'video', label: '🎬 Videos' },
-                      { id: 'novel', label: '📚 Novels' },
-                    ] as const
-                  ).map((tab) => (
                     <button
-                      key={tab.id}
                       type="button"
-                      onClick={() => setShowcaseFilter(tab.id)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                        showcaseFilter === tab.id
-                          ? 'bg-[#FFF025] text-black'
-                          : 'bg-white/5 text-white/75 hover:bg-white/10'
-                      }`}
+                      onClick={() => setViewMode('chat')}
+                      className="px-3.5 py-2 rounded-xl text-xs font-bold bg-white/10 hover:bg-white/15 text-white cursor-pointer whitespace-nowrap shrink-0"
                     >
-                      {tab.label}
+                      ← Back to Chat
                     </button>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              {filteredCreations.length === 0 ? (
-                <div className="rounded-3xl bg-[#101115] border border-white/10 p-12 text-center space-y-3">
-                  <FolderGit2 className="w-8 h-8 text-[#FFF025] mx-auto" />
-                  <h3 className="text-base font-bold text-white">No creation links shared yet</h3>
-                  <p className="text-xs text-white/60 max-w-md mx-auto">
-                    When community members upload links to their games, websites, videos, or novels in the channels, they will appear right here.
-                  </p>
+                  {/* Category Tabs + Search + Sort Bar */}
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(
+                        [
+                          { id: 'all', label: 'All Creations', count: sharedLinkCountsByCategory.all },
+                          { id: 'game', label: '🎮 Games', count: sharedLinkCountsByCategory.game },
+                          { id: 'website', label: '🌐 Websites', count: sharedLinkCountsByCategory.website },
+                          { id: 'video', label: '🎬 Videos', count: sharedLinkCountsByCategory.video },
+                          { id: 'novel', label: '📚 Novels', count: sharedLinkCountsByCategory.novel },
+                        ] as const
+                      ).map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setShowcaseFilter(tab.id)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                            showcaseFilter === tab.id
+                              ? 'bg-[#FFF025] text-black font-black'
+                              : 'bg-white/8 text-white/80 hover:bg-white/15'
+                          }`}
+                        >
+                          <span>{tab.label}</span>
+                          <span
+                            className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full tabular-nums ${
+                              showcaseFilter === tab.id
+                                ? 'bg-black/15 text-black'
+                                : 'bg-white/10 text-white/65'
+                            }`}
+                          >
+                            {tab.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1 sm:w-52">
+                        <Search className="w-3.5 h-3.5 text-white/40 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="search"
+                          value={showcaseSearchQuery}
+                          onChange={(e) => setShowcaseSearchQuery(e.target.value)}
+                          placeholder="Filter shared links..."
+                          className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#101218] border border-white/15 focus:border-[#FFF025] text-xs text-white placeholder:text-white/40 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="inline-flex items-center rounded-xl bg-[#101218] border border-white/15 p-0.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowcaseSortOrder('newest')}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap transition-colors ${
+                            showcaseSortOrder === 'newest'
+                              ? 'bg-[#FFF025] text-black font-black'
+                              : 'text-white/70 hover:text-white'
+                          }`}
+                        >
+                          <ArrowUpDown className="w-3 h-3" />
+                          <span>Latest</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowcaseSortOrder('oldest')}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap transition-colors ${
+                            showcaseSortOrder === 'oldest'
+                              ? 'bg-[#FFF025] text-black font-black'
+                              : 'text-white/70 hover:text-white'
+                          }`}
+                        >
+                          Oldest
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {filteredCreations.map((item) => {
-                    const effectiveCount = getMessageEffectiveReplyCount(item);
-                    return (
-                      <div
-                        key={item.id}
-                        className="rounded-2xl bg-[#101115] border border-white/15 overflow-hidden flex flex-col justify-between hover:border-[#FFF025]/60 transition-all group"
-                      >
-                        <div>
-                          <div className="relative h-44 bg-black/60 overflow-hidden border-b border-white/10">
+
+                {filteredCreations.length === 0 ? (
+                  <div className="rounded-2xl bg-[#101115] border border-white/10 p-12 text-center space-y-3">
+                    <FolderGit2 className="w-8 h-8 text-[#FFF025] mx-auto" />
+                    <h3 className="text-base font-bold text-white">No creation links match this filter</h3>
+                    <p className="text-xs text-white/60 max-w-md mx-auto">
+                      When community members upload links to their games, websites, videos, or novels, they will appear here automatically.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {filteredCreations.map((item) => {
+                      const effectiveCount = getMessageEffectiveReplyCount(item);
+                      const fallbackCover =
+                        DEFAULT_COVERS[item.linkCategory || 'other'] || DEFAULT_COVERS.other;
+                      const safeCoverUrl = normalizeCoverImageUrl(
+                        item.coverImageUrl,
+                        item.linkCategory || 'other'
+                      );
+                      const createdDateLabel = new Date(item.createdAtMillis).toLocaleDateString();
+
+                      return (
+                        <div
+                          key={item.normalizedLinkKey || item.id}
+                          className="rounded-xl bg-[#101218] border border-white/12 hover:border-[#FFF025]/50 p-3 flex flex-col sm:flex-row items-stretch gap-3.5 transition-all group"
+                        >
+                          {/* Side Preview Thumbnail */}
+                          <div className="w-full sm:w-40 h-28 sm:h-24 rounded-lg bg-black/60 overflow-hidden border border-white/10 shrink-0">
                             <img
-                              src={item.coverImageUrl || '/assets/aistudio/extracted/card-galaxy.png'}
+                              src={safeCoverUrl}
                               alt={item.linkTitle || 'Project Cover'}
+                              onError={(e) => {
+                                if (e.currentTarget.src !== window.location.origin + fallbackCover) {
+                                  e.currentTarget.src = fallbackCover;
+                                }
+                              }}
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             />
-                            <span className="absolute top-3 left-3 px-2.5 py-1 rounded-md text-[10px] font-black uppercase bg-black/80 text-[#FFF025] border border-white/20">
-                              {item.linkCategory || 'project'}
-                            </span>
-                            <span className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] font-mono bg-black/75 text-white/80">
-                              #{item.channelId}
-                            </span>
                           </div>
 
-                          <div className="p-4 space-y-2">
-                            <div className="text-[11px] font-mono text-white/50 truncate">
-                              {item.linkDomain || 'buildbuds.community'}
+                          {/* Center Info */}
+                          <div className="flex-1 min-w-0 flex flex-col justify-between gap-1.5">
+                            <div>
+                              <div className="flex items-center gap-1.5 text-[11px] font-mono text-white/50 truncate">
+                                <span className="uppercase font-bold text-[#FFF025]">
+                                  {item.linkCategory || 'project'}
+                                </span>
+                                <span>·</span>
+                                <span className="truncate">{item.linkDomain || 'buildbuds.community'}</span>
+                                <span>·</span>
+                                <span className="shrink-0">#{String(item.channelId).split('__group__')[0]}</span>
+                                <span>·</span>
+                                <span className="shrink-0">{createdDateLabel}</span>
+                              </div>
+
+                              <a
+                                href={item.linkUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sm sm:text-base font-bold text-white hover:text-[#FFF025] line-clamp-1 mt-0.5 block"
+                              >
+                                {item.linkTitle || 'Creator Build'}
+                              </a>
+
+                              <p className="text-xs text-white/65 line-clamp-2 leading-relaxed mt-0.5">
+                                {item.linkDescription || item.text}
+                              </p>
                             </div>
-                            <h3 className="text-base font-bold text-white line-clamp-1">
-                              {item.linkTitle || 'Creator Build'}
-                            </h3>
-                            <p className="text-xs text-white/70 line-clamp-2 leading-relaxed">
-                              {item.linkDescription || item.text}
-                            </p>
-                          </div>
-                        </div>
 
-                        <div className="px-4 py-3 bg-white/[0.02] border-t border-white/10 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <img
-                              src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
-                              alt={item.authorName}
-                              className="w-6 h-6 rounded-full object-cover border border-white/20 shrink-0"
-                            />
-                            <span className="text-xs font-bold text-white/85 truncate">
-                              {getLiveUserDisplayName(item.authorId, item.authorName)}
-                            </span>
+                            <div className="flex items-center gap-2 pt-0.5">
+                              <img
+                                src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
+                                alt={item.authorName}
+                                className="w-5 h-5 rounded-full object-cover border border-white/20 shrink-0"
+                              />
+                              <span className="text-xs font-semibold text-white/80 truncate">
+                                {getLiveUserDisplayName(item.authorId, item.authorName)}
+                              </span>
+                              {item.duplicateCount > 1 && (
+                                <span className="text-[10px] font-mono text-white/45">
+                                  · Shared {item.duplicateCount}×
+                                </span>
+                              )}
+                            </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveChannelId(item.channelId);
-                                setViewMode('chat');
-                                setActiveThreadMessage(item);
-                              }}
-                              className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
-                            >
-                              Discuss ({effectiveCount})
-                            </button>
+                          {/* Right Action Buttons (Distinctly Color-Coded) */}
+                          <div className="flex sm:flex-col items-center sm:items-end justify-end sm:justify-center gap-2 shrink-0 pt-1 sm:pt-0">
                             {item.linkUrl && (
                               <a
                                 href={item.linkUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black whitespace-nowrap"
                               >
-                                <span>Open</span>
+                                <span>Open Link</span>
                                 <ExternalLink className="w-3 h-3" />
                               </a>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const targetChannel = String(item.channelId || 'general-chat').split('__group__')[0];
+                                setActiveChannelId(targetChannel);
+                                setActiveSubGroupId(null);
+                                setViewMode('chat');
+                                setActiveThreadMessage(item);
+                              }}
+                              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-xs font-bold text-sky-200 cursor-pointer whitespace-nowrap"
+                            >
+                              <MessageSquare className="w-3 h-3" />
+                              <span>Discuss ({effectiveCount})</span>
+                            </button>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             /* DISCORD-STYLE REAL-TIME CHAT FEED */
             <>
               {/* SUB-GROUPS & CHANNEL ROOMS BAR */}
-              <div className="bg-[#121318] border-b border-white/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+              <div className="bg-[#121318] border-b border-white/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar shrink-0">
                 <div className="flex items-center gap-1.5 py-0.5 shrink-0">
                   <button
                     type="button"
                     onClick={() => setActiveSubGroupId(null)}
-                    className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                    className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
                       !activeSubGroupId
                         ? 'bg-[#FFF025] text-black font-black'
                         : 'bg-white/5 text-white/70 hover:bg-white/10 hover:text-white'
@@ -4009,7 +4333,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       key={grp.id}
                       type="button"
                       onClick={() => setActiveSubGroupId(grp.id)}
-                      className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                      className={`px-2.5 sm:px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
                         activeSubGroupId === grp.id
                           ? 'bg-[#B11469] text-white font-black border border-white/20'
                           : 'bg-white/5 text-white/75 hover:bg-white/10'
@@ -4027,7 +4351,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     <button
                       type="button"
                       onClick={() => setShowManageGroupModal(true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-white cursor-pointer whitespace-nowrap"
                     >
                       <Users className="w-3.5 h-3.5 text-[#FFF025]" />
                       <span className="hidden sm:inline">Members</span>
@@ -4039,7 +4363,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     <button
                       type="button"
                       onClick={() => setShowCreateGroupModal(true)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-[#FFF025] cursor-pointer shrink-0"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-bold text-[#FFF025] cursor-pointer shrink-0 whitespace-nowrap"
                     >
                       <FolderPlus className="w-3.5 h-3.5" />
                       <span>+ Create Sub-Group</span>
@@ -4048,24 +4372,103 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
               </div>
 
-              {/* Showcase Channel Quick Prompt */}
+              {/* Showcase Channel Directory Strip & Quick Attach (Shows ALL matching Game/Website/Video/Novel links) */}
               {activeChannel.defaultCreationCategory && !effectiveBanLinks && (
-                <div className="bg-gradient-to-r from-[#1e1f26] via-[#25182e] to-[#1e1f26] border-b border-white/10 px-3 sm:px-4 py-2 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs text-white/90">
-                    <span className="px-2 py-0.5 rounded bg-[#FFF025] text-black font-black uppercase text-[10px]">
-                      {activeChannel.name} Showcase
-                    </span>
-                    <span className="hidden sm:inline">
-                      Share your {activeChannel.defaultCreationCategory} link and custom cover art with the community!
-                    </span>
+                <div className="bg-[#181922] border-b border-white/10 px-3 sm:px-4 py-2 shrink-0 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs text-white/90 min-w-0">
+                      <span className="px-2 py-0.5 rounded bg-[#FFF025] text-black font-black uppercase text-[10px] shrink-0">
+                        {activeChannel.name} ({activeChannelCategoryLinks.length})
+                      </span>
+                      <span className="text-white/75 truncate">
+                        All {activeChannel.name.toLowerCase()} links shared across the hub appear here.
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {activeChannelCategoryLinks.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowChannelLinksPanel((prev) => !prev)}
+                          className="px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/35 text-xs font-bold text-sky-200 cursor-pointer whitespace-nowrap"
+                        >
+                          {showChannelLinksPanel
+                            ? 'Hide Links Directory'
+                            : `View ${activeChannelCategoryLinks.length} ${activeChannel.name} Links`}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowcaseFilter(activeChannel.defaultCreationCategory!);
+                          setViewMode('showcase');
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-white/8 hover:bg-white/15 text-xs font-bold text-white/85 cursor-pointer whitespace-nowrap hidden sm:inline-flex"
+                      >
+                        Open Full Directory
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAttachmentDrawer(true)}
+                        className="px-2.5 py-1 rounded-lg bg-[#FFF025]/15 hover:bg-[#FFF025]/25 border border-[#FFF025]/35 text-xs font-bold text-[#FFF025] cursor-pointer whitespace-nowrap"
+                      >
+                        + Share {activeChannel.name.replace(/s$/, '')} Link
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowAttachmentDrawer(true)}
-                    className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-bold text-[#FFF025] cursor-pointer"
-                  >
-                    + Attach {activeChannel.name} Link & Cover
-                  </button>
+
+                  {showChannelLinksPanel && activeChannelCategoryLinks.length > 0 && (
+                    <div className="max-h-60 overflow-y-auto hub-scroll space-y-1.5 pt-1 border-t border-white/10">
+                      {activeChannelCategoryLinks.map((item) => {
+                        const fallbackCover =
+                          DEFAULT_COVERS[item.linkCategory || 'other'] || DEFAULT_COVERS.other;
+                        return (
+                          <div
+                            key={item.normalizedLinkKey || item.id}
+                            className="flex items-center justify-between gap-2.5 p-2 rounded-xl bg-[#101218] border border-white/10 hover:border-[#FFF025]/40 transition-colors"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              <img
+                                src={normalizeCoverImageUrl(item.coverImageUrl, item.linkCategory || 'other')}
+                                alt={item.linkTitle}
+                                onError={(e) => {
+                                  if (e.currentTarget.src !== window.location.origin + fallbackCover) {
+                                    e.currentTarget.src = fallbackCover;
+                                  }
+                                }}
+                                className="w-12 h-9 rounded-md object-cover border border-white/10 shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-white truncate">
+                                  {item.linkTitle}
+                                </div>
+                                <div className="text-[10px] font-mono text-white/50 truncate">
+                                  {item.linkDomain} · by {getLiveUserDisplayName(item.authorId, item.authorName)}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setActiveThreadMessage(item)}
+                                className="px-2 py-1 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/35 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                              >
+                                Discuss
+                              </button>
+                              <a
+                                href={item.linkUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black whitespace-nowrap"
+                              >
+                                <span>Open</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -4193,7 +4596,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   </div>
                 </div>
               ) : (
-                /* Scrollable Real-Time Message Stream with Progressive Scroll-Up Loading & Consecutive Grouping */
+                /* Scrollable Real-Time Message Stream with Progressive Scroll-Up Loading & Floating Scroll-to-Bottom Button */
+                <div className="relative flex-1 min-h-0 flex flex-col">
                 <div
                   ref={chatScrollContainerRef}
                   onScroll={handleMessageStreamScroll}
@@ -4775,83 +5179,82 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 )}
 
-                                {/* Rich Link Preview & Uploaded Cover Card (Always resolves for any attached or in-text URL, even if sent before) */}
+                                {/* Compact Link Preview Card (~50% smaller) with Side Thumbnail & Color-Coded Action Buttons */}
                                 {resolvedLink && effectiveEnableLinkPreviews && (
-                                  <div className="mt-2.5 max-w-xl rounded-2xl bg-[#101115] border-l-4 border-l-[#FFF025] border border-white/15 overflow-hidden shadow-lg">
-                                    <div className="grid grid-cols-1 sm:grid-cols-12">
+                                  <div className="mt-2 max-w-md rounded-xl bg-[#101218] border border-white/15 overflow-hidden shadow-md">
+                                    <div className="flex items-stretch">
                                       {resolvedLink.coverImageUrl && (
-                                        <div className="sm:col-span-5 h-36 sm:h-auto bg-black/50 overflow-hidden">
+                                        <div className="w-20 sm:w-24 min-h-[76px] max-h-28 bg-black/50 overflow-hidden shrink-0 border-r border-white/10">
                                           <img
-                                            src={resolvedLink.coverImageUrl}
+                                            src={normalizeCoverImageUrl(
+                                              resolvedLink.coverImageUrl,
+                                              resolvedLink.linkCategory
+                                            )}
                                             alt={resolvedLink.linkTitle || 'Creation preview'}
+                                            onError={(e) => {
+                                              const fallback =
+                                                DEFAULT_COVERS[resolvedLink.linkCategory || 'other'] ||
+                                                DEFAULT_COVERS.other;
+                                              if (e.currentTarget.src !== window.location.origin + fallback) {
+                                                e.currentTarget.src = fallback;
+                                              }
+                                            }}
                                             className="w-full h-full object-cover"
                                           />
                                         </div>
                                       )}
-                                      <div
-                                        className={`${
-                                          resolvedLink.coverImageUrl ? 'sm:col-span-7' : 'sm:col-span-12'
-                                        } p-3.5 flex flex-col justify-between gap-2`}
-                                      >
+                                      <div className="flex-1 min-w-0 p-2.5 flex flex-col justify-between gap-1.5">
                                         <div>
-                                          <div className="flex items-center justify-between gap-2 mb-1">
-                                            <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded bg-white/10 text-[#FFF025] font-bold">
-                                              {resolvedLink.linkCategory || 'creation'}
-                                            </span>
-                                            <div className="flex items-center gap-1.5 min-w-0">
-                                              <span className="text-[11px] font-mono text-white/45 truncate">
+                                          <div className="flex items-center justify-between gap-1.5 mb-0.5">
+                                            <div className="flex items-center gap-1.5 min-w-0 text-[10px] font-mono">
+                                              <span className="uppercase text-[#FFF025] font-bold shrink-0">
+                                                {resolvedLink.linkCategory || 'creation'}
+                                              </span>
+                                              <span className="text-white/30">·</span>
+                                              <span className="text-white/50 truncate">
                                                 {resolvedLink.linkDomain}
                                               </span>
-                                              <button
-                                                type="button"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleRefreshMessageLinkPreview(msg);
-                                                }}
-                                                title="Refresh Link Preview"
-                                                className="p-1 rounded hover:bg-white/10 text-white/40 hover:text-[#FFF025] cursor-pointer"
-                                              >
-                                                <RefreshCw className="w-3 h-3" />
-                                              </button>
                                             </div>
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleRefreshMessageLinkPreview(msg);
+                                              }}
+                                              title="Refresh Link Preview"
+                                              className="p-0.5 rounded hover:bg-white/10 text-white/40 hover:text-[#FFF025] cursor-pointer shrink-0"
+                                            >
+                                              <RefreshCw className="w-2.5 h-2.5" />
+                                            </button>
                                           </div>
                                           <a
                                             href={resolvedLink.linkUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="text-sm font-bold text-sky-400 hover:underline line-clamp-1 flex items-center gap-1"
+                                            className="text-xs font-bold text-sky-300 hover:underline line-clamp-1 flex items-center gap-1"
                                           >
-                                            <span>{resolvedLink.linkTitle || resolvedLink.linkUrl}</span>
-                                            <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                                            <span className="truncate">
+                                              {resolvedLink.linkTitle || resolvedLink.linkUrl}
+                                            </span>
+                                            <ExternalLink className="w-3 h-3 shrink-0" />
                                           </a>
                                           {resolvedLink.linkDescription && (
-                                            <p className="text-xs text-white/65 mt-1 line-clamp-2 leading-relaxed">
+                                            <p className="text-[11px] text-white/60 mt-0.5 line-clamp-1 leading-snug">
                                               {resolvedLink.linkDescription}
                                             </p>
                                           )}
                                         </div>
 
-                                        <div className="pt-1 flex flex-wrap items-center gap-2">
+                                        <div className="pt-0.5 flex flex-wrap items-center gap-1.5">
                                           <a
                                             href={resolvedLink.linkUrl}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black"
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black whitespace-nowrap"
                                           >
                                             <span>Open Link</span>
-                                            <ExternalLink className="w-3 h-3" />
+                                            <ExternalLink className="w-2.5 h-2.5" />
                                           </a>
-                                          {isOwnMessage && userStatus === 'active' && (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleStartEditMessage(msg, true)}
-                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-[#FFF025] text-xs font-bold cursor-pointer"
-                                              title="Edit Link URL, Title, or Description"
-                                            >
-                                              <Pencil className="w-3 h-3" />
-                                              <span>Edit Link</span>
-                                            </button>
-                                          )}
                                           <button
                                             type="button"
                                             onClick={() => {
@@ -4859,28 +5262,39 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                               setShowMembersDrawer(false);
                                               setActiveThreadMessage(msg);
                                             }}
-                                            className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white/85 text-xs font-bold cursor-pointer"
+                                            className="px-2 py-1 rounded-md bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-[11px] font-bold cursor-pointer whitespace-nowrap"
                                           >
-                                            Feedback Thread ({effectiveReplyCount})
+                                            Feedback ({effectiveReplyCount})
                                           </button>
+                                          {isOwnMessage && userStatus === 'active' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleStartEditMessage(msg, true)}
+                                              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                                              title="Edit Link URL, Title, or Description"
+                                            >
+                                              <Pencil className="w-2.5 h-2.5" />
+                                              <span>Edit</span>
+                                            </button>
+                                          )}
 
                                           {msg.showcaseStatus === 'approved' ? (
-                                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold">
-                                              <CheckCircle2 className="w-3 h-3" />
-                                              <span>Featured in Showcase</span>
+                                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 text-[10px] font-bold whitespace-nowrap">
+                                              <CheckCircle2 className="w-2.5 h-2.5" />
+                                              <span>Featured</span>
                                             </span>
                                           ) : msg.showcaseStatus === 'pending' ? (
-                                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold">
-                                              <Clock className="w-3 h-3" />
-                                              <span>Showcase Under Review</span>
+                                            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/35 text-[10px] font-bold whitespace-nowrap">
+                                              <Clock className="w-2.5 h-2.5" />
+                                              <span>In Review</span>
                                             </span>
                                           ) : currentUser && currentUser.uid === msg.authorId ? (
                                             <button
                                               type="button"
                                               onClick={() => handleRequestPublicShowcase(msg)}
-                                              className="px-2.5 py-1 rounded-lg bg-[#B11469]/20 hover:bg-[#B11469]/30 text-[#ff75bc] border border-[#B11469]/40 text-xs font-bold cursor-pointer transition-colors"
+                                              className="px-2 py-1 rounded-md bg-[#B11469]/25 hover:bg-[#B11469]/40 text-pink-200 border border-[#B11469]/50 text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap"
                                             >
-                                              Request Public Showcase
+                                              Showcase
                                             </button>
                                           ) : null}
 
@@ -4888,9 +5302,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                             <button
                                               type="button"
                                               onClick={() => handleStartCuratingMessage(msg)}
-                                              className="px-2.5 py-1 rounded-lg bg-[#FFF025]/20 hover:bg-[#FFF025]/30 text-[#FFF025] border border-[#FFF025]/40 text-xs font-bold cursor-pointer transition-colors"
+                                              className="px-2 py-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 text-[11px] font-bold cursor-pointer transition-colors whitespace-nowrap"
                                             >
-                                              Curate for Showcase
+                                              Curate
                                             </button>
                                           )}
                                         </div>
@@ -5118,6 +5532,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   )}
 
                   <div ref={messagesEndRef} />
+                </div>
+
+                {/* Floating Scroll-to-Bottom Down Arrow Button */}
+                {showScrollToBottom && groupedMessages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleScrollToBottom}
+                    title="Jump to latest message"
+                    aria-label="Jump to latest message"
+                    className="absolute bottom-4 right-4 sm:right-6 z-20 inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-[#FFF025] hover:bg-[#ffe500] text-black border-2 border-black shadow-xl text-xs font-black cursor-pointer transition-transform hover:scale-105 active:scale-95"
+                  >
+                    <ArrowDown className="w-4 h-4 stroke-[2.75]" />
+                    <span className="hidden sm:inline">Latest</span>
+                  </button>
+                )}
                 </div>
               )}
 

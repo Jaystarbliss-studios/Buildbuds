@@ -942,7 +942,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
           {/* Left: Brand Logo + Compact Primary Navigation */}
-          <div className="flex items-center gap-4 min-w-0">
+          <div className="flex items-center gap-3 lg:gap-5 min-w-0">
             <button
               type="button"
               onClick={() => onNavigate('/home')}
@@ -953,7 +953,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
             </button>
 
             <nav
-              className="hidden lg:flex items-center gap-1"
+              className="hidden lg:flex items-center gap-1.5"
               aria-label="Public Community Navigation"
             >
               <button
@@ -963,7 +963,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   setSelectedCategoryId('all');
                   onNavigate('/community');
                 }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-extrabold whitespace-nowrap cursor-pointer border-2 transition-all ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all ${
                   activeTab === 'all'
                     ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
                     : isDark
@@ -980,7 +980,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   setSelectedCategoryId('all');
                   onNavigate('/community/creations');
                 }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-extrabold whitespace-nowrap cursor-pointer border-2 transition-all ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all ${
                   activeTab === 'creations'
                     ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
                     : isDark
@@ -997,7 +997,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   setSelectedCategoryId('all');
                   onNavigate('/community/updates');
                 }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-extrabold whitespace-nowrap cursor-pointer border-2 transition-all ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all ${
                   activeTab === 'updates'
                     ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
                     : isDark
@@ -1013,7 +1013,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   setActiveTab('challenges');
                   onNavigate('/community/challenges');
                 }}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-extrabold whitespace-nowrap cursor-pointer border-2 transition-all flex items-center gap-1 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all flex items-center gap-1.5 ${
                   activeTab === 'challenges'
                     ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
                     : isDark
@@ -1593,24 +1593,24 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   isDark ? 'bg-[#121222]' : 'bg-[#FFFDF5]'
                 }`}
               >
-                <div className="bg-[#FFF025] border-b-3 border-black px-6 py-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="bg-[#FFF025] border-b-3 border-black px-5 sm:px-7 py-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div>
-                    <div className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-black">
-                      <FolderGit2 className="w-4 h-4" />
+                    <div className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-black/80">
+                      <FolderGit2 className="w-3.5 h-3.5" />
                       <span>Build Buds Public Community Showcase</span>
                     </div>
-                    <h1 className="font-chewy text-3xl sm:text-4xl text-black mt-0.5">
+                    <h1 className="font-chewy text-2xl sm:text-4xl text-black mt-0.5 leading-tight">
                       {bannerHeadlineText}
                     </h1>
                   </div>
 
                   {/* Role-Based Publishing Permission + Admin Access Requests Shortcut */}
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     {isAdmin && (
                       <button
                         type="button"
                         onClick={() => onNavigate('/admin/student-access')}
-                        className="inline-flex items-center gap-2 px-4 py-2.5 rounded-2xl border-2 border-black bg-[#B11469] hover:bg-[#920f56] text-white text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-black bg-[#B11469] hover:bg-[#920f56] text-white text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm whitespace-nowrap"
                       >
                         <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
                         <span>Manage Access Requests</span>
@@ -1620,7 +1620,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       <button
                         type="button"
                         onClick={handleCreatePostClick}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs sm:text-sm font-black cursor-pointer"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs sm:text-sm font-black cursor-pointer whitespace-nowrap"
                       >
                         <Plus className="w-4 h-4 stroke-[2.5]" />
                         <span>Publish Your Creation</span>
@@ -1630,7 +1630,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 </div>
 
                 {featuredBannerPost && (
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 sm:p-8 items-center">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-5 sm:p-7 items-center">
                     {/* Featured Visual Preview */}
                     <div className="lg:col-span-6">
                       {featuredBannerPost.media?.[0]?.secureUrl &&
@@ -1657,9 +1657,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       ) : (
                         <div
                           onClick={() => handleOpenPostDetail(featuredBannerPost.id)}
-                          className="rounded-2xl border-3 border-black aspect-video bg-[#B11469] text-white p-8 flex flex-col justify-between cursor-pointer"
+                          className="rounded-2xl border-3 border-black aspect-video bg-[#B11469] text-white p-7 flex flex-col justify-between cursor-pointer"
                         >
-                          <span className="px-3 py-1 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black uppercase w-fit">
+                          <span className="text-xs font-black uppercase tracking-wider text-[#FFF025]">
                             {featuredBannerPost.categoryName}
                           </span>
                           <div className="font-chewy text-3xl leading-tight">
@@ -1670,12 +1670,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                     </div>
 
                     {/* Featured Details */}
-                    <div className="lg:col-span-6 space-y-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="px-3 py-1 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black uppercase">
+                    <div className="lg:col-span-6 space-y-3.5">
+                      <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider">
+                        <span className={isDark ? 'text-[#FFF025]' : 'text-[#B11469]'}>
                           Featured Highlight
                         </span>
-                        <span className="px-3 py-1 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black uppercase">
+                        <span className="opacity-40">·</span>
+                        <span className={isDark ? 'text-slate-300' : 'text-slate-700'}>
                           {featuredBannerPost.categoryName}
                         </span>
                       </div>
@@ -1755,9 +1756,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
             </section>
 
             {/* SECTION 2 — REFINED CATEGORY FILTER DROPDOWN, SEARCH & SORT */}
-            <section aria-label="Category Filter and Search" className="space-y-4">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+            <section aria-label="Category Filter and Search">
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 flex-1">
                   {/* Refined Custom Category Filter Dropdown (Replaces Horizontal Category Bar) */}
                   <div className="relative" ref={categoryDropdownRef}>
                     <button
@@ -1765,7 +1766,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       onClick={() => setIsCategoryDropdownOpen((prev) => !prev)}
                       aria-haspopup="listbox"
                       aria-expanded={isCategoryDropdownOpen}
-                      className={`w-full sm:w-auto min-w-[230px] flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl border-2 border-black text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm transition-colors ${
+                      className={`w-full sm:w-auto min-w-[220px] h-10 flex items-center justify-between gap-3 px-3.5 rounded-xl border-2 border-black text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm transition-colors whitespace-nowrap ${
                         selectedCategoryId !== 'all'
                           ? 'bg-[#FFF025] text-black'
                           : isDark
@@ -1778,7 +1779,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                         <span className="truncate">
                           {selectedCategoryObj
                             ? `${selectedCategoryObj.emoji} ${selectedCategoryObj.name}`
-                            : 'Showing: All Categories'}
+                            : 'All Categories'}
                         </span>
                       </span>
                       <ChevronDown
@@ -1902,7 +1903,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search projects, games, tutorials, tags, or creators..."
-                      className={`w-full pl-10 pr-4 py-2.5 text-sm font-semibold rounded-2xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
+                      className={`w-full h-10 pl-10 pr-4 text-sm font-semibold rounded-xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
                         isDark
                           ? 'bg-[#171726] text-white placeholder:text-slate-400'
                           : 'bg-white text-black placeholder:text-slate-400'
@@ -1912,13 +1913,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 </div>
 
                 {/* Sort & View Controls */}
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   {(['latest', 'popular', 'featured'] as const).map((mode) => (
                     <button
                       key={mode}
                       type="button"
                       onClick={() => setSortBy(mode)}
-                      className={`px-3.5 py-2 rounded-xl border-2 border-black text-xs font-black capitalize cursor-pointer transition-all ${
+                      className={`h-10 px-3.5 rounded-xl border-2 border-black text-xs font-black capitalize cursor-pointer transition-all whitespace-nowrap shrink-0 ${
                         sortBy === mode
                           ? 'bg-[#FFF025] text-black brand-shadow-sm'
                           : isDark
@@ -1939,7 +1940,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                         onClick={() =>
                           setActiveTab(activeTab === 'saved' ? 'all' : 'saved')
                         }
-                        className={`px-3.5 py-2 rounded-xl border-2 border-black text-xs font-black cursor-pointer ${
+                        className={`h-10 px-3.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
                           activeTab === 'saved'
                             ? 'bg-[#B11469] text-white'
                             : isDark
@@ -1956,7 +1957,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                           onClick={() =>
                             setActiveTab(activeTab === 'my-posts' ? 'all' : 'my-posts')
                           }
-                          className={`px-3.5 py-2 rounded-xl border-2 border-black text-xs font-black cursor-pointer ${
+                          className={`h-10 px-3.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer whitespace-nowrap shrink-0 ${
                             activeTab === 'my-posts'
                               ? 'bg-[#FFF025] text-black'
                               : isDark
@@ -2064,19 +2065,19 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
                         <div className="p-5 sm:p-7 space-y-4">
                           {/* Category, Status & Bookmark Row */}
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="px-3 py-1 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black uppercase tracking-wider">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-wrap text-xs font-black uppercase tracking-wider">
+                              <span className="px-2.5 py-0.5 rounded-lg border-2 border-black bg-[#FFF025] text-black">
                                 {post.categoryName}
                               </span>
                               {post.isFeatured && (
-                                <span className="px-2.5 py-1 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black">
-                                  Featured
+                                <span className={isDark ? 'text-[#ff75bc]' : 'text-[#B11469]'}>
+                                  · Featured
                                 </span>
                               )}
                               {post.status !== 'published' && (
-                                <span className="px-2.5 py-1 rounded-xl border-2 border-black bg-amber-100 text-amber-900 text-xs font-black uppercase">
-                                  {post.status}
+                                <span className="text-amber-500">
+                                  · {post.status}
                                 </span>
                               )}
                             </div>
@@ -2085,7 +2086,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               type="button"
                               onClick={() => handleToggleBookmark(post.id)}
                               aria-label={isPostBookmarked ? 'Remove bookmark' : 'Bookmark post'}
-                              className={`p-2 rounded-xl border-2 border-black cursor-pointer transition-colors ${
+                              className={`p-2 rounded-xl border-2 border-black cursor-pointer transition-colors shrink-0 ${
                                 isPostBookmarked
                                   ? 'bg-[#FFF025] text-black'
                                   : isDark
@@ -2128,7 +2129,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   href={post.gameUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black"
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black whitespace-nowrap"
                                 >
                                   <Gamepad2 className="w-3.5 h-3.5" />
                                   <span>Play Game</span>
@@ -2140,7 +2141,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   href={post.websiteUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black"
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black whitespace-nowrap"
                                 >
                                   <Globe className="w-3.5 h-3.5" />
                                   <span>Live Website</span>
@@ -2152,7 +2153,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   href={post.githubUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black ${
+                                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black whitespace-nowrap ${
                                     isDark
                                       ? 'bg-[#1b1b2f] text-white'
                                       : 'bg-slate-100 text-black'
@@ -2174,10 +2175,10 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   key={tag}
                                   type="button"
                                   onClick={() => setSearchQuery(tag)}
-                                  className={`px-2.5 py-0.5 rounded-lg border text-xs font-bold cursor-pointer transition-colors ${
+                                  className={`px-2 py-0.5 rounded-md border text-[11px] font-bold cursor-pointer transition-colors ${
                                     isDark
-                                      ? 'border-white/20 bg-white/5 hover:bg-[#FFF025] hover:text-black text-slate-300'
-                                      : 'border-black/30 bg-slate-50 hover:bg-[#FFF025]/40 text-slate-700'
+                                      ? 'border-white/15 bg-white/5 hover:bg-[#FFF025] hover:text-black text-slate-300'
+                                      : 'border-black/20 bg-slate-50 hover:bg-[#FFF025]/40 text-slate-700'
                                   }`}
                                 >
                                   #{tag}
@@ -2249,7 +2250,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleOpenPostDetail(post.id)}
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer ${
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer whitespace-nowrap ${
                                   isDark
                                     ? 'bg-[#1b1b2f] hover:bg-white/10 text-white'
                                     : 'bg-white hover:bg-slate-100 text-black'
@@ -2262,7 +2263,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleOpenPostDetail(post.id)}
-                                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black cursor-pointer"
+                                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black cursor-pointer whitespace-nowrap"
                               >
                                 <span>Read Post</span>
                                 <ArrowRight className="w-3.5 h-3.5" />
@@ -2278,10 +2279,10 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
               {/* SECTION 4 — RIGHT-HAND DISCOVERY SIDEBAR (4 Columns on Desktop)
                   Note: Yellow Student Hub side box removed per specification; pink bottom CTA banner retained. */}
-              <aside className="lg:col-span-4 space-y-6" aria-label="Community Discovery Sidebar">
+              <aside className="lg:col-span-4 space-y-5" aria-label="Community Discovery Sidebar">
                 {/* Trending Topics & Tags */}
                 <div
-                  className={`p-6 rounded-3xl border-3 border-black brand-shadow space-y-4 ${
+                  className={`p-5 rounded-3xl border-3 border-black brand-shadow space-y-3.5 ${
                     isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
                   }`}
                 >
@@ -2294,13 +2295,13 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       Tags will appear as posts are published.
                     </p>
                   ) : (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       {trendingTags.map((item) => (
                         <button
                           key={item.tag}
                           type="button"
                           onClick={() => setSearchQuery(item.tag)}
-                          className={`px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer transition-colors ${
+                          className={`px-2.5 py-1 rounded-xl border-2 border-black text-xs font-black cursor-pointer transition-colors ${
                             isDark
                               ? 'bg-[#1b1b2f] hover:bg-[#FFF025] hover:text-black text-white'
                               : 'bg-slate-50 hover:bg-[#FFF025] text-black'
@@ -2322,7 +2323,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
                 {/* Recently Published Projects & Announcements */}
                 <div
-                  className={`p-6 rounded-3xl border-3 border-black brand-shadow space-y-4 ${
+                  className={`p-5 rounded-3xl border-3 border-black brand-shadow space-y-3.5 ${
                     isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
                   }`}
                 >
@@ -2330,7 +2331,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                     <Flame className="w-5 h-5 text-[#C15D00]" />
                     <h2 className="font-chewy text-xl">Recent Community Highlights</h2>
                   </div>
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     {allMergedPosts
                       .filter((p) => p.status === 'published')
                       .slice(0, 4)
@@ -2344,18 +2345,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               : 'border-black/15 hover:border-black bg-slate-50 hover:bg-[#FFFDF5]'
                           }`}
                         >
-                          <span className="text-[10px] font-black uppercase text-[#FFF025] bg-black px-2 py-0.5 rounded">
-                            {p.categoryName}
-                          </span>
-                          <div className="text-xs font-black line-clamp-2 mt-1.5">
-                            {p.title}
+                          <div className="flex items-center justify-between gap-2 text-[10px] font-black uppercase tracking-wider">
+                            <span className={isDark ? 'text-[#FFF025]' : 'text-[#B11469]'}>
+                              {p.categoryName}
+                            </span>
+                            <span className={isDark ? 'text-slate-400' : 'text-slate-500'}>
+                              by {p.authorName}
+                            </span>
                           </div>
-                          <div
-                            className={`text-[11px] mt-1 ${
-                              isDark ? 'text-slate-400' : 'text-slate-500'
-                            }`}
-                          >
-                            by {p.authorName}
+                          <div className="text-xs font-black line-clamp-2 mt-1">
+                            {p.title}
                           </div>
                         </div>
                       ))}

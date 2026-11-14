@@ -375,4 +375,22 @@ export function evaluateChatComposerKeyDown(
   return 'noop';
 }
 
+export const SCROLL_TO_BOTTOM_THRESHOLD_PX = 140;
+
+/**
+ * Returns true when the chat stream viewport has scrolled upward past `thresholdPx`
+ * above the bottom so a floating Scroll-to-Bottom down arrow button should appear.
+ */
+export function shouldShowScrollToBottomButton(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  thresholdPx: number = SCROLL_TO_BOTTOM_THRESHOLD_PX
+): boolean {
+  if (!Number.isFinite(scrollHeight) || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight)) {
+    return false;
+  }
+  const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+  return distanceFromBottom > thresholdPx;
+}
 
