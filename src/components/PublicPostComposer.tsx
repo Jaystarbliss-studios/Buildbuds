@@ -17,6 +17,7 @@ import {
   CloudinaryMediaItem,
   PublicCategory,
   PublicPost,
+  CommunityChallenge,
   DEFAULT_PUBLIC_CATEGORIES,
 } from '../types/community.ts';
 import {
@@ -26,6 +27,7 @@ import {
   savePostDraftLocally,
   loadPostDraftLocally,
   savePublicPost,
+  subscribeToCommunityChallenges,
   MAX_IMAGES_PER_POST,
   getCloudinaryResponsiveUrl,
 } from '../utils/communityService.ts';
@@ -67,6 +69,8 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
   const [gameUrl, setGameUrl] = useState('');
   const [githubUrl, setGithubUrl] = useState('');
   const [media, setMedia] = useState<CloudinaryMediaItem[]>([]);
+  const [challenges, setChallenges] = useState<CommunityChallenge[]>([]);
+  const [challengeId, setChallengeId] = useState('');
 
   const [uploadingFiles, setUploadingFiles] = useState<
     Array<{ name: string; progress: number; error?: string }>
@@ -80,6 +84,13 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
   const isModOrAdmin = authorProfile.role === 'admin' || authorProfile.role === 'moderator';
   const isGamePost = categoryId === 'games' || Boolean(gameUrl.trim());
   const gameUrlCheck = gameUrl.trim() ? validateVercelGameUrl(gameUrl) : null;
+
+  useEffect(() => {
+    const unsub = subscribeToCommunityChallenges((list) => {
+      setChallenges(list.filter((c) => c.challengeStatus === 'active' || c.publishStatus === 'published'));
+    });
+    return () => unsub();
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -96,6 +107,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
       setGameUrl(editingPost.gameUrl || '');
       setGithubUrl(editingPost.githubUrl || '');
       setMedia(editingPost.media || []);
+      setChallengeId(editingPost.challengeId || '');
       return;
     }
 
@@ -110,6 +122,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
       setGameUrl(savedDraft.gameUrl || '');
       setGithubUrl(savedDraft.githubUrl || '');
       setMedia(savedDraft.media || []);
+      setChallengeId(savedDraft.challengeId || '');
       if (savedDraft.title || savedDraft.body) {
         setStatusBanner('Restored your unsaved post draft automatically.');
       }
@@ -123,6 +136,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
       setGameUrl('');
       setGithubUrl('');
       setMedia([]);
+      setChallengeId('');
     }
   }, [isOpen, editingPost, authorProfile.uid]);
 
@@ -243,6 +257,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
         .map((t) => t.trim())
         .filter(Boolean);
 
+      const selectedChal = challenges.find((c) => c.id === challengeId);
       const saved = await savePublicPost({
         existingPostId: editingPost?.id,
         title,
@@ -255,6 +270,8 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
         websiteUrl,
         gameUrl,
         githubUrl,
+        challengeId: challengeId || '',
+        challengeTitle: selectedChal?.title || '',
         authorProfile,
         desiredStatus,
         requireReview,
@@ -360,6 +377,28 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
               </select>
             </div>
           </div>
+
+          {challenges.length > 0 && (
+            <div>
+              <label className="block text-xs font-black uppercase tracking-wider mb-1">
+                Register for Community Challenge (Optional)
+              </label>
+              <select
+                value={challengeId}
+                onChange={(e) => setChallengeId(e.target.value)}
+                className={`w-full px-3.5 py-2.5 text-xs font-bold rounded-xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
+                  isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'
+                }`}
+              >
+                <option value="">-- None (General Showcase Post) --</option>
+                {challenges.map((chal) => (
+                  <option key={chal.id} value={chal.id}>
+                    🎯 {chal.title} ({chal.category})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-xs font-black uppercase tracking-wider mb-1">

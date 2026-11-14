@@ -2851,6 +2851,66 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Challenge Leaderboard (Top 20 Contestants) */}
+              <div className="space-y-3 pt-4 border-t-2 border-black/10">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5 text-[#C15D00]">
+                    <Trophy className="w-4 h-4 text-[#C15D00]" />
+                    <span>Challenge Leaderboard (Top 20 Contestants)</span>
+                  </div>
+                  <span className={`text-[11px] font-bold ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
+                    Ranked by platform reactions &amp; stars
+                  </span>
+                </div>
+
+                {(() => {
+                  const challengePosts = firestorePosts
+                    .filter((p) => p.challengeId === selectedChallenge.id && p.status === 'published')
+                    .sort((a, b) => (b.totalReactions || 0) - (a.totalReactions || 0))
+                    .slice(0, 20);
+
+                  if (challengePosts.length === 0) {
+                    return (
+                      <div className={`p-4 rounded-xl border-2 border-dashed text-center text-xs font-bold ${
+                        isDark ? 'bg-[#1b1b2f] border-white/20 text-slate-400' : 'bg-slate-50 border-black/20 text-slate-600'
+                      }`}>
+                        No submissions registered for this challenge yet. Be the first to submit!
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {challengePosts.map((entry, index) => (
+                        <div
+                          key={entry.id}
+                          className={`p-3 rounded-xl border-2 border-black flex items-center justify-between gap-3 ${
+                            index === 0
+                              ? 'bg-[#FFF025] text-black font-black'
+                              : isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className={`w-6 h-6 rounded-lg border-2 border-black flex items-center justify-center text-xs font-black shrink-0 ${
+                              index === 0 ? 'bg-black text-[#FFF025]' : 'bg-slate-200 text-black'
+                            }`}>
+                              #{index + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="text-xs font-black truncate">{entry.title}</div>
+                              <div className="text-[10px] opacity-75 truncate">By {entry.authorName} • {entry.categoryName}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 text-xs font-black shrink-0">
+                            <span>⭐ {entry.totalReactions || 0}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
 
             <div

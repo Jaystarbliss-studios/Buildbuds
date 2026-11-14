@@ -153,16 +153,23 @@ import {
   subscribeToMyFollowing,
   followCreator,
   unfollowCreator,
+  subscribeToRegisteredSchools,
+  normalizeRegisteredSchoolsList,
+  isPlaceholderSchoolName,
 } from '../utils/communityService.ts';
 import {
   StudentAccessRequest,
   UserNotificationItem,
   ChannelActivityDoc,
+  DEFAULT_REGISTERED_SCHOOLS,
+  SUPPORT_CONTACT_EMAIL,
+  SUPPORT_WHATSAPP_DISPLAY,
+  SUPPORT_WHATSAPP_URL,
 } from '../types/community.ts';
 import { toggleMessageReaction } from '../utils/communityLogic.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 import { MemberProfileModal } from './MemberProfileModal.tsx';
-import { AdminControlCenterModal } from './AdminControlCenterModal.tsx';
+import { AdminControlCenterModal, type AdminCenterTab } from './AdminControlCenterModal.tsx';
 import {
   buildPublicMemberProfileSummary,
   type PublicMemberProfileSummary,
@@ -468,7 +475,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
 
   const [onlineMembers, setOnlineMembers] = useState<PresenceItem[]>([]);
-  const [allPlatformUsers, setAllPlatformUsers] = useState<BuilderProfile[]>([]);
+  const [rawPlatformUsers, setRawPlatformUsers] = useState<BuilderProfile[]>([]);
+  const [membershipSchoolMap, setMembershipSchoolMap] = useState<Record<string, string>>({});
+  const [registeredSchoolsList, setRegisteredSchoolsList] = useState<string[]>(
+    DEFAULT_REGISTERED_SCHOOLS
+  );
   const [approvedHubMemberIds, setApprovedHubMemberIds] = useState<Set<string>>(new Set());
   const [revokedHubMemberIds, setRevokedHubMemberIds] = useState<Set<string>>(new Set());
   const [hubAccessRequests, setHubAccessRequests] = useState<StudentAccessRequest[]>([]);
@@ -481,9 +492,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Drawers & Modals
   const [showMembersDrawer, setShowMembersDrawer] = useState(false);
   const [showAdminDrawer, setShowAdminDrawer] = useState(false);
-  const [adminTab, setAdminTab] = useState<
-    'reports' | 'access' | 'global' | 'channels' | 'users' | 'groups'
-  >('reports');
+  const [adminTab, setAdminTab] = useState<AdminCenterTab>('overview');
   const [selectedAdminChannelId, setSelectedAdminChannelId] = useState<string>(initialChannelId);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showExtendedContextEmotes, setShowExtendedContextEmotes] = useState(false);
@@ -1016,7 +1025,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       if (cachedUsersRaw) {
         const parsed = JSON.parse(cachedUsersRaw) as BuilderProfile[];
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setAllPlatformUsers(parsed);
+          setRawPlatformUsers(parsed);
         }
       }
     } catch {
@@ -1045,7 +1054,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             isApprovedStudent: Boolean(d.isApprovedStudent),
           };
         });
-        setAllPlatformUsers(users);
+        setRawPlatformUsers(users);
         try {
           window.localStorage.setItem('buildbuds_hub_users_cache', JSON.stringify(users));
         } catch {
@@ -1061,26 +1070,69 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       (snapshot) => {
         const approvedIds = new Set<string>();
         const revokedIds = new Set<string>();
+        const schoolMap: Record<string, string> = {};
         snapshot.docs.forEach((docSnap) => {
           const d = docSnap.data();
           const uid = d.uid || docSnap.id;
+          if (d?.schoolName && !isPlaceholderSchoolName(d.schoolName)) {
+            schoolMap[uid] = String(d.schoolName).trim();
+          }
           if (d?.status === 'approved') {
             approvedIds.add(uid);
           } else if (d?.status === 'revoked' || d?.status === 'suspended') {
             revokedIds.add(uid);
           }
         });
+        setMembershipSchoolMap(schoolMap);
         setApprovedHubMemberIds(approvedIds);
         setRevokedHubMemberIds(revokedIds);
       },
       () => {}
     );
 
+    const unsubscribeSchools = subscribeToRegisteredSchools((schools) => {
+      setRegisteredSchoolsList(schools);
+    });
+
     return () => {
       unsubscribeUsers();
       unsubscribeMemberships();
+      unsubscribeSchools();
     };
   }, []);
+
+  // Enrich allPlatformUsers with real schoolName from communityMemberships or studentAccessRequests when users/{uid}.schoolName is empty or placeholder
+  const allPlatformUsers = useMemo<BuilderProfile[]>(() => {
+    const reqSchoolMap: Record<string, string> = {};
+    hubAccessRequests.forEach((r) => {
+      if (r.schoolName && !isPlaceholderSchoolName(r.schoolName)) {
+        reqSchoolMap[r.uid] = r.schoolName.trim();
+      }
+    });
+    return rawPlatformUsers.map((u) => {
+      const hasRealSchool = u.schoolName && !isPlaceholderSchoolName(u.schoolName);
+      const resolvedSchool = hasRealSchool
+        ? u.schoolName
+        : membershipSchoolMap[u.uid] || reqSchoolMap[u.uid] || u.schoolName || '';
+      return resolvedSchool !== u.schoolName ? { ...u, schoolName: resolvedSchool } : u;
+    });
+  }, [rawPlatformUsers, membershipSchoolMap, hubAccessRequests]);
+
+  const availableRegisteredSchools = useMemo<string[]>(() => {
+    return normalizeRegisteredSchoolsList(registeredSchoolsList, [
+      builderProfile?.schoolName,
+      currentUser?.uid ? membershipSchoolMap[currentUser.uid] : undefined,
+      editProfileSchool,
+      ...allPlatformUsers.map((u) => u.schoolName),
+    ]);
+  }, [
+    registeredSchoolsList,
+    builderProfile?.schoolName,
+    currentUser?.uid,
+    membershipSchoolMap,
+    editProfileSchool,
+    allPlatformUsers,
+  ]);
 
   // Real-time listener for Student Access Requests (Super Admin only)
   useEffect(() => {
@@ -4041,7 +4093,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       return;
     }
     setEditProfileName(builderProfile.displayName || '');
-    setEditProfileSchool(builderProfile.schoolName || '');
+    const userRealSchool = !isPlaceholderSchoolName(builderProfile.schoolName)
+      ? builderProfile.schoolName
+      : membershipSchoolMap[currentUser.uid] || '';
+    setEditProfileSchool(userRealSchool);
     setSelectedAccentColor(builderProfile.avatarColor || '#FFF025');
     const matchedPreset = findPresetAvatar(builderProfile.avatarUrl);
     setSelectedPresetAvatarId(
@@ -4443,7 +4498,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               openReportsCount > 0
                                 ? 'reports'
                                 : isSuperAdmin
-                                  ? 'access'
+                                  ? 'overview'
                                   : 'channels'
                             );
                             setActiveThreadMessage(null);
@@ -7763,15 +7818,39 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         </div>
                         <div>
                           <label className="block text-[10px] font-bold uppercase tracking-wider text-white/55 mb-1">
-                            School or Creator Club
+                            Registered School
                           </label>
-                          <input
-                            type="text"
+                          <select
                             value={editProfileSchool}
                             onChange={(e) => setEditProfileSchool(e.target.value)}
-                            placeholder="School or Club"
                             className="w-full px-3 py-2 rounded-xl bg-[#14161f] border border-white/15 text-xs font-bold text-white focus:outline-none focus:border-[#FFF025]"
-                          />
+                          >
+                            <option value="">Select your registered school...</option>
+                            {availableRegisteredSchools.map((school) => (
+                              <option key={school} value={school}>
+                                {school}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="mt-1 text-[10px] text-white/55 leading-snug">
+                            School not listed? Contact{' '}
+                            <a
+                              href={`mailto:${SUPPORT_CONTACT_EMAIL}`}
+                              className="text-[#FFF025] underline"
+                            >
+                              {SUPPORT_CONTACT_EMAIL}
+                            </a>{' '}
+                            or{' '}
+                            <a
+                              href={SUPPORT_WHATSAPP_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[#FFF025] underline"
+                            >
+                              {SUPPORT_WHATSAPP_DISPLAY} on WhatsApp
+                            </a>
+                            .
+                          </p>
                         </div>
                       </div>
                     </div>

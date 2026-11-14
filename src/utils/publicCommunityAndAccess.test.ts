@@ -10,6 +10,9 @@ import {
   canUserPublishPublicContent,
   doesPostMatchCategoryFilter,
   computeSinglePostReactionTransition,
+  normalizeRegisteredSchoolsList,
+  isPlaceholderSchoolName,
+  ensureValidExternalHref,
   MAX_IMAGE_SIZE_BYTES,
 } from './communityService.ts';
 import { signCloudinaryParameters } from '../../api/_lib/firebaseAuthVerifier.ts';
@@ -19,7 +22,13 @@ import {
   buildStatusUpdateEmailHtml,
 } from '../../api/_lib/emailProvider.ts';
 import { INITIAL_PUBLIC_COMMUNITY_POSTS } from '../data/publicCommunitySeeds.ts';
-import { DEFAULT_PUBLIC_CATEGORIES } from '../types/community.ts';
+import {
+  DEFAULT_PUBLIC_CATEGORIES,
+  DEFAULT_REGISTERED_SCHOOLS,
+  SUPPORT_CONTACT_EMAIL,
+  SUPPORT_WHATSAPP_DISPLAY,
+  SUPPORT_WHATSAPP_URL,
+} from '../types/community.ts';
 
 test('Cloudinary validation enforces MIME type, extension, 5MB limit, and 5 images max per post', () => {
   const validPng = validateCloudinaryImageFile({
@@ -255,4 +264,27 @@ test('computeSinglePostReactionTransition enforces strictly 1 reaction per user 
   assert.deepEqual(step3.updatedTypes, []);
   assert.equal(step3.reactionCounts.rocket, 1);
   assert.equal(step3.totalReactions, 3);
+});
+
+test('Registered Schools list normalization, placeholder detection, external URL safety, and support contacts work accurately', () => {
+  assert.equal(SUPPORT_CONTACT_EMAIL, 'jaystarblissstudios@gmail.com');
+  assert.equal(SUPPORT_WHATSAPP_DISPLAY, '+2347077638925');
+  assert.equal(SUPPORT_WHATSAPP_URL, 'https://wa.me/2347077638925');
+  assert.ok(DEFAULT_REGISTERED_SCHOOLS.length >= 5);
+
+  assert.equal(isPlaceholderSchoolName('School or Academy'), true);
+  assert.equal(isPlaceholderSchoolName('School or Club'), true);
+  assert.equal(isPlaceholderSchoolName('Jaystarbliss Creator Academy'), false);
+
+  const deduped = normalizeRegisteredSchoolsList([
+    '  Greenwood High  ',
+    'greenwood high',
+    'School or Academy',
+    'Lagoon School',
+  ]);
+  assert.deepEqual(deduped, ['Greenwood High', 'Lagoon School']);
+
+  assert.equal(ensureValidExternalHref('https://my-game.vercel.app'), 'https://my-game.vercel.app');
+  assert.equal(ensureValidExternalHref('my-game.vercel.app'), 'https://my-game.vercel.app');
+  assert.equal(ensureValidExternalHref('javascript:alert(1)'), '');
 });

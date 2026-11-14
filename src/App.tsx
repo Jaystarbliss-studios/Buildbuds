@@ -365,6 +365,42 @@ function BuildBudsApp() {
     };
   }, [currentUser?.uid]);
 
+  // Ensure builderProfile always carries the student's real schoolName & gradeLevel from membership or application if missing on users/{uid}
+  useEffect(() => {
+    if (!builderProfile) return;
+    const realSchool =
+      builderProfile.schoolName?.trim() ||
+      membership?.schoolName?.trim() ||
+      studentRequest?.schoolName?.trim() ||
+      '';
+    const realGrade =
+      builderProfile.gradeLevel?.trim() ||
+      membership?.gradeLevel?.trim() ||
+      studentRequest?.gradeLevel?.trim() ||
+      '';
+    if (
+      (realSchool && realSchool !== builderProfile.schoolName) ||
+      (realGrade && realGrade !== builderProfile.gradeLevel)
+    ) {
+      setBuilderProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              schoolName: realSchool || prev.schoolName,
+              gradeLevel: realGrade || prev.gradeLevel,
+            }
+          : prev
+      );
+    }
+  }, [
+    builderProfile?.schoolName,
+    builderProfile?.gradeLevel,
+    membership?.schoolName,
+    membership?.gradeLevel,
+    studentRequest?.schoolName,
+    studentRequest?.gradeLevel,
+  ]);
+
   // Global real-time Inbox notifications listener for the signed-in user
   useEffect(() => {
     if (!currentUser) {
@@ -777,8 +813,8 @@ function BuildBudsApp() {
     }
   }
 
-  // ROUTE 1: ADMIN STUDENT VERIFICATION DASHBOARD (/admin/student-access)
-  if (cleanPathname.startsWith('/admin/student-access')) {
+  // ROUTE 1: GENERALIZED ADMIN CONTROL CENTER (/admin, /admin/student-access)
+  if (cleanPathname === '/admin' || cleanPathname.startsWith('/admin/')) {
     return (
       <>
         <AdminStudentAccessDashboard
@@ -925,22 +961,20 @@ function BuildBudsApp() {
     const searchParams = new URLSearchParams(queryString);
     const tabParam = searchParams.get('tab');
 
-    if (cleanPathname.startsWith('/community/creations')) {
+    if (cleanPathname.startsWith('/community/creations') || tabParam === 'creations') {
       initialTab = 'creations';
-    } else if (cleanPathname.startsWith('/community/updates')) {
+    } else if (cleanPathname.startsWith('/community/updates') || tabParam === 'updates') {
       initialTab = 'updates';
-    } else if (cleanPathname.startsWith('/community/challenges')) {
+    } else if (cleanPathname.startsWith('/community/challenges') || tabParam === 'challenges') {
       initialTab = 'challenges';
+    } else if (cleanPathname.startsWith('/community/saved') || tabParam === 'saved') {
+      initialTab = 'saved';
+    } else if (cleanPathname.startsWith('/community/my-posts') || tabParam === 'my-posts') {
+      initialTab = 'my-posts';
+    } else if (cleanPathname.startsWith('/community/review') || tabParam === 'review') {
+      initialTab = 'review';
     } else if (cleanPathname.startsWith('/community/posts/')) {
       initialPostId = cleanPathname.replace('/community/posts/', '').split('/')[0] || null;
-    } else if (tabParam === 'saved') {
-      initialTab = 'saved';
-    } else if (tabParam === 'my-posts') {
-      initialTab = 'my-posts';
-    } else if (tabParam === 'challenges') {
-      initialTab = 'challenges';
-    } else if (tabParam === 'review') {
-      initialTab = 'review';
     }
 
     return (

@@ -49,6 +49,8 @@ import {
   ChallengePublishStatus,
   ChallengeSkillLevel,
   ChallengeResourceLink,
+  DEFAULT_REGISTERED_SCHOOLS,
+  RegisteredSchoolsDoc,
 } from '../types/community.ts';
 import { filterProfanity, validateVercelGameUrl } from './moderation.ts';
 import { resolveMentionedTargets } from './messageGrouping.ts';
@@ -302,6 +304,7 @@ export interface PublicPostDraftData {
   websiteUrl: string;
   gameUrl: string;
   githubUrl: string;
+  challengeId?: string;
   media: CloudinaryMediaItem[];
   updatedAt: string;
 }
@@ -365,6 +368,8 @@ export async function savePublicPost(params: {
   websiteUrl?: string;
   gameUrl?: string;
   githubUrl?: string;
+  challengeId?: string;
+  challengeTitle?: string;
   authorProfile: BuilderProfile;
   desiredStatus: 'draft' | 'published';
   requireReview?: boolean;
@@ -466,6 +471,8 @@ export async function savePublicPost(params: {
       websiteUrl: params.websiteUrl?.trim() || '',
       gameUrl: cleanGameUrl,
       githubUrl: params.githubUrl?.trim() || '',
+      challengeId: params.challengeId?.trim() || existingData.challengeId || '',
+      challengeTitle: params.challengeTitle?.trim() || existingData.challengeTitle || '',
       status: finalStatus,
       updatedAt: nowIso,
     };
@@ -500,6 +507,8 @@ export async function savePublicPost(params: {
     websiteUrl: params.websiteUrl?.trim() || '',
     gameUrl: cleanGameUrl,
     githubUrl: params.githubUrl?.trim() || '',
+    challengeId: params.challengeId?.trim() || '',
+    challengeTitle: params.challengeTitle?.trim() || '',
     authorId: currentUser.uid,
     authorName: params.authorProfile.displayName,
     authorAvatar: params.authorProfile.avatarUrl || '',
@@ -2624,5 +2633,363 @@ export async function deleteCommunityChallenge(challengeId: string): Promise<voi
 
   await deleteDoc(doc(db, 'communityChallenges', challengeId));
 }
+
+// ===============================================================
+// Registered Schools Configuration (`community_settings/schools`)
+// ===============================================================
+
+const PLACEHOLDER_SCHOOL_NAMES = new Set([
+  '',
+  'not specified',
+  'build buds',
+  'build buds community',
+  'build buds network',
+  'build buds creator club',
+  'public member',
+  'public community account',
+  'school or academy',
+  'school or club',
+  'school / academy',
+  'school / club',
+  'jaystarbliss studios partner school',
+  'jaystarbliss partner school',
+]);
+
+export function isPlaceholderSchoolName(name?: string | null): boolean {
+  const clean = String(name || '').trim().toLowerCase();
+  return PLACEHOLDER_SCHOOL_NAMES.has(clean);
+}
+
+/**
+ * Pure helper that normalizes, deduplicates, and merges configured registered schools
+ * with optional extra school names so no student's real school is missing from dropdowns.
+ */
+export function normalizeRegisteredSchoolsList(
+  configuredSchools?: string[],
+  extraSchoolNames?: Array<string | undefined | null>
+): string[] {
+  const baseList =
+    Array.isArray(configuredSchools) && configuredSchools.length > 0
+      ? configuredSchools
+      : DEFAULT_REGISTERED_SCHOOLS;
+
+  const seenLower = new Set<string>();
+  const result: string[] = [];
+
+  const pushIfValid = (raw?: string | null) => {
+    const clean = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!clean || clean.length < 2 || isPlaceholderSchoolName(clean)) {
+      return;
+    }
+    const lower = clean.toLowerCase();
+    if (seenLower.has(lower)) return;
+    seenLower.add(lower);
+    result.push(clean);
+  };
+
+  for (const s of baseList) {
+    pushIfValid(s);
+  }
+  if (Array.isArray(extraSchoolNames)) {
+    for (const s of extraSchoolNames) {
+      pushIfValid(s);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Subscribes in real-time to the Admin-configured Registered Schools list in `community_settings/schools`.
+ */
+export function subscribeToRegisteredSchools(
+  callback: (schools: string[]) => void
+): () => void {
+  const docRef = doc(db, 'community_settings', 'schools');
+  return onSnapshot(
+    docRef,
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as Partial<RegisteredSchoolsDoc>;
+        if (Array.isArray(data.schools)) {
+          // Even if an admin removed some defaults, preserve their exact non-empty list
+          const cleaned = data.schools
+            .map((s) => String(s || '').trim().replace(/\s+/g, ' '))
+            .filter((s) => s.length >= 2 && !isPlaceholderSchoolName(s));
+          const deduped: string[] = [];
+          const seen = new Set<string>();
+          for (const item of cleaned) {
+            const lower = item.toLowerCase();
+            if (!seen.has(lower)) {
+              seen.add(lower);
+              deduped.push(item);
+            }
+          }
+          callback(deduped.length > 0 ? deduped : [...DEFAULT_REGISTERED_SCHOOLS]);
+          return;
+        }
+      }
+      callback([...DEFAULT_REGISTERED_SCHOOLS]);
+    },
+    () => {
+      callback([...DEFAULT_REGISTERED_SCHOOLS]);
+    }
+  );
+}
+
+/**
+ * Admin Action: Save the full list of registered schools to `community_settings/schools`.
+ */
+export async function adminSaveRegisteredSchools(schools: string[]): Promise<string[]> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !isSuperAdminUser(currentUser)) {
+    throw new Error('Only authorised administrators can configure registered schools.');
+  }
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of schools) {
+    const clean = String(raw || '').trim().replace(/\s+/g, ' ');
+    if (!clean || clean.length < 2 || isPlaceholderSchoolName(clean)) continue;
+    const lower = clean.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      deduped.push(clean);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  await setDoc(
+    doc(db, 'community_settings', 'schools'),
+    {
+      schools: deduped,
+      updatedBy: currentUser.uid,
+      updatedByEmail: currentUser.email || ADMIN_EMAIL,
+      updatedAt: nowIso,
+    } satisfies RegisteredSchoolsDoc,
+    { merge: true }
+  );
+
+  return deduped;
+}
+
+/**
+ * Admin Action: Add a new school to the registered schools dropdown list.
+ */
+export async function adminAddRegisteredSchool(
+  schoolName: string,
+  currentSchools: string[]
+): Promise<string[]> {
+  const clean = String(schoolName || '').trim().replace(/\s+/g, ' ');
+  if (!clean || clean.length < 2) {
+    throw new Error('Please enter a valid school name.');
+  }
+  if (isPlaceholderSchoolName(clean)) {
+    throw new Error('Please enter a specific school or academy name.');
+  }
+
+  const next = await adminSaveRegisteredSchools([...currentSchools, clean]);
+
+  try {
+    const currentUser = auth.currentUser;
+    if (currentUser) {
+      await addDoc(collection(db, 'adminAuditLogs'), {
+        action: 'manage_schools',
+        targetUid: 'community_settings/schools',
+        targetEmail: currentUser.email || ADMIN_EMAIL,
+        targetName: clean,
+        adminUid: currentUser.uid,
+        adminEmail: currentUser.email || ADMIN_EMAIL,
+        verifiedAgainstOfficialRecords: true,
+        reason: `Added registered school "${clean}" to student dropdown`,
+        createdAt: new Date().toISOString(),
+      } satisfies AdminAuditLog);
+    }
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return next;
+}
+
+/**
+ * Admin Action: Remove a school from the registered schools dropdown list.
+ */
+export async function adminRemoveRegisteredSchool(
+  schoolName: string,
+  currentSchools: string[]
+): Promise<string[]> {
+  const targetLower = String(schoolName || '').trim().toLowerCase();
+  const filtered = currentSchools.filter((s) => s.trim().toLowerCase() !== targetLower);
+  if (filtered.length === 0) {
+    throw new Error('At least one registered school must remain in the dropdown list.');
+  }
+
+  const next = await adminSaveRegisteredSchools(filtered);
+
+  try {
+    const currentUser = auth.currentUser;
+    if (currentUser) {
+      await addDoc(collection(db, 'adminAuditLogs'), {
+        action: 'manage_schools',
+        targetUid: 'community_settings/schools',
+        targetEmail: currentUser.email || ADMIN_EMAIL,
+        targetName: schoolName,
+        adminUid: currentUser.uid,
+        adminEmail: currentUser.email || ADMIN_EMAIL,
+        verifiedAgainstOfficialRecords: true,
+        reason: `Removed registered school "${schoolName}" from student dropdown`,
+        createdAt: new Date().toISOString(),
+      } satisfies AdminAuditLog);
+    }
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return next;
+}
+
+/**
+ * Normalizes any external URL (`gameUrl`, `websiteUrl`, `githubUrl`) so it always has a valid
+ * `https://` or `http://` protocol and never produces a broken relative link.
+ */
+export function ensureValidExternalHref(rawUrl?: string | null): string {
+  const clean = String(rawUrl || '').trim();
+  if (!clean) return '';
+  if (/^https?:\/\//i.test(clean)) {
+    return clean;
+  }
+  if (clean.startsWith('//')) {
+    return `https:${clean}`;
+  }
+  if (clean.includes('.') && !clean.includes(' ')) {
+    return `https://${clean.replace(/^\/+/, '')}`;
+  }
+  return '';
+}
+
+/**
+ * Admin / Moderator Action: Toggle featured status on a PublicPost (`publicPosts/{postId}`).
+ */
+export async function adminToggleFeaturedPost(post: PublicPost): Promise<boolean> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication required.');
+  }
+  const nextFeatured = !post.isFeatured;
+  await updateDoc(doc(db, 'publicPosts', post.id), {
+    isFeatured: nextFeatured,
+    updatedAt: new Date().toISOString(),
+  });
+  return nextFeatured;
+}
+
+/**
+ * Admin Action: Permanently delete a post document from `publicPosts/{postId}`.
+ */
+export async function adminDeletePublicPostPermanently(postId: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication required.');
+  }
+  await deleteDoc(doc(db, 'publicPosts', postId));
+}
+
+/**
+ * Clones a published project's metadata into a new derivative work with reference to the original.
+ */
+export async function forkProject(params: {
+  originalPost: PublicPost;
+  authorProfile: BuilderProfile;
+  customTitle?: string;
+  customSummary?: string;
+}): Promise<string> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication required to fork a project.');
+  }
+  const { originalPost, authorProfile, customTitle, customSummary } = params;
+  const postRef = doc(collection(db, 'publicPosts'));
+  const nowIso = new Date().toISOString();
+
+  const newPost: PublicPost = {
+    id: postRef.id,
+    title: customTitle?.trim() || `Fork of ${originalPost.title}`,
+    summary: customSummary?.trim() || originalPost.summary || '',
+    body: originalPost.body || '',
+    categoryId: originalPost.categoryId,
+    categoryName: originalPost.categoryName,
+    tags: originalPost.tags || [],
+    media: originalPost.media || [],
+    websiteUrl: originalPost.websiteUrl || '',
+    gameUrl: originalPost.gameUrl || '',
+    githubUrl: originalPost.githubUrl || '',
+    challengeId: originalPost.challengeId || '',
+    challengeTitle: originalPost.challengeTitle || '',
+    forkedFromPostId: originalPost.id,
+    forkedFromTitle: originalPost.title,
+    forkedFromAuthorName: originalPost.authorName,
+    authorId: currentUser.uid,
+    authorName: authorProfile.displayName,
+    authorAvatar: authorProfile.avatarUrl || '',
+    authorColor: authorProfile.avatarColor || '#FFF025',
+    authorRole: authorProfile.role || 'member',
+    status: 'published',
+    isFeatured: false,
+    reactionCounts: {},
+    totalReactions: 0,
+    commentCount: 0,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  await setDoc(postRef, newPost);
+
+  if (originalPost.authorId && originalPost.authorId !== currentUser.uid) {
+    await sendUserInboxNotification(originalPost.authorId, {
+      type: 'general',
+      title: `Project Forked by @${authorProfile.displayName}`,
+      message: `@${authorProfile.displayName} forked your project "${originalPost.title}" into a new derivative work!`,
+      postId: postRef.id,
+      senderId: currentUser.uid,
+      senderName: authorProfile.displayName,
+      senderAvatar: authorProfile.avatarUrl,
+    });
+  }
+
+  return postRef.id;
+}
+
+/**
+ * Sends a collaboration request message / notification to a project creator.
+ */
+export async function sendCollaborationRequest(params: {
+  targetPostId: string;
+  targetPostTitle: string;
+  targetAuthorId: string;
+  targetAuthorName: string;
+  senderProfile: BuilderProfile;
+  message: string;
+}): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Authentication required.');
+  }
+  const { targetPostId, targetPostTitle, targetAuthorId, senderProfile, message } = params;
+  if (!targetAuthorId || targetAuthorId === currentUser.uid) {
+    throw new Error('Cannot send collaboration request to your own project.');
+  }
+  await sendUserInboxNotification(targetAuthorId, {
+    type: 'general',
+    title: `Collaboration Request from @${senderProfile.displayName}`,
+    message: message.trim() || `@${senderProfile.displayName} would like to collaborate with you on "${targetPostTitle}".`,
+    postId: targetPostId,
+    senderId: currentUser.uid,
+    senderName: senderProfile.displayName,
+    senderAvatar: senderProfile.avatarUrl,
+  });
+}
+
+
 
 

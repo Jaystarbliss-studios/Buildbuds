@@ -402,8 +402,24 @@ export const UserAccountMenu: React.FC<UserAccountMenuProps> = ({
           {isModOrAdmin && (
             <div className="p-1.5">
               <div className={mutedLabelClass}>
-                {isAdmin ? 'Admin & Moderation' : 'Moderator Tools'}
+                {isAdmin ? 'Administration' : 'Moderator Tools'}
               </div>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOpen(false);
+                    onNavigate('/admin/student-access');
+                  }}
+                  className={rowClass}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <ShieldCheck className="w-4 h-4 opacity-80" />
+                    <span>Admin Control Center</span>
+                  </span>
+                  <span className="text-[10px] opacity-60">Open →</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -419,20 +435,6 @@ export const UserAccountMenu: React.FC<UserAccountMenuProps> = ({
               </button>
               {isAdmin && (
                 <>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsOpen(false);
-                      onNavigate('/admin/student-access');
-                    }}
-                    className={rowClass}
-                  >
-                    <span className="flex items-center gap-2.5">
-                      <ShieldCheck className="w-4 h-4 opacity-70" />
-                      <span>Student Access Portal</span>
-                    </span>
-                    <span className="text-[10px] opacity-60">→</span>
-                  </button>
                   {onOpenChallengesModal && (
                     <button
                       type="button"

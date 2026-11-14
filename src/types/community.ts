@@ -67,6 +67,7 @@ export interface AdminAuditLog {
     | 'moderate_post'
     | 'curate_showcase'
     | 'manage_challenge'
+    | 'manage_schools'
     | 'retry_notification';
   targetUid: string;
   targetEmail: string;
@@ -190,6 +191,11 @@ export interface PublicPost {
   websiteUrl?: string;
   gameUrl?: string;
   githubUrl?: string;
+  challengeId?: string;
+  challengeTitle?: string;
+  forkedFromPostId?: string;
+  forkedFromTitle?: string;
+  forkedFromAuthorName?: string;
   authorId: string;
   authorName: string;
   authorAvatar?: string;
@@ -407,3 +413,25 @@ export const PUBLIC_REACTION_OPTIONS: Array<{
   { type: 'clap', emoji: '👏', label: 'Bravo' },
   { type: 'fire', emoji: '🔥', label: 'Awesome' },
 ];
+
+export const SUPPORT_CONTACT_EMAIL = 'jaystarblissstudios@gmail.com';
+export const SUPPORT_WHATSAPP_DISPLAY = '+2347077638925';
+export const SUPPORT_WHATSAPP_URL = 'https://wa.me/2347077638925';
+
+export const DEFAULT_REGISTERED_SCHOOLS: string[] = [
+  'Jaystarbliss Dynamic Academy',
+  'Jaystarbliss Studios School',
+  'Beacon Crest School',
+  'Horizon Tech Academy',
+  'Lincoln Middle School',
+  'Westfield High School',
+  'Riverdale STEM Academy',
+];
+
+export interface RegisteredSchoolsDoc {
+  schools: string[];
+  updatedBy?: string;
+  updatedByEmail?: string;
+  updatedAt: string;
+}
+

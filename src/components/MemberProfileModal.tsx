@@ -52,12 +52,16 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
   variant = 'dark',
 }) => {
   const [fetchedProfile, setFetchedProfile] = useState<BuilderProfile | null>(null);
+  const [fetchedMembershipSchool, setFetchedMembershipSchool] = useState<string>('');
+  const [fetchedMembershipGrade, setFetchedMembershipGrade] = useState<string>('');
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [followerCount, setFollowerCount] = useState<number | null>(null);
   const [isFollowBusy, setIsFollowBusy] = useState(false);
 
   useEffect(() => {
     setFetchedProfile(null);
+    setFetchedMembershipSchool('');
+    setFetchedMembershipGrade('');
     setFollowerCount(null);
     if (!member?.uid) return;
     if (member.uid.startsWith('seed-') || member.uid.startsWith('team-')) {
@@ -69,12 +73,18 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
 
     Promise.all([
       getDoc(doc(db, 'users', member.uid)),
+      getDoc(doc(db, 'communityMemberships', member.uid)).catch(() => null),
       getCreatorFollowerCount(member.uid),
     ])
-      .then(([snap, followers]) => {
+      .then(([snap, memSnap, followers]) => {
         if (cancelled) return;
         if (snap.exists()) {
           setFetchedProfile(snap.data() as BuilderProfile);
+        }
+        if (memSnap && memSnap.exists()) {
+          const memData = memSnap.data() as { schoolName?: string; gradeLevel?: string };
+          if (memData.schoolName) setFetchedMembershipSchool(memData.schoolName);
+          if (memData.gradeLevel) setFetchedMembershipGrade(memData.gradeLevel);
         }
         setFollowerCount(followers);
       })
@@ -101,6 +111,26 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
 
   if (!member) return null;
 
+  const pickRealSchool = (...candidates: Array<string | undefined | null>): string => {
+    for (const c of candidates) {
+      const clean = String(c || '').trim();
+      const lower = clean.toLowerCase();
+      if (
+        clean &&
+        lower !== 'not specified' &&
+        lower !== 'build buds' &&
+        lower !== 'build buds community' &&
+        lower !== 'build buds network' &&
+        lower !== 'school or academy' &&
+        lower !== 'school or club' &&
+        lower !== 'public member'
+      ) {
+        return clean;
+      }
+    }
+    return String(fetchedProfile?.schoolName || member.schoolName || '').trim();
+  };
+
   const mergedProfile = buildPublicMemberProfileSummary({
     uid: member.uid,
     displayName: fetchedProfile?.displayName || member.displayName,
@@ -111,8 +141,13 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
     isApprovedStudent: fetchedProfile?.isApprovedStudent,
     studentAccessStatus: fetchedProfile?.studentAccessStatus,
     accountType: fetchedProfile?.accountType,
-    schoolName: fetchedProfile?.schoolName || member.schoolName,
-    gradeLevel: fetchedProfile?.gradeLevel || member.gradeLevel,
+    schoolName: pickRealSchool(
+      fetchedMembershipSchool,
+      fetchedProfile?.schoolName,
+      member.schoolName
+    ),
+    gradeLevel:
+      fetchedProfile?.gradeLevel || fetchedMembershipGrade || member.gradeLevel,
     primaryInterest: fetchedProfile?.primaryInterest || member.primaryInterest,
     createdAt: fetchedProfile?.createdAt || member.createdAt,
     status: fetchedProfile?.status || member.status,

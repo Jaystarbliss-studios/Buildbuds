@@ -20,6 +20,8 @@ import {
   Send,
   UserPlus,
   UserCheck,
+  GitFork,
+  Trophy,
 } from 'lucide-react';
 import {
   db,
@@ -53,6 +55,8 @@ import {
   deleteOrRemovePublicComment,
   moderatePublicPostStatus,
   notifyModeratorsAndAdminsOfReport,
+  forkProject,
+  sendCollaborationRequest,
 } from '../utils/communityService.ts';
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 import {
@@ -119,6 +123,69 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
   const newCommentTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const isReactingRef = useRef(false);
+
+  const [isForkModalOpen, setIsForkModalOpen] = useState(false);
+  const [forkTitle, setForkTitle] = useState('');
+  const [forkSummary, setForkSummary] = useState('');
+  const [isForking, setIsForking] = useState(false);
+
+  const [isCollaborateModalOpen, setIsCollaborateModalOpen] = useState(false);
+  const [collaborateMessage, setCollaborateMessage] = useState('');
+  const [isCollaborating, setIsCollaborating] = useState(false);
+
+  const handleConfirmFork = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!post) return;
+    if (!currentUser || !builderProfile) {
+      onRequireAuth('fork this project');
+      return;
+    }
+    setIsForking(true);
+    setFeedbackBanner(null);
+    try {
+      await forkProject({
+        originalPost: post,
+        authorProfile: builderProfile,
+        customTitle: forkTitle,
+        customSummary: forkSummary,
+      });
+      setIsForkModalOpen(false);
+      setFeedbackBanner('Project successfully forked into your profile with a reference to the original!');
+    } catch (err) {
+      setFeedbackBanner(err instanceof Error ? err.message : 'Could not fork project.');
+    } finally {
+      setIsForking(false);
+    }
+  };
+
+  const handleSendCollaboration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!post) return;
+    if (!currentUser || !builderProfile) {
+      onRequireAuth('send a collaboration request');
+      return;
+    }
+    setIsCollaborating(true);
+    setFeedbackBanner(null);
+    try {
+      await sendCollaborationRequest({
+        targetPostId: post.id,
+        targetPostTitle: post.title,
+        targetAuthorId: post.authorId,
+        targetAuthorName: post.authorName,
+        senderProfile: builderProfile,
+        message: collaborateMessage,
+      });
+      setIsCollaborateModalOpen(false);
+      setCollaborateMessage('');
+      setFeedbackBanner(`Collaboration request successfully sent to @${post.authorName}!`);
+    } catch (err) {
+      setFeedbackBanner(err instanceof Error ? err.message : 'Could not send collaboration request.');
+    } finally {
+      setIsCollaborating(false);
+    }
+  };
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
   const isModeratorOrAdmin = isAdmin || builderProfile?.role === 'moderator';
@@ -195,8 +262,6 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   const topLevelComments = comments.filter((c) => !c.parentCommentId);
   const getReplies = (parentId: string) =>
     comments.filter((c) => c.parentCommentId === parentId);
-
-  const isReactingRef = React.useRef(false);
 
   const handleReact = async (type: PublicReactionType) => {
     if (!currentUser || !builderProfile) {
@@ -540,6 +605,22 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
 
           {/* Title & Author Header */}
           <div className="space-y-4">
+            {(post.challengeTitle || post.forkedFromPostId) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {post.challengeTitle && (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black">
+                    <span>🎯 Challenge: {post.challengeTitle}</span>
+                  </span>
+                )}
+                {post.forkedFromPostId && post.forkedFromAuthorName && (
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl border-2 border-black text-xs font-bold ${
+                    isDark ? 'bg-[#1b1b2f] text-slate-200' : 'bg-slate-100 text-slate-800'
+                  }`}>
+                    <span>🔗 Forked from {post.forkedFromAuthorName}&apos;s &quot;{post.forkedFromTitle}&quot;</span>
+                  </span>
+                )}
+              </div>
+            )}
             <h1
               id="post-detail-title"
               className="font-chewy text-3xl sm:text-4xl leading-tight"
@@ -647,6 +728,36 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                       )}
                     </button>
                   )}
+
+                {!isOwner && currentUser && builderProfile && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCollaborateModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Collaborate</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!currentUser || !builderProfile) {
+                      onRequireAuth('fork this project');
+                      return;
+                    }
+                    setForkTitle(`Fork of ${post.title}`);
+                    setForkSummary(post.summary || '');
+                    setIsForkModalOpen(true);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-black text-xs font-black cursor-pointer ${
+                    isDark ? 'bg-[#1b1b2f] hover:bg-white/10 text-white' : 'bg-white hover:bg-slate-100 text-black'
+                  }`}
+                >
+                  <GitFork className="w-3.5 h-3.5" />
+                  <span>Fork</span>
+                </button>
 
                 <button
                   type="button"
@@ -1300,6 +1411,97 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Fork Project Modal */}
+      {isForkModalOpen && (
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className={`w-full max-w-lg rounded-3xl border-3 border-black p-6 space-y-5 brand-shadow ${isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'}`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <GitFork className="w-5 h-5 text-[#FFF025]" />
+                <h3 className="font-chewy text-2xl">Fork Project</h3>
+              </div>
+              <button type="button" onClick={() => setIsForkModalOpen(false)} className="p-1.5 rounded-xl border-2 border-black bg-white text-black cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">
+              Clones this project&apos;s metadata, media, and code links into your own profile as a derivative work with a reference back to @{post.authorName}.
+            </p>
+            <form onSubmit={handleConfirmFork} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black uppercase tracking-wider mb-1">New Project Title *</label>
+                <input
+                  type="text"
+                  required
+                  value={forkTitle}
+                  onChange={(e) => setForkTitle(e.target.value)}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'}`}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-black uppercase tracking-wider mb-1">Project Summary / Notes</label>
+                <textarea
+                  rows={3}
+                  value={forkSummary}
+                  onChange={(e) => setForkSummary(e.target.value)}
+                  placeholder="Describe your changes or additions in this fork..."
+                  className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'}`}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button type="button" onClick={() => setIsForkModalOpen(false)} className="px-4 py-2 rounded-xl border-2 border-black text-xs font-bold bg-slate-200 text-black cursor-pointer">
+                  Cancel
+                </button>
+                <button type="submit" disabled={isForking} className="px-5 py-2 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black cursor-pointer">
+                  {isForking ? 'Forking Project...' : 'Publish Forked Project'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Collaborate Request Modal */}
+      {isCollaborateModalOpen && (
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className={`w-full max-w-lg rounded-3xl border-3 border-black p-6 space-y-5 brand-shadow ${isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'}`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-[#FFF025]" />
+                <h3 className="font-chewy text-2xl">Collaborate with @{post.authorName}</h3>
+              </div>
+              <button type="button" onClick={() => setIsCollaborateModalOpen(false)} className="p-1.5 rounded-xl border-2 border-black bg-white text-black cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-400">
+              Send a collaboration request message to @{post.authorName}. They will receive an instant notification in their inbox.
+            </p>
+            <form onSubmit={handleSendCollaboration} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black uppercase tracking-wider mb-1">Collaboration Message *</label>
+                <textarea
+                  rows={4}
+                  required
+                  value={collaborateMessage}
+                  onChange={(e) => setCollaborateMessage(e.target.value)}
+                  placeholder={`Hi @${post.authorName}, I saw your project "${post.title}" and would love to collaborate on...`}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'}`}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button type="button" onClick={() => setIsCollaborateModalOpen(false)} className="px-4 py-2 rounded-xl border-2 border-black text-xs font-bold bg-slate-200 text-black cursor-pointer">
+                  Cancel
+                </button>
+                <button type="submit" disabled={isCollaborating || !collaborateMessage.trim()} className="px-5 py-2 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black cursor-pointer">
+                  {isCollaborating ? 'Sending Request...' : 'Send Collaboration Request'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

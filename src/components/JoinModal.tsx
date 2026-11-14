@@ -1,6 +1,16 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { X, AlertCircle } from 'lucide-react';
 import { validateJoinForm, JoinFormData } from '../utils/communityLogic.ts';
+import {
+  DEFAULT_REGISTERED_SCHOOLS,
+  SUPPORT_CONTACT_EMAIL,
+  SUPPORT_WHATSAPP_DISPLAY,
+  SUPPORT_WHATSAPP_URL,
+} from '../types/community.ts';
+import {
+  subscribeToRegisteredSchools,
+  normalizeRegisteredSchoolsList,
+} from '../utils/communityService.ts';
 import {
   auth,
   googleProvider,
@@ -69,6 +79,7 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   const [redirectNotice, setRedirectNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [pendingAuthUser, setPendingAuthUser] = useState<User | null>(null);
+  const [registeredSchools, setRegisteredSchools] = useState<string[]>(DEFAULT_REGISTERED_SCHOOLS);
 
   const [formData, setFormData] = useState<JoinFormData>({
     fullName: '',
@@ -81,6 +92,18 @@ export const JoinModal: React.FC<JoinModalProps> = ({
   const [selectedAvatarBg, setSelectedAvatarBg] = useState<string>('#FFF025');
   const [errors, setErrors] = useState<Partial<Record<keyof JoinFormData, string>>>({});
   const [createdProfile, setCreatedProfile] = useState<BuilderProfile | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeToRegisteredSchools((schools) => {
+      setRegisteredSchools(schools);
+    });
+    return () => unsub();
+  }, [isOpen]);
+
+  const schoolOptions = useMemo(() => {
+    return normalizeRegisteredSchoolsList(registeredSchools, [formData.schoolName]);
+  }, [registeredSchools, formData.schoolName]);
 
   if (!isOpen) return null;
 
@@ -670,15 +693,39 @@ export const JoinModal: React.FC<JoinModalProps> = ({
 
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-white/90 mb-1">
-                      School or Club *
+                      Registered School *
                     </label>
-                    <input
-                      type="text"
+                    <select
                       value={formData.schoolName}
                       onChange={(e) => setFormData({ ...formData, schoolName: e.target.value })}
-                      placeholder="e.g. Westfield High"
-                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-white/5 text-white placeholder-white/40 focus:outline-none focus:border-[#FFF025]"
-                    />
+                      className="w-full px-3 py-2 text-sm border-2 border-white/20 rounded-xl bg-[#11131a] text-white focus:outline-none focus:border-[#FFF025]"
+                    >
+                      <option value="">Select your registered school...</option>
+                      {schoolOptions.map((school) => (
+                        <option key={school} value={school}>
+                          {school}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[10px] text-white/65 leading-snug">
+                      School not listed? Contact{' '}
+                      <a
+                        href={`mailto:${SUPPORT_CONTACT_EMAIL}`}
+                        className="text-[#FFF025] underline"
+                      >
+                        {SUPPORT_CONTACT_EMAIL}
+                      </a>{' '}
+                      or{' '}
+                      <a
+                        href={SUPPORT_WHATSAPP_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#FFF025] underline"
+                      >
+                        {SUPPORT_WHATSAPP_DISPLAY} on WhatsApp
+                      </a>
+                      .
+                    </p>
                     {errors.schoolName && (
                       <p className="text-[11px] font-bold text-[#FFF025] mt-1">{errors.schoolName}</p>
                     )}

@@ -19,8 +19,17 @@ import {
   StudentAccessRequest,
   StudentAccessStatus,
   JAYSTARBLISS_PROGRAMMES,
+  DEFAULT_REGISTERED_SCHOOLS,
+  SUPPORT_CONTACT_EMAIL,
+  SUPPORT_WHATSAPP_DISPLAY,
+  SUPPORT_WHATSAPP_URL,
 } from '../types/community.ts';
-import { submitStudentAccessApplication } from '../utils/communityService.ts';
+import {
+  submitStudentAccessApplication,
+  subscribeToRegisteredSchools,
+  normalizeRegisteredSchoolsList,
+  isPlaceholderSchoolName,
+} from '../utils/communityService.ts';
 
 interface StudentAccessPageProps {
   currentUser: User | null;
@@ -51,6 +60,7 @@ export const StudentAccessPage: React.FC<StudentAccessPageProps> = ({
   const [programme, setProgramme] = useState(JAYSTARBLISS_PROGRAMMES[0]);
   const [studentReference, setStudentReference] = useState('');
   const [confirmedDeclaration, setConfirmedDeclaration] = useState(false);
+  const [registeredSchools, setRegisteredSchools] = useState<string[]>(DEFAULT_REGISTERED_SCHOOLS);
 
   const [isEditingExisting, setIsEditingExisting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,16 +68,37 @@ export const StudentAccessPage: React.FC<StudentAccessPageProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    const unsub = subscribeToRegisteredSchools((schools) => {
+      setRegisteredSchools(schools);
+    });
+    return () => unsub();
+  }, []);
+
+  const availableSchoolOptions = React.useMemo(() => {
+    return normalizeRegisteredSchoolsList(registeredSchools, [
+      existingRequest?.schoolName,
+      builderProfile?.schoolName,
+      schoolName,
+    ]);
+  }, [registeredSchools, existingRequest?.schoolName, builderProfile?.schoolName, schoolName]);
+
+  useEffect(() => {
     if (existingRequest) {
       setFullName(existingRequest.fullName || '');
-      setSchoolName(existingRequest.schoolName || '');
+      const existingSchool = !isPlaceholderSchoolName(existingRequest.schoolName)
+        ? existingRequest.schoolName
+        : '';
+      setSchoolName(existingSchool || '');
       setGradeLevel(existingRequest.gradeLevel || 'Grade 8 / JSS 2');
       setProgramme(existingRequest.programme || JAYSTARBLISS_PROGRAMMES[0]);
       setStudentReference(existingRequest.studentReference || '');
       setConfirmedDeclaration(Boolean(existingRequest.confirmedDeclaration));
     } else if (builderProfile || currentUser) {
       setFullName(builderProfile?.displayName || currentUser?.displayName || '');
-      setSchoolName(builderProfile?.schoolName || '');
+      const profSchool = !isPlaceholderSchoolName(builderProfile?.schoolName)
+        ? builderProfile?.schoolName || ''
+        : '';
+      setSchoolName(profSchool);
       setGradeLevel(builderProfile?.gradeLevel || 'Grade 8 / JSS 2');
     }
   }, [existingRequest, builderProfile, currentUser]);
@@ -374,16 +405,40 @@ export const StudentAccessPage: React.FC<StudentAccessPageProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-black uppercase tracking-wider text-black mb-1">
-                  School Name *
+                  Registered School *
                 </label>
-                <input
-                  type="text"
+                <select
                   required
                   value={schoolName}
                   onChange={(e) => setSchoolName(e.target.value)}
-                  placeholder="e.g. Jaystarbliss Dynamic Academy"
-                  className="w-full px-3.5 py-2.5 text-sm font-semibold rounded-xl border-2 border-black bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#FFF025]"
-                />
+                  className="w-full px-3.5 py-2.5 text-sm font-bold rounded-xl border-2 border-black bg-white text-black focus:outline-none focus:ring-2 focus:ring-[#FFF025]"
+                >
+                  <option value="">Select your registered school...</option>
+                  {availableSchoolOptions.map((school) => (
+                    <option key={school} value={school}>
+                      {school}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-[11px] font-medium text-slate-700 leading-relaxed">
+                  Don&apos;t see your school name listed? Contact our support at{' '}
+                  <a
+                    href={`mailto:${SUPPORT_CONTACT_EMAIL}`}
+                    className="font-bold text-black underline hover:text-[#B11469]"
+                  >
+                    {SUPPORT_CONTACT_EMAIL}
+                  </a>{' '}
+                  or{' '}
+                  <a
+                    href={SUPPORT_WHATSAPP_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-bold text-black underline hover:text-[#B11469]"
+                  >
+                    {SUPPORT_WHATSAPP_DISPLAY} on WhatsApp
+                  </a>{' '}
+                  for more details.
+                </p>
               </div>
 
               <div>
