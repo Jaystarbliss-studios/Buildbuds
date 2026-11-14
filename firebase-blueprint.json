@@ -409,6 +409,12 @@
     "/reports/{reportId}": {
       "schema": { "$ref": "#/entities/ModerationReport" },
       "description": "Community moderation reports"
+    },
+    "/creatorFollows/{followId}": {
+      "description": "Follower relationships between builders and creators for post alerts"
+    },
+    "/channelActivity/{channelId}": {
+      "description": "Lightweight unread and mention activity state per Hub channel"
     }
   }
 }

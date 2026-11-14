@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { Bell } from 'lucide-react';
 import { BrandLogo } from './BrandLogo.tsx';
 import { useTheme } from '../utils/themeContext.tsx';
 import { BuilderProfile, User } from '../firebase.ts';
-import { StudentAccessStatus } from '../types/community.ts';
+import { StudentAccessStatus, UserNotificationItem } from '../types/community.ts';
 import { UserAccountMenu } from './UserAccountMenu.tsx';
 
 interface SiteHeaderProps {
@@ -11,6 +12,9 @@ interface SiteHeaderProps {
   isAuthChecking?: boolean;
   studentAccessStatus?: StudentAccessStatus;
   isApprovedForHub?: boolean;
+  notifications?: UserNotificationItem[];
+  onOpenInbox?: () => void;
+  onSelectNotification?: (notif: UserNotificationItem) => void;
   onSignInClick: () => void;
   onJoinClick?: () => void;
   onLaunchAppMode?: () => void;
@@ -24,6 +28,9 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
   isAuthChecking = false,
   studentAccessStatus = 'not_requested',
   isApprovedForHub = false,
+  notifications = [],
+  onOpenInbox,
+  onSelectNotification,
   onSignInClick,
   onJoinClick,
   onSignOut = () => {},
@@ -31,6 +38,7 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
 }) => {
   const [scrolled, setScrolled] = useState(false);
   const { isDark } = useTheme();
+  const unreadNotifCount = notifications.filter((n) => !n.read).length;
 
   useEffect(() => {
     const handleScroll = () => {
@@ -69,14 +77,38 @@ export const SiteHeader: React.FC<SiteHeaderProps> = ({
             </a>
           </div>
 
-          {/* Clean User Account / Profile Control on the Far Right */}
-          <div className="flex items-center gap-3">
+          {/* Clean Navigation & Account Controls on the Far Right */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {currentUser && onOpenInbox && (
+              <button
+                type="button"
+                onClick={onOpenInbox}
+                aria-label="Open Inbox Center"
+                title="Open Inbox Center"
+                className={`relative p-2 rounded-xl border-2 border-black cursor-pointer transition-colors ${
+                  isDark
+                    ? 'bg-[#171726] hover:bg-[#232338] text-white'
+                    : 'bg-white hover:bg-slate-100 text-black'
+                }`}
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#B11469] text-white text-[10px] font-black border border-black flex items-center justify-center">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </button>
+            )}
+
             <UserAccountMenu
               currentUser={currentUser}
               builderProfile={builderProfile}
               isAuthChecking={isAuthChecking}
               studentAccessStatus={studentAccessStatus}
               isApprovedForHub={isApprovedForHub}
+              notifications={notifications}
+              onSelectNotification={onSelectNotification}
+              onOpenInbox={onOpenInbox}
               onSignInClick={onSignInClick}
               onJoinClick={onJoinClick}
               onSignOut={onSignOut}

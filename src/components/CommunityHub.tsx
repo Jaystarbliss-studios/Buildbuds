@@ -100,6 +100,7 @@ import {
   findDuplicateLinkMessage,
   deduplicateSharedLinks,
   inferCategoryFromHintText,
+  validateVercelGameUrl,
   DEFAULT_COVERS,
   compressCoverImage,
   CreationCategory,
@@ -121,7 +122,9 @@ import {
   buildPinMessagePatch,
   computeVisibleMessageWindow,
   evaluateChatComposerKeyDown,
+  isFocusComposerShortcut,
   shouldShowScrollToBottomButton,
+  computeChannelUnreadState,
   INITIAL_VISIBLE_MESSAGES_COUNT,
   SCROLL_UP_LOAD_BATCH_SIZE,
   RawPresenceRecord,
@@ -143,19 +146,42 @@ import {
   adminUpdateStudentAccessDecision,
   adminMigrateLegacyBuilderToStudent,
   adminRevokeStudentHubAccess,
+  uploadImageToCloudinarySigned,
+  updateChannelActivitySnapshot,
+  dispatchMentionNotifications,
+  notifyModeratorsAndAdminsOfReport,
+  subscribeToMyFollowing,
+  followCreator,
+  unfollowCreator,
 } from '../utils/communityService.ts';
-import { StudentAccessRequest } from '../types/community.ts';
+import {
+  StudentAccessRequest,
+  UserNotificationItem,
+  ChannelActivityDoc,
+} from '../types/community.ts';
 import { toggleMessageReaction } from '../utils/communityLogic.ts';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
+import { MemberProfileModal } from './MemberProfileModal.tsx';
+import { AdminControlCenterModal } from './AdminControlCenterModal.tsx';
+import {
+  buildPublicMemberProfileSummary,
+  type PublicMemberProfileSummary,
+} from '../utils/memberProfile.ts';
 import {
   VerifiedAvatarFrame,
   AnimatedEmoteButton,
   Emote3DIcon,
+  WHATSAPP_QUICK_REACTIONS,
   MentionAutocompletePopover,
   renderTextWithMentions,
   doesTextMentionUserOrAll,
   MentionableUser,
 } from './MentionAndEmotes.tsx';
+import {
+  LONG_PRESS_DELAY_MS,
+  shouldCancelLongPress,
+  triggerHapticFeedback,
+} from '../utils/haptics.ts';
 
 export interface ChannelItem {
   id: string;
@@ -289,6 +315,7 @@ export interface HubMessage {
   linkCategory?: CreationCategory;
   linkDomain?: string;
   coverImageUrl?: string;
+  categoryManuallySet?: boolean;
   showcaseStatus?: 'pending' | 'approved' | 'rejected';
   publicPostId?: string;
   reactions?: Record<string, number>;
@@ -328,12 +355,16 @@ interface ReportItem {
   messageId: string;
   channelId: string;
   reporterId: string;
+  reporterName?: string;
+  reportedUserId?: string;
+  reportedUserName?: string;
+  messageSnippet?: string;
   reason: string;
   status: 'open' | 'resolved';
   createdAtMillis: number;
 }
 
-const QUICK_EMOJIS = ['👍', '👎', '❤️', '🔥', '🚀', '😭'];
+const QUICK_EMOJIS: readonly string[] = WHATSAPP_QUICK_REACTIONS;
 
 const DEFAULT_GLOBAL_SETTINGS: CommunityGlobalSettings = {
   cooldownSeconds: 0,
@@ -389,6 +420,9 @@ interface CommunityHubProps {
   onProfileUpdated: (profile: BuilderProfile) => void;
   initialChannelId?: string;
   isStandaloneApp?: boolean;
+  isApprovedForHub?: boolean;
+  notifications?: UserNotificationItem[];
+  onOpenInbox?: () => void;
 }
 
 export const CommunityHub: React.FC<CommunityHubProps> = ({
@@ -399,6 +433,9 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   onProfileUpdated,
   initialChannelId = 'general-chat',
   isStandaloneApp = false,
+  isApprovedForHub = false,
+  notifications = [],
+  onOpenInbox,
 }) => {
   const [activeChannelId, setActiveChannelId] = useState<string>(initialChannelId);
   const [activeSubGroupId, setActiveSubGroupId] = useState<string | null>(null);
@@ -406,7 +443,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [showcaseFilter, setShowcaseFilter] = useState<'all' | CreationCategory>('all');
   const [showcaseSortOrder, setShowcaseSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [showcaseSearchQuery, setShowcaseSearchQuery] = useState<string>('');
-  const [showChannelLinksPanel, setShowChannelLinksPanel] = useState<boolean>(false);
+  const [channelDirectorySearchQuery, setChannelDirectorySearchQuery] = useState<string>('');
+  const [channelDirectorySortOrder, setChannelDirectorySortOrder] = useState<'newest' | 'oldest'>('newest');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   // Real-time Firestore state (100% real data, zero seed/demo users) + instant optimistic buffer
@@ -443,8 +481,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   // Drawers & Modals
   const [showMembersDrawer, setShowMembersDrawer] = useState(false);
   const [showAdminDrawer, setShowAdminDrawer] = useState(false);
-  const [adminTab, setAdminTab] = useState<'access' | 'global' | 'channels' | 'users' | 'groups'>('access');
+  const [adminTab, setAdminTab] = useState<
+    'reports' | 'access' | 'global' | 'channels' | 'users' | 'groups'
+  >('reports');
   const [selectedAdminChannelId, setSelectedAdminChannelId] = useState<string>(initialChannelId);
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [showExtendedContextEmotes, setShowExtendedContextEmotes] = useState(false);
+  const [followingCreatorIds, setFollowingCreatorIds] = useState<string[]>([]);
+  const [channelActivityMap, setChannelActivityMap] = useState<
+    Record<string, ChannelActivityDoc>
+  >({});
+  const [channelLastSeenMap, setChannelLastSeenMap] = useState<Record<string, number>>(() => {
+    try {
+      const raw = window.localStorage.getItem('buildbuds_hub_channel_last_seen');
+      return raw ? (JSON.parse(raw) as Record<string, number>) : {};
+    } catch {
+      return {};
+    }
+  });
 
   // Create Sub-Group Modal state
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
@@ -491,7 +545,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const [editingLinkCategory, setEditingLinkCategory] = useState<CreationCategory>('website');
   const [editingShowLinkFields, setEditingShowLinkFields] = useState<boolean>(false);
   const [isSavingMessageEdit, setIsSavingMessageEdit] = useState<boolean>(false);
-  const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
   const [contextMenuState, setContextMenuState] = useState<{
     msg: HubMessage;
     x: number;
@@ -551,6 +604,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     getBrowserNotificationPermission()
   );
   const [notificationStatusBanner, setNotificationStatusBanner] = useState<string | null>(null);
+  const [viewingMemberProfile, setViewingMemberProfile] =
+    useState<PublicMemberProfileSummary | null>(null);
 
   // Progressive Scroll-Up Message Window & Floating Scroll-to-Bottom Button state
   const [visibleMessageCount, setVisibleMessageCount] = useState<number>(
@@ -568,8 +623,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const prevStreamIdForScrollRef = useRef<string>('');
   const prevNewestMessageIdRef = useRef<string>('');
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const threadComposerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const touchSwipeRef = useRef<{ startX: number; startY: number } | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressOriginRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const swipeHapticFiredRef = useRef<boolean>(false);
   const typingTimeoutRef = useRef<number | null>(null);
   const isCurrentlyTypingRef = useRef<boolean>(false);
   const lastTypingWriteMillisRef = useRef<number>(0);
@@ -578,6 +637,66 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const knownMessageIdsRef = useRef<Set<string>>(new Set());
   const activeStreamIdRef = useRef<string>(initialChannelId);
   const notificationPrefsRef = useRef<NotificationPreferences>(notificationPrefs);
+
+  useEffect(() => {
+    if (initialChannelId) {
+      setActiveChannelId(initialChannelId);
+      setActiveSubGroupId(null);
+      setViewMode('chat');
+    }
+  }, [initialChannelId]);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Global Ctrl+K / Cmd+K shortcut to jump straight into the active chat/reply input box
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (
+        !isFocusComposerShortcut({
+          key: e.key,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+        })
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setContextMenuState(null);
+      setMobileSidebarOpen(false);
+      setViewingMemberProfile(null);
+
+      if (activeThreadMessage && threadComposerRef.current) {
+        threadComposerRef.current.focus();
+        const len = threadComposerRef.current.value.length;
+        threadComposerRef.current.setSelectionRange(len, len);
+        return;
+      }
+
+      if (viewMode === 'showcase') {
+        setViewMode('chat');
+      }
+
+      window.requestAnimationFrame(() => {
+        const el = composerTextareaRef.current;
+        if (el) {
+          el.focus();
+          const len = el.value.length;
+          el.setSelectionRange(len, len);
+        }
+      });
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [activeThreadMessage, viewMode]);
   const presenceLocalMetaRef = useRef<
     Map<
       string,
@@ -631,9 +750,29 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   const activeChannelConfig: CommunityChannelConfig =
     channelConfigs[activeChannelId] || buildDefaultChannelConfig(activeChannel);
 
+  const moderatedChannelIds = useMemo(() => {
+    if (!currentUser) return [];
+    return Object.values(channelConfigs)
+      .filter((cfg) => Array.isArray(cfg.moderatorIds) && cfg.moderatorIds.includes(currentUser.uid))
+      .map((cfg) => cfg.id);
+  }, [channelConfigs, currentUser?.uid]);
+
+  const isModeratorAnywhere =
+    isSuperAdmin || isGlobalModerator || moderatedChannelIds.length > 0;
+
   const isCurrentChannelModerator =
     isGlobalModerator ||
     Boolean(currentUser && activeChannelConfig.moderatorIds.includes(currentUser.uid));
+
+  const unreadNotifCount = useMemo(
+    () => notifications.filter((n) => !n.read).length,
+    [notifications]
+  );
+
+  const openReportsCount = useMemo(
+    () => reports.filter((r) => r.status === 'open').length,
+    [reports]
+  );
 
   const userStatus: UserAccountStatus = isSuperAdmin
     ? 'active'
@@ -745,13 +884,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     builderProfile?.schoolName,
   ]);
 
-  // Reset active sub-group when changing channel
+  // Reset active sub-group and channel directory state when changing channel
   useEffect(() => {
     setActiveSubGroupId(null);
     setSelectedAdminChannelId(activeChannelId);
-    if (activeChannel.defaultCreationCategory) {
-      setLinkCategoryInput(activeChannel.defaultCreationCategory);
-    }
+    setChannelDirectorySearchQuery('');
+    setLinkCategoryInput(activeChannel.defaultCreationCategory || 'website');
   }, [activeChannelId, activeChannel.defaultCreationCategory]);
 
   // Cooldown countdown tick
@@ -979,27 +1117,102 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     );
   }, [allPlatformUsers, approvedHubMemberIds, revokedHubMemberIds]);
 
-  // Unapproved registered accounts (visible ONLY to Admin inside Admin Control Center)
+  const activeAccessRequests = useMemo(() => {
+    return hubAccessRequests.filter(
+      (r) => r.status === 'pending' || r.status === 'more_information_required'
+    );
+  }, [hubAccessRequests]);
+
+  // Unapproved registered accounts (visible ONLY to Admin inside Admin Control Center;
+  // accounts that were explicitly rejected disappear until they submit a fresh request)
   const unapprovedPlatformUsers = useMemo<BuilderProfile[]>(() => {
+    const rejectedRequestUids = new Set(
+      hubAccessRequests.filter((r) => r.status === 'rejected').map((r) => r.uid)
+    );
+    const pendingOrApprovedReqUids = new Set(
+      hubAccessRequests
+        .filter((r) => r.status === 'pending' || r.status === 'approved')
+        .map((r) => r.uid)
+    );
     return allPlatformUsers.filter(
       (u) =>
         u.role !== 'admin' &&
         u.role !== 'moderator' &&
         !approvedHubMemberIds.has(u.uid) &&
-        (revokedHubMemberIds.has(u.uid) ||
-          u.studentAccessStatus === 'rejected' ||
-          (!u.isApprovedStudent &&
-            u.studentAccessStatus !== 'approved' &&
-            u.accountType !== 'student'))
+        !revokedHubMemberIds.has(u.uid) &&
+        u.studentAccessStatus !== 'rejected' &&
+        !rejectedRequestUids.has(u.uid) &&
+        !pendingOrApprovedReqUids.has(u.uid) &&
+        !u.isApprovedStudent &&
+        u.studentAccessStatus !== 'approved' &&
+        u.accountType !== 'student'
     );
-  }, [allPlatformUsers, approvedHubMemberIds, revokedHubMemberIds]);
+  }, [allPlatformUsers, approvedHubMemberIds, revokedHubMemberIds, hubAccessRequests]);
 
   const pendingHubRequestsCount = useMemo(() => {
-    return (
-      hubAccessRequests.filter((r) => r.status === 'pending').length +
-      unapprovedPlatformUsers.length
+    return activeAccessRequests.length + unapprovedPlatformUsers.length;
+  }, [activeAccessRequests, unapprovedPlatformUsers]);
+
+  // Lightweight channel activity & unread/@mention state across ALL channels
+  useEffect(() => {
+    const q = query(collection(db, 'channelActivity'), limit(40));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const map: Record<string, ChannelActivityDoc> = {};
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data() as ChannelActivityDoc;
+          const chId = data.channelId || docSnap.id;
+          map[chId] = { ...data, channelId: chId };
+        });
+        setChannelActivityMap(map);
+      },
+      () => {}
     );
-  }, [hubAccessRequests, unapprovedPlatformUsers]);
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setFollowingCreatorIds([]);
+      return;
+    }
+    return subscribeToMyFollowing(currentUser.uid, setFollowingCreatorIds);
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    if (viewMode !== 'chat' || !activeChannelId) return;
+    const latestAct = channelActivityMap[activeChannelId]?.lastMessageAtMillis || 0;
+    const seenAt = Math.max(Date.now(), latestAct);
+    setChannelLastSeenMap((prev) => {
+      if ((prev[activeChannelId] || 0) >= seenAt) return prev;
+      const updated = { ...prev, [activeChannelId]: seenAt };
+      try {
+        window.localStorage.setItem('buildbuds_hub_channel_last_seen', JSON.stringify(updated));
+      } catch {
+        // Ignore storage errors
+      }
+      return updated;
+    });
+  }, [activeChannelId, viewMode, channelActivityMap]);
+
+  const channelUnreadMap = useMemo(() => {
+    const map: Record<string, { hasUnread: boolean; hasMention: boolean }> = {};
+    allChannels.forEach((ch) => {
+      map[ch.id] = computeChannelUnreadState(
+        ch.id,
+        channelActivityMap,
+        channelLastSeenMap,
+        currentUser?.uid,
+        viewMode === 'chat' ? activeChannelId : null
+      );
+    });
+    return map;
+  }, [allChannels, channelActivityMap, channelLastSeenMap, currentUser?.uid, activeChannelId, viewMode]);
+
+  const hasAnyUnreadOtherChannel = useMemo(
+    () => Object.values(channelUnreadMap).some((state) => state.hasUnread || state.hasMention),
+    [channelUnreadMap]
+  );
 
   const mentionableUsersList = useMemo<MentionableUser[]>(() => {
     return registeredUsers.map((u) => ({
@@ -1020,7 +1233,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setHasMoreServerMessages(false);
     setIsLoadingOlderMessages(false);
     setShowScrollToBottom(false);
-    setShowChannelLinksPanel(false);
     isFetchingOlderBatchRef.current = false;
   }, [activeStreamId]);
 
@@ -1074,6 +1286,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         linkCategory: data.linkCategory,
         linkDomain: data.linkDomain,
         coverImageUrl: data.coverImageUrl,
+        categoryManuallySet: Boolean(data.categoryManuallySet),
         showcaseStatus: data.showcaseStatus,
         publicPostId: data.publicPostId,
         reactions: data.reactions || {},
@@ -1214,6 +1427,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               ),
               text: String(data.text || ''),
               currentUserId: currentUser.uid,
+              currentUserDisplayName: builderProfile?.displayName,
               activeStreamId: activeStreamIdRef.current,
               preferences: notificationPrefsRef.current,
               onNavigateToChannel: (targetChannelId) => {
@@ -1259,6 +1473,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         linkCategory: data.linkCategory,
         linkDomain: data.linkDomain,
         coverImageUrl: data.coverImageUrl,
+        categoryManuallySet: Boolean(data.categoryManuallySet),
         showcaseStatus: data.showcaseStatus,
         publicPostId: data.publicPostId,
         reactions: data.reactions || {},
@@ -1349,6 +1564,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             linkCategory: data.linkCategory,
             linkDomain: data.linkDomain,
             coverImageUrl: data.coverImageUrl,
+            categoryManuallySet: Boolean(data.categoryManuallySet),
             showcaseStatus: data.showcaseStatus,
             publicPostId: data.publicPostId,
             reactions: data.reactions || {},
@@ -1512,10 +1728,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     };
   }, []);
 
-  // Real-time listener for Moderation Reports (only when Super Admin / Global Moderator opens Admin drawer)
+  // Real-time listener for Moderation Reports (active continuously for Super Admin, Global Moderators, and Channel Moderators)
   useEffect(() => {
-    if (!isGlobalModerator || !showAdminDrawer) return;
-    const q = query(collection(db, 'reports'), limit(20));
+    if (!currentUser || !isModeratorAnywhere) {
+      setReports([]);
+      return;
+    }
+    const canReadAllReports = isSuperAdmin || isGlobalModerator;
+    if (!canReadAllReports && moderatedChannelIds.length === 0) {
+      setReports([]);
+      return;
+    }
+    const q = canReadAllReports
+      ? query(collection(db, 'reports'), limit(30))
+      : query(
+          collection(db, 'reports'),
+          where('channelId', 'in', moderatedChannelIds.slice(0, 10)),
+          limit(30)
+        );
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
@@ -1523,12 +1753,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           const d = docSnap.data();
           return {
             id: docSnap.id,
-            messageId: d.messageId,
-            channelId: d.channelId,
-            reporterId: d.reporterId,
-            reason: d.reason,
+            messageId: d.messageId || '',
+            channelId: d.channelId || 'general-chat',
+            reporterId: d.reporterId || '',
+            reporterName: d.reporterName || '',
+            reportedUserId: d.reportedUserId || '',
+            reportedUserName: d.reportedUserName || '',
+            messageSnippet: d.messageSnippet || '',
+            reason: d.reason || 'Flagged for moderator review',
             status: d.status || 'open',
-            createdAtMillis: d.createdAt?.toMillis ? d.createdAt.toMillis() : Date.now(),
+            createdAtMillis:
+              typeof d.createdAtMillis === 'number'
+                ? d.createdAtMillis
+                : d.createdAt?.toMillis
+                  ? d.createdAt.toMillis()
+                  : Date.now(),
           };
         });
         list.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
@@ -1537,7 +1776,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       () => {}
     );
     return () => unsubscribe();
-  }, [isGlobalModerator, showAdminDrawer]);
+  }, [currentUser?.uid, isModeratorAnywhere, isSuperAdmin, isGlobalModerator, moderatedChannelIds]);
 
   // Update current user's presence heartbeat when signed in.
   // NOTE: Do NOT call deleteDoc(presenceRef) inside beforeunload because on page refresh or
@@ -1894,7 +2133,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Handle cover image file upload
+  // Handle cover image file upload (Cloudinary hosted first, compact fallback if env not configured)
   const handleCoverFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1902,9 +2141,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setIsCompressingImage(true);
     setComposerError(null);
     try {
-      const compressedDataUrl = await compressCoverImage(file);
-      setCustomCoverDataUrl(compressedDataUrl);
-      setShowAttachmentDrawer(true);
+      try {
+        const uploaded = await uploadImageToCloudinarySigned(file);
+        setCustomCoverDataUrl(uploaded.secureUrl);
+        setShowAttachmentDrawer(true);
+        setComposerNotice('Cover image uploaded to Cloudinary.');
+        window.setTimeout(() => setComposerNotice(null), 3000);
+      } catch {
+        const compressedDataUrl = await compressCoverImage(file);
+        setCustomCoverDataUrl(compressedDataUrl);
+        setShowAttachmentDrawer(true);
+      }
     } catch (err) {
       setComposerError(err instanceof Error ? err.message : 'Could not process image.');
     } finally {
@@ -1984,6 +2231,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       }
     }
 
+    // Enforce student-only game posting and strict https://game-name.vercel.app format
+    const inferredCandidateCategory = showAttachmentDrawer
+      ? linkCategoryInput
+      : inferCategoryFromHintText(`${linkTitleInput} ${rawText}`) ||
+        activeChannel.defaultCreationCategory;
+    if (
+      effectiveLinkUrl &&
+      (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator) &&
+      (inferredCandidateCategory === 'game' || activeChannelId === 'games')
+    ) {
+      if (!(isApprovedForHub || isSuperAdmin || isCurrentChannelModerator)) {
+        setComposerError('Only approved Build Buds students can post game links.');
+        return;
+      }
+      const vercelCheck = validateVercelGameUrl(effectiveLinkUrl);
+      if (!vercelCheck.valid) {
+        setComposerError(
+          vercelCheck.error ||
+            'Game links must follow the exact format https://game-name.vercel.app.'
+        );
+        return;
+      }
+    }
+
     // Prevent sending the exact same link repeatedly in the same channel chat / Billboard
     if (effectiveLinkUrl && (!effectiveBanLinks || isSuperAdmin || isCurrentChannelModerator)) {
       const duplicateMsg =
@@ -2049,20 +2320,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       );
       const preferredCategory = showAttachmentDrawer
         ? linkCategoryInput
-        : inferredCategoryFromText ||
-          (linkUrlInput.trim() ? linkCategoryInput : activeChannel.defaultCreationCategory);
+        : inferredCategoryFromText || activeChannel.defaultCreationCategory;
 
       const preview = generateLinkPreview(
         effectiveLinkUrl || 'https://buildbuds.community/project',
         preferredCategory,
         linkTitleInput,
-        linkDescInput
+        linkDescInput,
+        { isExplicitOverride: showAttachmentDrawer }
       );
       payload.linkUrl = preview.url;
       payload.linkTitle = filterProfanity(preview.title).filteredText.slice(0, 160);
       payload.linkDescription = filterProfanity(preview.description).filteredText.slice(0, 600);
       payload.linkCategory = preview.category;
       payload.linkDomain = preview.domain;
+      payload.categoryManuallySet = Boolean(showAttachmentDrawer);
       payload.coverImageUrl = normalizeCoverImageUrl(
         customCoverDataUrl || preview.defaultCoverUrl,
         preview.category
@@ -2092,6 +2364,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       linkCategory: payload.linkCategory as CreationCategory | undefined,
       linkDomain: payload.linkDomain as string | undefined,
       coverImageUrl: payload.coverImageUrl as string | undefined,
+      categoryManuallySet: Boolean(payload.categoryManuallySet),
       reactions: {},
       userReactions: {},
       isPinned: false,
@@ -2134,6 +2407,27 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setCustomCoverDataUrl('');
     setShowAttachmentDrawer(false);
 
+    if (
+      activeChannel.defaultCreationCategory &&
+      optimisticItem.linkCategory &&
+      optimisticItem.linkCategory !== activeChannel.defaultCreationCategory
+    ) {
+      const targetChannelLabel =
+        optimisticItem.linkCategory === 'game'
+          ? '#Games'
+          : optimisticItem.linkCategory === 'website'
+            ? '#Websites'
+            : optimisticItem.linkCategory === 'video'
+              ? '#Videos'
+              : optimisticItem.linkCategory === 'novel'
+                ? '#Novels'
+                : 'All Shared Links';
+      setComposerNotice(
+        `Link categorized as ${optimisticItem.linkCategory} and placed directly in ${targetChannelLabel}.`
+      );
+      window.setTimeout(() => setComposerNotice(null), 4500);
+    }
+
     try {
       if (typingTimeoutRef.current) {
         window.clearTimeout(typingTimeoutRef.current);
@@ -2150,6 +2444,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         await new Promise((r) => setTimeout(r, 350));
         await setDoc(newMsgRef, payload);
       }
+
+      const baseChId = (activeStreamId || 'general-chat').split('__group__')[0];
+      void dispatchMentionNotifications({
+        text: String(payload.text || ''),
+        senderUid: currentUser.uid,
+        senderName: safeAuthorName,
+        senderAvatar: chosenAvatarId,
+        sourceType: 'hub_channel',
+        channelId: baseChId,
+        channelName: activeChannel.name,
+      })
+        .then(({ mentionedUids, mentionAll }) =>
+          updateChannelActivitySnapshot({
+            channelId: baseChId,
+            streamId: String(payload.channelId || baseChId),
+            messageId: newMsgRef.id,
+            authorId: currentUser.uid,
+            authorName: safeAuthorName,
+            text: String(payload.text || ''),
+            mentionedUids,
+            mentionAll,
+          })
+        )
+        .catch(() => {});
 
       if (!isSuperAdmin && !isCurrentChannelModerator && effectiveCooldownSeconds > 0) {
         setCooldownRemaining(effectiveCooldownSeconds);
@@ -2188,6 +2506,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       return;
     }
 
+    triggerHapticFeedback('light');
     reactingMessageIdsRef.current.add(msg.id);
 
     const { reactions: nextReactions, userReactions: nextUserReactions } =
@@ -2371,6 +2690,17 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         threadCount: nextThreadCount,
         updatedAt: serverTimestamp(),
       }).catch(() => {});
+
+      const baseChId = (activeStreamId || 'general-chat').split('__group__')[0];
+      void dispatchMentionNotifications({
+        text: (filteredText || rawReply).slice(0, 1500),
+        senderUid: currentUser.uid,
+        senderName: safeAuthorName,
+        senderAvatar: builderProfile.avatarUrl,
+        sourceType: 'hub_thread',
+        channelId: baseChId,
+        channelName: activeChannel.name,
+      }).catch(() => {});
     } catch (error) {
       setThreadInput(rawReply);
       setComposerError('Could not send your thread reply. Please try again.');
@@ -2395,7 +2725,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       resolvedLink?.linkCategory || activeChannel.defaultCreationCategory || 'website'
     );
     setEditingShowLinkFields(Boolean(focusLink || resolvedLink));
-    setActiveActionMessageId(null);
     setContextMenuState(null);
   };
 
@@ -2408,6 +2737,21 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       : extractFirstUrl(raw) || '';
 
     if (!raw && !rawLinkUrl) return;
+
+    if (rawLinkUrl && (editingLinkCategory === 'game' || activeChannelId === 'games')) {
+      if (!(isApprovedForHub || isSuperAdmin || isCurrentChannelModerator)) {
+        setComposerError('Only approved Build Buds students can edit or post game links.');
+        return;
+      }
+      const vercelCheck = validateVercelGameUrl(rawLinkUrl);
+      if (!vercelCheck.valid) {
+        setComposerError(
+          vercelCheck.error ||
+            'Game links must follow the exact format https://game-name.vercel.app.'
+        );
+        return;
+      }
+    }
 
     setIsSavingMessageEdit(true);
     const { filteredText, hadProfanity } = filterProfanity(
@@ -2428,7 +2772,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         rawLinkUrl,
         editingLinkCategory || activeChannel.defaultCreationCategory,
         urlChanged && editingLinkTitle === (msg.linkTitle || '') ? undefined : editingLinkTitle,
-        urlChanged && editingLinkDesc === (msg.linkDescription || '') ? undefined : editingLinkDesc
+        urlChanged && editingLinkDesc === (msg.linkDescription || '') ? undefined : editingLinkDesc,
+        { isExplicitOverride: true }
       );
       const safeTitle = filterProfanity(preview.title).filteredText.slice(0, 160);
       const safeDesc = filterProfanity(preview.description).filteredText.slice(0, 600);
@@ -2442,6 +2787,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       updatePayload.linkDescription = safeDesc;
       updatePayload.linkCategory = preview.category;
       updatePayload.linkDomain = preview.domain;
+      updatePayload.categoryManuallySet = true;
       updatePayload.coverImageUrl = nextCover.slice(0, 350000);
 
       updatedLinkFields = {
@@ -2450,6 +2796,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         linkDescription: safeDesc,
         linkCategory: preview.category,
         linkDomain: preview.domain,
+        categoryManuallySet: true,
         coverImageUrl: nextCover.slice(0, 350000),
       };
     } else if (msg.linkUrl && !rawLinkUrl) {
@@ -2522,7 +2869,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setOptimisticMessages((prev) => prev.map(applyRefresh));
     setAllShowcaseMessages((prev) => prev.map(applyRefresh));
     setContextMenuState(null);
-    setActiveActionMessageId(null);
     setComposerNotice(`Link preview refreshed for ${preview.domain}!`);
     window.setTimeout(() => setComposerNotice(null), 3500);
 
@@ -2578,6 +2924,27 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         0,
         128
       );
+      const targetBaseChannelId = targetChannel.split('__group__')[0];
+
+      if (
+        resolvedLink &&
+        (resolvedLink.linkCategory === 'game' || targetBaseChannelId === 'games')
+      ) {
+        if (!(isApprovedForHub || isSuperAdmin || isCurrentChannelModerator)) {
+          setComposerError('Only approved Build Buds students can share or forward game links.');
+          setIsForwardingMessage(false);
+          return;
+        }
+        const vercelCheck = validateVercelGameUrl(resolvedLink.linkUrl);
+        if (!vercelCheck.valid) {
+          setComposerError(
+            vercelCheck.error ||
+              'Game links must follow the exact format https://game-name.vercel.app.'
+          );
+          setIsForwardingMessage(false);
+          return;
+        }
+      }
 
       const payload: Record<string, unknown> = {
         channelId: targetChannel,
@@ -2643,6 +3010,31 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       }
 
       await setDoc(newMsgRef, payload);
+
+      const targetChannelObj = allChannels.find((c) => c.id === targetBaseChannelId);
+      void dispatchMentionNotifications({
+        text: String(payload.text || ''),
+        senderUid: currentUser.uid,
+        senderName: safeAuthorName,
+        senderAvatar: chosenAvatarId,
+        sourceType: 'hub_channel',
+        channelId: targetBaseChannelId,
+        channelName: targetChannelObj?.name || targetBaseChannelId,
+      })
+        .then(({ mentionedUids, mentionAll }) =>
+          updateChannelActivitySnapshot({
+            channelId: targetBaseChannelId,
+            streamId: targetChannel,
+            messageId: newMsgRef.id,
+            authorId: currentUser.uid,
+            authorName: safeAuthorName,
+            text: String(payload.text || ''),
+            mentionedUids,
+            mentionAll,
+          })
+        )
+        .catch(() => {});
+
       setForwardingMessage(null);
       setForwardNoteText('');
       setComposerNotice('Message forwarded!');
@@ -2735,32 +3127,105 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Report a message
+  // Report a message & notify channel moderators, global moderators, and admins
   const handleReportMessage = async (msg: HubMessage) => {
     if (!currentUser) {
       onOpenAuthModal('signin');
       return;
     }
+    const baseChId = (msg.channelId || activeChannelId || 'general-chat').split('__group__')[0];
+    const reporterName = builderProfile?.displayName || currentUser.displayName || 'Member';
+    const msgSnippet = (msg.text || msg.linkTitle || msg.linkUrl || 'Message').slice(0, 140);
     try {
       await addDoc(collection(db, 'reports'), {
         messageId: msg.id,
-        channelId: msg.channelId.slice(0, 128),
+        channelId: baseChId.slice(0, 128),
+        streamId: msg.channelId.slice(0, 128),
         reporterId: currentUser.uid,
+        reporterName: reporterName.slice(0, 60),
+        reportedUserId: msg.authorId.slice(0, 128),
+        reportedUserName: msg.authorName.slice(0, 60),
+        messageSnippet: msgSnippet,
         reason: 'Reported by community member for moderator review',
         status: 'open',
+        createdAtMillis: Date.now(),
         createdAt: serverTimestamp(),
       });
-      setActiveActionMessageId(null);
-      setComposerNotice(`Message by ${msg.authorName} has been flagged for moderator review.`);
+      void notifyModeratorsAndAdminsOfReport({
+        reporterUid: currentUser.uid,
+        reporterName,
+        channelId: baseChId,
+        targetSummary: `Message by ${msg.authorName} in #${baseChId}: "${msgSnippet.slice(0, 70)}"`,
+        reason: 'Reported by community member for moderator review',
+        channelModeratorIds: channelConfigs[baseChId]?.moderatorIds || [],
+      });
+      setComposerNotice(`Message by ${msg.authorName} has been flagged for moderator & admin review.`);
       window.setTimeout(() => setComposerNotice(null), 4000);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'reports');
     }
   };
 
+  // Flag a user directly from their profile modal
+  const handleReportMember = async (member: PublicMemberProfileSummary) => {
+    if (!currentUser) {
+      onOpenAuthModal('signin');
+      return;
+    }
+    const baseChId = (activeChannelId || 'general-chat').split('__group__')[0];
+    const reporterName = builderProfile?.displayName || currentUser.displayName || 'Member';
+    try {
+      await addDoc(collection(db, 'reports'), {
+        messageId: `user-${member.uid}`,
+        channelId: baseChId.slice(0, 128),
+        reporterId: currentUser.uid,
+        reporterName: reporterName.slice(0, 60),
+        reportedUserId: member.uid.slice(0, 128),
+        reportedUserName: member.displayName.slice(0, 60),
+        messageSnippet: `Flagged profile: @${member.displayName}`,
+        reason: `Member @${member.displayName} flagged for moderator review`,
+        status: 'open',
+        createdAtMillis: Date.now(),
+        createdAt: serverTimestamp(),
+      });
+      void notifyModeratorsAndAdminsOfReport({
+        reporterUid: currentUser.uid,
+        reporterName,
+        channelId: baseChId,
+        targetSummary: `Member @${member.displayName} flagged from #${baseChId}`,
+        reason: `Member @${member.displayName} flagged for moderator review`,
+        channelModeratorIds: channelConfigs[baseChId]?.moderatorIds || [],
+      });
+      setViewingMemberProfile(null);
+      setComposerNotice(`@${member.displayName} has been flagged for moderator & admin review.`);
+      window.setTimeout(() => setComposerNotice(null), 4000);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'reports');
+    }
+  };
+
+  const handleToggleFollowCreator = async (
+    creatorUid: string,
+    creatorName: string,
+    currentlyFollowing: boolean
+  ) => {
+    if (!currentUser || !builderProfile) {
+      onOpenAuthModal('signin');
+      return;
+    }
+    if (currentlyFollowing) {
+      await unfollowCreator(creatorUid);
+    } else {
+      await followCreator({
+        creatorUid,
+        creatorName,
+        followerProfile: builderProfile,
+      });
+    }
+  };
+
   // Request confirmation before deleting a message (Author, Super Admin, Global Moderator, or Channel Moderator)
   const handleDeleteMessage = (msg: HubMessage) => {
-    setActiveActionMessageId(null);
     setPendingDeleteMessage(msg);
   };
 
@@ -2799,7 +3264,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       msg.isPinned,
       builderProfile?.displayName || currentUser.displayName || 'Moderator'
     );
-    setActiveActionMessageId(null);
     try {
       await updateDoc(doc(db, 'messages', msg.id), {
         ...patch,
@@ -3202,11 +3666,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     }
   };
 
-  // Resolve a flagged message report
-  const handleResolveReport = async (reportId: string) => {
+  // Resolve or reopen a flagged moderation report
+  const handleResolveReport = async (
+    reportId: string,
+    nextStatus: 'resolved' | 'open' = 'resolved'
+  ) => {
     try {
       await updateDoc(doc(db, 'reports', reportId), {
-        status: 'resolved',
+        status: nextStatus,
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `reports/${reportId}`);
@@ -3263,11 +3730,32 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
   }, [deduplicatedSharedLinks, lastViewedShowcaseTime, viewMode, currentUser?.uid]);
 
   // Active category links for `#Games`, `#Websites`, `#Videos`, `#Novels` channels
+  // Strictly includes ONLY links matching that channel's creation category.
   const activeChannelCategoryLinks = useMemo(() => {
     const cat = activeChannel.defaultCreationCategory;
     if (!cat) return [];
     return deduplicatedSharedLinks.filter((item) => item.linkCategory === cat);
   }, [deduplicatedSharedLinks, activeChannel.defaultCreationCategory]);
+
+  const filteredActiveChannelCategoryLinks = useMemo(() => {
+    const q = channelDirectorySearchQuery.trim().toLowerCase();
+    const searched = q
+      ? activeChannelCategoryLinks.filter(
+          (m) =>
+            (m.linkTitle || '').toLowerCase().includes(q) ||
+            (m.linkDescription || '').toLowerCase().includes(q) ||
+            (m.linkDomain || '').toLowerCase().includes(q) ||
+            (m.linkUrl || '').toLowerCase().includes(q) ||
+            (m.authorName || '').toLowerCase().includes(q)
+        )
+      : activeChannelCategoryLinks;
+
+    return [...searched].sort((a, b) =>
+      channelDirectorySortOrder === 'newest'
+        ? b.createdAtMillis - a.createdAtMillis
+        : a.createdAtMillis - b.createdAtMillis
+    );
+  }, [activeChannelCategoryLinks, channelDirectorySearchQuery, channelDirectorySortOrder]);
 
   // Filter & Sort Showcase Creations (deduplicated real Firestore creations only)
   const filteredCreations = useMemo(() => {
@@ -3565,6 +4053,57 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
     setShowAvatarModal(true);
   };
 
+  // Open general Member Profile modal from anywhere in the Hub (chat, showcase, members drawer, thread)
+  const handleOpenMemberProfile = (info: {
+    uid: string;
+    displayName?: string;
+    avatarUrl?: string;
+    avatarColor?: string;
+    role?: string;
+  }) => {
+    const liveProfile = registeredUserMap.get(info.uid);
+    const presenceMatch = effectiveOnlineMembers.find((m) => m.uid === info.uid);
+    setViewingMemberProfile(
+      buildPublicMemberProfileSummary({
+        uid: info.uid,
+        displayName: liveProfile?.displayName || info.displayName,
+        avatarUrl: liveProfile?.avatarUrl || info.avatarUrl,
+        avatarColor: liveProfile?.avatarColor || info.avatarColor,
+        role: liveProfile?.role || info.role,
+        isVerifiedStudent: Boolean(liveProfile) || true,
+        schoolName: liveProfile?.schoolName,
+        gradeLevel: liveProfile?.gradeLevel,
+        primaryInterest: liveProfile?.primaryInterest,
+        createdAt: liveProfile?.createdAt,
+        status: liveProfile?.status,
+        isApprovedStudent: liveProfile?.isApprovedStudent,
+        studentAccessStatus: liveProfile?.studentAccessStatus,
+        accountType: liveProfile?.accountType,
+        isOnline: Boolean(presenceMatch),
+        activeChannelName: presenceMatch?.activeChannelId
+          ? presenceMatch.activeChannelId.split('__group__')[0]
+          : undefined,
+      })
+    );
+  };
+
+  const handleMentionFromMemberProfile = (displayName: string) => {
+    setViewMode('chat');
+    setShowMembersDrawer(false);
+    const mentionToken = `@${displayName} `;
+    const nextVal = messageText.trim().length > 0
+      ? `${messageText}${messageText.endsWith(' ') || messageText.endsWith('\n') ? '' : ' '}${mentionToken}`
+      : mentionToken;
+    handleInputChange(nextVal);
+    window.requestAnimationFrame(() => {
+      const el = composerTextareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextVal.length, nextVal.length);
+      }
+    });
+  };
+
   // Mobile horizontal touch swipe handlers (swipe right from left to open sidebar, swipe left to close)
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (e.touches.length !== 1) return;
@@ -3666,19 +4205,22 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
       onTouchEnd={handleTouchEnd}
       className="fixed inset-0 z-50 flex flex-col bg-[#0e0f12] text-[#e3e5e8] font-sans select-none overflow-hidden"
     >
-      {/* CLEAN, UNCLUTTERED MOBILE-FIRST TOP BAR */}
-      <header className="h-14 shrink-0 bg-[#141519] border-b border-white/10 px-2.5 sm:px-4 flex items-center justify-between gap-2 z-20">
+      {/* CLEAN, MINIMALISTIC MOBILE-FIRST TOP BAR */}
+      <header className="h-14 shrink-0 bg-[#141519] border-b border-white/10 px-2.5 sm:px-4 flex items-center justify-between gap-2 z-30">
         {/* Left: Mobile Channels Drawer Toggle + Back to Website + Active Channel Name */}
         <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-1">
-          {/* Mobile Left-Sidebar Drawer Button */}
+          {/* Mobile Left-Sidebar Drawer Button with Unread Dot */}
           <button
             type="button"
             onClick={() => setMobileSidebarOpen((prev) => !prev)}
             title="Open Channels Panel (or swipe right from left edge)"
             aria-label="Toggle Channels Panel"
-            className="lg:hidden p-2 rounded-xl bg-white/8 hover:bg-white/15 text-white border border-white/10 transition-colors cursor-pointer shrink-0"
+            className="lg:hidden relative p-2 rounded-lg bg-white/5 hover:bg-white/10 text-white border border-white/10 transition-colors cursor-pointer shrink-0"
           >
             <Menu className="w-4 h-4" />
+            {hasAnyUnreadOtherChannel && (
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#FFF025] ring-2 ring-[#141519]" />
+            )}
           </button>
 
           {!isStandaloneApp && (
@@ -3687,7 +4229,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               onClick={handleBackToWebsiteFromHub}
               title="Back to Build Buds Website"
               aria-label="Back to Website"
-              className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1 shrink-0"
+              className="p-1.5 rounded-lg text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer flex items-center gap-1 shrink-0"
             >
               <ChevronLeft className="w-4 h-4 sm:w-5 sm:h-5" />
               <span className="hidden md:inline text-xs font-bold text-white/80">Website</span>
@@ -3703,12 +4245,12 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               {viewMode === 'showcase' ? 'Shared Creations' : activeChannel.name}
             </h1>
             {activeSubGroup && viewMode === 'chat' && (
-              <span className="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-[#FFF025]/20 border border-[#FFF025]/40 text-[#FFF025] text-xs font-bold truncate max-w-[140px]">
-                / 👥 {activeSubGroup.name}
+              <span className="hidden sm:inline-flex px-2 py-0.5 rounded-md bg-white/10 border border-white/15 text-white/90 text-xs font-medium truncate max-w-[140px]">
+                / {activeSubGroup.name}
               </span>
             )}
             {effectiveChatLocked && (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 text-[10px] font-bold shrink-0">
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 text-[10px] font-semibold shrink-0">
                 <Lock className="w-2.5 h-2.5" />
                 <span className="hidden sm:inline">Locked</span>
               </span>
@@ -3719,83 +4261,269 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           </div>
         </div>
 
-        {/* Right: Only Essential Controls — Admin/Mod (if applicable), Live Online Pill, and User Account Icon */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-          {/* Super Admin OR Channel Moderator Control Center Button */}
-          {(isSuperAdmin || isCurrentChannelModerator) && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedAdminChannelId(activeChannelId);
-                setAdminTab(isSuperAdmin ? 'access' : 'channels');
-                setActiveThreadMessage(null);
-                setShowMembersDrawer(false);
-                setShowAdminDrawer((prev) => !prev);
-              }}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-black border cursor-pointer transition-all ${
-                showAdminDrawer
-                  ? 'bg-[#FFF025] text-black border-black'
-                  : 'bg-amber-500/15 hover:bg-amber-500/25 text-[#FFF025] border-[#FFF025]/40'
-              }`}
-              title={isSuperAdmin ? 'Open Super Admin Control Center (Manage Access Requests & Hub)' : 'Open Channel Moderator Controls'}
-              aria-label={isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{isSuperAdmin ? 'Admin Panel' : 'Channel Mod'}</span>
-              {isSuperAdmin && pendingHubRequestsCount > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[10px] font-black">
-                  {pendingHubRequestsCount}
-                </span>
-              )}
-            </button>
-          )}
-
-          {/* Real Online Counter Pill (Click to view Online & Registered Members) */}
+        {/* Right: Online Counter + Inbox Bell + User Profile Avatar & Minimalistic Dropdown */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Real Online Counter Pill */}
           <button
             type="button"
             onClick={() => {
+              setIsProfileMenuOpen(false);
               setShowAdminDrawer(false);
               setActiveThreadMessage(null);
               setShowMembersDrawer((prev) => !prev);
             }}
             title={`${liveOnlineCount} total online in community • ${activeChannelOnlineCount} in #${activeChannel.name}`}
-            className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full border text-xs font-bold tabular-nums cursor-pointer transition-colors ${
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-xs font-medium tabular-nums cursor-pointer transition-colors ${
               showMembersDrawer
-                ? 'bg-emerald-500 text-black border-emerald-300 font-black'
-                : 'bg-emerald-950/60 border-emerald-500/30 text-emerald-400 hover:bg-emerald-900/50'
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                : 'bg-white/5 border-white/10 text-emerald-400 hover:bg-white/10'
             }`}
           >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                showMembersDrawer ? 'bg-black' : 'bg-emerald-400 animate-pulse'
-              }`}
-            />
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
             <span>{liveOnlineCount} online</span>
           </button>
 
-          {/* Account Icon -> Opens User Profile Settings Modal (with Verified Student Ring of Light) */}
-          {currentUser && builderProfile ? (
+          {/* Inbox Notifications Bell with Numeric Badge */}
+          {currentUser && onOpenInbox && (
             <button
               type="button"
-              onClick={() => handleOpenProfileSettings('profile')}
-              title="Account & Profile Settings"
-              aria-label="Account & Profile Settings"
-              className="relative rounded-full focus:outline-none transition-transform hover:scale-105 cursor-pointer shrink-0 group"
+              onClick={() => {
+                setIsProfileMenuOpen(false);
+                onOpenInbox();
+              }}
+              title="Open Inbox Center"
+              aria-label={`Inbox Notifications (${unreadNotifCount} unread)`}
+              className="relative p-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 hover:text-white transition-colors cursor-pointer shrink-0"
             >
-              <VerifiedAvatarFrame
-                src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
-                alt={builderProfile.displayName}
-                isVerified={true}
-                sizeClass="w-9 h-9"
-                ringPaddingClass="p-[2px]"
-              >
-                <span
-                  className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#141519] ${
-                    userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
-                  }`}
-                />
-              </VerifiedAvatarFrame>
+              <Bell className="w-4 h-4" />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#B11469] text-white text-[10px] font-black flex items-center justify-center tabular-nums ring-2 ring-[#141519]">
+                  {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
+                </span>
+              )}
             </button>
+          )}
+
+          {/* Account Icon -> Minimalistic Grouped Profile Dropdown (holds Channel Mod / Admin Center) */}
+          {currentUser && builderProfile ? (
+            <div className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsProfileMenuOpen((prev) => !prev)}
+                title="Account, Notifications & Moderation"
+                aria-label="Account Menu"
+                aria-expanded={isProfileMenuOpen}
+                className="relative rounded-full focus:outline-none transition-transform hover:scale-105 cursor-pointer shrink-0 flex items-center"
+              >
+                <VerifiedAvatarFrame
+                  src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
+                  alt={builderProfile.displayName}
+                  isVerified={true}
+                  sizeClass="w-9 h-9"
+                  ringPaddingClass="p-[2px]"
+                >
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-[#141519] ${
+                      userStatus === 'suspended' ? 'bg-amber-400' : 'bg-emerald-400'
+                    }`}
+                  />
+                </VerifiedAvatarFrame>
+                {isModeratorAnywhere &&
+                  openReportsCount + (isSuperAdmin ? pendingHubRequestsCount : 0) > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#FFF025] text-black text-[10px] font-black flex items-center justify-center tabular-nums ring-2 ring-[#141519]">
+                      {openReportsCount + (isSuperAdmin ? pendingHubRequestsCount : 0)}
+                    </span>
+                  )}
+              </button>
+
+              {isProfileMenuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setIsProfileMenuOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div className="fixed right-2.5 top-16 sm:absolute sm:right-0 sm:top-12 w-[min(calc(100vw-1.25rem),18.5rem)] rounded-2xl bg-[#161820] border border-white/12 shadow-[0_18px_48px_rgba(0,0,0,0.75)] divide-y divide-white/10 z-50 overflow-hidden text-left">
+                    {/* Group 1: Identity & Role Info */}
+                    <div className="p-3.5 space-y-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <VerifiedAvatarFrame
+                          src={getLiveUserAvatarUrl(currentUser.uid, builderProfile.avatarUrl)}
+                          alt={builderProfile.displayName}
+                          isVerified={true}
+                          sizeClass="w-9 h-9"
+                          ringPaddingClass="p-[2px]"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-semibold text-white truncate">
+                            {builderProfile.displayName}
+                          </div>
+                          <div className="text-[11px] text-white/55 truncate">
+                            {isSuperAdmin
+                              ? 'Super Admin'
+                              : isGlobalModerator
+                                ? 'Global Moderator'
+                                : moderatedChannelIds.length > 0
+                                  ? `Channel Moderator (${moderatedChannelIds.length})`
+                                  : 'Verified Student'}
+                            {builderProfile.schoolName ? ` • ${builderProfile.schoolName}` : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isModeratorAnywhere && (
+                        <div className="pt-1.5 border-t border-white/[0.08] flex items-center justify-between text-[11px] text-white/60">
+                          <span>
+                            Open Reports:{' '}
+                            <strong className="text-white tabular-nums">{openReportsCount}</strong>
+                          </span>
+                          <span>
+                            {isSuperAdmin ? 'Access Requests: ' : 'Mod Channels: '}
+                            <strong className="text-white tabular-nums">
+                              {isSuperAdmin
+                                ? pendingHubRequestsCount
+                                : isGlobalModerator
+                                  ? 'All'
+                                  : moderatedChannelIds.length}
+                            </strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Group 2: Inbox & Notifications */}
+                    <div className="py-1.5">
+                      {onOpenInbox && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsProfileMenuOpen(false);
+                            onOpenInbox();
+                          }}
+                          className="w-full px-3.5 py-2 text-xs text-white/90 hover:bg-white/[0.06] flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2.5">
+                            <Bell className="w-4 h-4 text-white/60" />
+                            <span>Inbox Center</span>
+                          </span>
+                          {unreadNotifCount > 0 && (
+                            <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#B11469] text-white text-[10px] font-bold flex items-center justify-center tabular-nums">
+                              {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
+                            </span>
+                          )}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          handleOpenProfileSettings('notifications');
+                        }}
+                        className="w-full px-3.5 py-2 text-xs text-white/80 hover:bg-white/[0.06] flex items-center gap-2.5 cursor-pointer"
+                      >
+                        <BellOff className="w-4 h-4 text-white/60" />
+                        <span>Push Preferences</span>
+                      </button>
+                    </div>
+
+                    {/* Group 3: Moderation & Admin Center */}
+                    {isModeratorAnywhere && (
+                      <div className="py-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const defaultCh =
+                              isSuperAdmin ||
+                              isGlobalModerator ||
+                              moderatedChannelIds.includes(activeChannelId)
+                                ? activeChannelId
+                                : moderatedChannelIds[0] || activeChannelId;
+                            setSelectedAdminChannelId(defaultCh);
+                            setAdminTab(
+                              openReportsCount > 0
+                                ? 'reports'
+                                : isSuperAdmin
+                                  ? 'access'
+                                  : 'channels'
+                            );
+                            setActiveThreadMessage(null);
+                            setShowMembersDrawer(false);
+                            setIsProfileMenuOpen(false);
+                            setShowAdminDrawer(true);
+                          }}
+                          className="w-full px-3.5 py-2 text-xs text-white hover:bg-white/[0.06] flex items-center justify-between cursor-pointer font-medium"
+                        >
+                          <span className="flex items-center gap-2.5">
+                            <ShieldCheck className="w-4 h-4 text-[#FFF025]" />
+                            <span>
+                              {isSuperAdmin ? 'Admin Control Center' : 'Channel Mod Center'}
+                            </span>
+                          </span>
+                          {openReportsCount + (isSuperAdmin ? pendingHubRequestsCount : 0) > 0 && (
+                            <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#FFF025] text-black text-[10px] font-black flex items-center justify-center tabular-nums">
+                              {openReportsCount + (isSuperAdmin ? pendingHubRequestsCount : 0)}
+                            </span>
+                          )}
+                        </button>
+                        {isSuperAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsProfileMenuOpen(false);
+                              window.history.pushState({}, '', '/admin/student-access');
+                              window.dispatchEvent(new PopStateEvent('popstate'));
+                            }}
+                            className="w-full px-3.5 py-2 text-xs text-white/75 hover:bg-white/[0.06] flex items-center gap-2.5 cursor-pointer"
+                          >
+                            <Crown className="w-4 h-4 text-white/55" />
+                            <span>Student Verification Portal</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Group 4: Profile Settings & Session */}
+                    <div className="py-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          handleOpenProfileSettings('profile');
+                        }}
+                        className="w-full px-3.5 py-2 text-xs text-white/85 hover:bg-white/[0.06] flex items-center gap-2.5 cursor-pointer"
+                      >
+                        <UserCog className="w-4 h-4 text-white/60" />
+                        <span>Edit Profile &amp; Avatar</span>
+                      </button>
+                      {!isStandaloneApp && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsProfileMenuOpen(false);
+                            handleBackToWebsiteFromHub();
+                          }}
+                          className="w-full px-3.5 py-2 text-xs text-white/75 hover:bg-white/[0.06] flex items-center gap-2.5 cursor-pointer"
+                        >
+                          <ChevronLeft className="w-4 h-4 text-white/60" />
+                          <span>Back to Website</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsProfileMenuOpen(false);
+                          handleSignOutFromHub();
+                        }}
+                        className="w-full px-3.5 py-2 text-xs text-rose-400 hover:bg-rose-500/10 flex items-center gap-2.5 cursor-pointer"
+                      >
+                        <LogOut className="w-4 h-4" />
+                        <span>Sign Out</span>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           ) : (
             <button
               type="button"
@@ -3879,6 +4607,10 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       const categoryLinkCount = channel.defaultCreationCategory
                         ? sharedLinkCountsByCategory[channel.defaultCreationCategory] || 0
                         : 0;
+                      const { hasUnread, hasMention } = channelUnreadMap[channel.id] || {
+                        hasUnread: false,
+                        hasMention: false,
+                      };
 
                       return (
                         <div key={channel.id} className="space-y-0.5">
@@ -3887,14 +4619,15 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             onClick={() => {
                               setActiveChannelId(channel.id);
                               setActiveSubGroupId(null);
-                              setShowChannelLinksPanel(false);
                               setViewMode('chat');
                               setMobileSidebarOpen(false);
                             }}
-                            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left text-xs font-medium transition-all cursor-pointer relative group ${
+                            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-left text-xs transition-all cursor-pointer relative group ${
                               isSelected
                                 ? 'bg-white/10 text-white font-bold'
-                                : 'text-white/65 hover:bg-white/5 hover:text-white/90'
+                                : hasUnread
+                                  ? 'text-white font-semibold hover:bg-white/5'
+                                  : 'text-white/65 font-medium hover:bg-white/5 hover:text-white/90'
                             }`}
                           >
                             {isSelected && (
@@ -3908,10 +4641,24 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             </div>
 
                             <div className="flex items-center gap-1.5 shrink-0">
+                              {hasMention && (
+                                <span
+                                  title="You were tagged in this channel"
+                                  className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[10px] font-black shadow-sm"
+                                >
+                                  @
+                                </span>
+                              )}
+                              {!hasMention && hasUnread && (
+                                <span
+                                  title="Unread messages"
+                                  className="w-2 h-2 rounded-full bg-[#FFF025]"
+                                />
+                              )}
                               {isModForThisChannel && (
                                 <span
                                   title="You are a Moderator for this channel"
-                                  className="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-black"
+                                  className="px-1 py-0.2 rounded bg-white/10 text-white/80 text-[9px] font-bold"
                                 >
                                   MOD
                                 </span>
@@ -4259,14 +5006,30 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2 pt-0.5">
-                              <img
-                                src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
-                                alt={item.authorName}
-                                className="w-5 h-5 rounded-full object-cover border border-white/20 shrink-0"
-                              />
-                              <span className="text-xs font-semibold text-white/80 truncate">
-                                {getLiveUserDisplayName(item.authorId, item.authorName)}
-                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenMemberProfile({
+                                    uid: item.authorId,
+                                    displayName: getLiveUserDisplayName(item.authorId, item.authorName),
+                                    avatarUrl: getLiveUserAvatarUrl(item.authorId, item.authorAvatar),
+                                    avatarColor: item.authorColor,
+                                    role: item.authorRole,
+                                  });
+                                }}
+                                title={`View ${getLiveUserDisplayName(item.authorId, item.authorName)}'s profile`}
+                                className="inline-flex items-center gap-2 min-w-0 cursor-pointer group/author text-left"
+                              >
+                                <img
+                                  src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
+                                  alt={item.authorName}
+                                  className="w-5 h-5 rounded-full object-cover border border-white/20 shrink-0 group-hover/author:ring-2 group-hover/author:ring-[#FFF025] transition-all"
+                                />
+                                <span className="text-xs font-semibold text-white/80 group-hover/author:text-[#FFF025] group-hover/author:underline truncate">
+                                  {getLiveUserDisplayName(item.authorId, item.authorName)}
+                                </span>
+                              </button>
                               {item.duplicateCount > 1 && (
                                 <span className="text-[10px] font-mono text-white/45">
                                   · Shared {item.duplicateCount}×
@@ -4372,103 +5135,73 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
               </div>
 
-              {/* Showcase Channel Directory Strip & Quick Attach (Shows ALL matching Game/Website/Video/Novel links) */}
-              {activeChannel.defaultCreationCategory && !effectiveBanLinks && (
-                <div className="bg-[#181922] border-b border-white/10 px-3 sm:px-4 py-2 shrink-0 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-xs text-white/90 min-w-0">
-                      <span className="px-2 py-0.5 rounded bg-[#FFF025] text-black font-black uppercase text-[10px] shrink-0">
-                        {activeChannel.name} ({activeChannelCategoryLinks.length})
-                      </span>
-                      <span className="text-white/75 truncate">
-                        All {activeChannel.name.toLowerCase()} links shared across the hub appear here.
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {activeChannelCategoryLinks.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setShowChannelLinksPanel((prev) => !prev)}
-                          className="px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/35 text-xs font-bold text-sky-200 cursor-pointer whitespace-nowrap"
-                        >
-                          {showChannelLinksPanel
-                            ? 'Hide Links Directory'
-                            : `View ${activeChannelCategoryLinks.length} ${activeChannel.name} Links`}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowcaseFilter(activeChannel.defaultCreationCategory!);
-                          setViewMode('showcase');
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-white/8 hover:bg-white/15 text-xs font-bold text-white/85 cursor-pointer whitespace-nowrap hidden sm:inline-flex"
-                      >
-                        Open Full Directory
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowAttachmentDrawer(true)}
-                        className="px-2.5 py-1 rounded-lg bg-[#FFF025]/15 hover:bg-[#FFF025]/25 border border-[#FFF025]/35 text-xs font-bold text-[#FFF025] cursor-pointer whitespace-nowrap"
-                      >
-                        + Share {activeChannel.name.replace(/s$/, '')} Link
-                      </button>
-                    </div>
+              {/* Showcase Category Header Toolbar (NO collapse button — links render directly below) */}
+              {activeChannel.defaultCreationCategory && !activeSubGroup && !effectiveBanLinks && !isKickedFromActiveChannel && (
+                <div className="bg-[#181922] border-b border-white/10 px-3 sm:px-5 py-2.5 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2 text-xs text-white/80 min-w-0">
+                    <span className="font-bold text-white shrink-0">
+                      {activeChannel.name}
+                    </span>
+                    <span aria-hidden="true" className="text-white/35">·</span>
+                    <span className="font-mono text-[#FFF025] font-bold tabular-nums shrink-0">
+                      {activeChannelCategoryLinks.length}{' '}
+                      {activeChannelCategoryLinks.length === 1 ? 'link' : 'links'}
+                    </span>
+                    <span aria-hidden="true" className="text-white/35 hidden md:inline">·</span>
+                    <span className="text-white/60 truncate hidden md:inline">
+                      Showing only {activeChannel.name.toLowerCase()} shared across Build Buds.
+                    </span>
                   </div>
 
-                  {showChannelLinksPanel && activeChannelCategoryLinks.length > 0 && (
-                    <div className="max-h-60 overflow-y-auto hub-scroll space-y-1.5 pt-1 border-t border-white/10">
-                      {activeChannelCategoryLinks.map((item) => {
-                        const fallbackCover =
-                          DEFAULT_COVERS[item.linkCategory || 'other'] || DEFAULT_COVERS.other;
-                        return (
-                          <div
-                            key={item.normalizedLinkKey || item.id}
-                            className="flex items-center justify-between gap-2.5 p-2 rounded-xl bg-[#101218] border border-white/10 hover:border-[#FFF025]/40 transition-colors"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                              <img
-                                src={normalizeCoverImageUrl(item.coverImageUrl, item.linkCategory || 'other')}
-                                alt={item.linkTitle}
-                                onError={(e) => {
-                                  if (e.currentTarget.src !== window.location.origin + fallbackCover) {
-                                    e.currentTarget.src = fallbackCover;
-                                  }
-                                }}
-                                className="w-12 h-9 rounded-md object-cover border border-white/10 shrink-0"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-xs font-bold text-white truncate">
-                                  {item.linkTitle}
-                                </div>
-                                <div className="text-[10px] font-mono text-white/50 truncate">
-                                  {item.linkDomain} · by {getLiveUserDisplayName(item.authorId, item.authorName)}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => setActiveThreadMessage(item)}
-                                className="px-2 py-1 rounded-md bg-sky-500/20 hover:bg-sky-500/30 text-sky-200 border border-sky-400/35 text-[11px] font-bold cursor-pointer whitespace-nowrap"
-                              >
-                                Discuss
-                              </button>
-                              <a
-                                href={item.linkUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black whitespace-nowrap"
-                              >
-                                <span>Open</span>
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
-                            </div>
-                          </div>
-                        );
-                      })}
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap shrink-0">
+                    <div className="relative flex-1 sm:w-44">
+                      <Search className="w-3.5 h-3.5 text-white/40 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="search"
+                        value={channelDirectorySearchQuery}
+                        onChange={(e) => setChannelDirectorySearchQuery(e.target.value)}
+                        placeholder={`Search ${activeChannel.name.toLowerCase()}...`}
+                        className="w-full h-8 pl-8 pr-2.5 rounded-lg bg-[#101218] border border-white/15 focus:border-[#FFF025] text-xs text-white placeholder:text-white/40 focus:outline-none"
+                      />
                     </div>
-                  )}
+
+                    <div className="inline-flex items-center h-8 rounded-lg bg-[#101218] border border-white/15 p-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setChannelDirectorySortOrder('newest')}
+                        className={`inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-bold cursor-pointer whitespace-nowrap transition-colors ${
+                          channelDirectorySortOrder === 'newest'
+                            ? 'bg-[#FFF025] text-black font-black'
+                            : 'text-white/70 hover:text-white'
+                        }`}
+                      >
+                        <ArrowUpDown className="w-3 h-3" />
+                        <span>Latest</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChannelDirectorySortOrder('oldest')}
+                        className={`h-7 px-2 rounded-md text-[11px] font-bold cursor-pointer whitespace-nowrap transition-colors ${
+                          channelDirectorySortOrder === 'oldest'
+                            ? 'bg-[#FFF025] text-black font-black'
+                            : 'text-white/70 hover:text-white'
+                        }`}
+                      >
+                        Oldest
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkCategoryInput(activeChannel.defaultCreationCategory!);
+                        setShowAttachmentDrawer(true);
+                      }}
+                      className="h-8 px-2.5 rounded-lg bg-[#FFF025]/15 hover:bg-[#FFF025]/25 border border-[#FFF025]/35 text-xs font-bold text-[#FFF025] cursor-pointer whitespace-nowrap"
+                    >
+                      + Share {activeChannel.name.replace(/s$/, '')}
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -4595,13 +5328,263 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     </p>
                   </div>
                 </div>
+              ) : activeChannel.defaultCreationCategory && !activeSubGroup ? (
+                /* DIRECT CATEGORY LINKS FEED FOR #Games, #Websites, #Videos, #Novels (NO collapse toggle) */
+                <div className="flex-1 overflow-y-auto hub-scroll px-3 sm:px-5 py-4">
+                  <div className="max-w-5xl mx-auto space-y-2.5">
+                    {filteredActiveChannelCategoryLinks.length === 0 ? (
+                      <div className="rounded-2xl bg-[#101115] border border-white/10 p-10 text-center space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-2xl mx-auto">
+                          {activeChannel.emoji}
+                        </div>
+                        <h3 className="text-base font-bold text-white">
+                          {channelDirectorySearchQuery.trim()
+                            ? `No ${activeChannel.name.toLowerCase()} match "${channelDirectorySearchQuery.trim()}"`
+                            : `No ${activeChannel.name.toLowerCase()} links shared yet`}
+                        </h3>
+                        <p className="text-xs text-white/60 max-w-md mx-auto leading-relaxed">
+                          Only verified {activeChannel.name.toLowerCase()} links appear here. Paste a link below or click Share to add the first one!
+                        </p>
+                      </div>
+                    ) : (
+                      filteredActiveChannelCategoryLinks.map((item) => {
+                        const isOwnItem = currentUser?.uid === item.authorId;
+                        const effectiveCount = getMessageEffectiveReplyCount(item);
+                        const fallbackCover =
+                          DEFAULT_COVERS[item.linkCategory || 'other'] || DEFAULT_COVERS.other;
+                        const safeCoverUrl = normalizeCoverImageUrl(
+                          item.coverImageUrl,
+                          item.linkCategory || 'other'
+                        );
+                        const createdDateLabel = new Date(item.createdAtMillis).toLocaleDateString();
+                        const isEditingItem = editingMessageId === item.id;
+
+                        return (
+                          <div
+                            key={item.normalizedLinkKey || item.id}
+                            className="rounded-xl bg-[#101218] border border-white/12 hover:border-[#FFF025]/50 p-3 flex flex-col gap-2.5 transition-all group"
+                          >
+                            <div className="flex flex-col sm:flex-row items-stretch gap-3.5">
+                              {/* Side Preview Thumbnail */}
+                              <div className="w-full sm:w-36 h-24 sm:h-22 rounded-lg bg-black/60 overflow-hidden border border-white/10 shrink-0">
+                                <img
+                                  src={safeCoverUrl}
+                                  alt={item.linkTitle || 'Creation cover'}
+                                  onError={(e) => {
+                                    if (e.currentTarget.src !== window.location.origin + fallbackCover) {
+                                      e.currentTarget.src = fallbackCover;
+                                    }
+                                  }}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                                />
+                              </div>
+
+                              {/* Center Info */}
+                              <div className="flex-1 min-w-0 flex flex-col justify-between gap-1.5">
+                                <div>
+                                  <div className="flex items-center gap-1.5 text-[11px] font-mono text-white/50 truncate">
+                                    <span className="uppercase font-bold text-[#FFF025]">
+                                      {item.linkCategory || activeChannel.defaultCreationCategory}
+                                    </span>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="truncate">{item.linkDomain || 'buildbuds.community'}</span>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="shrink-0">{createdDateLabel}</span>
+                                  </div>
+
+                                  <a
+                                    href={item.linkUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-sm sm:text-base font-bold text-white hover:text-[#FFF025] line-clamp-1 mt-0.5 block"
+                                  >
+                                    {item.linkTitle || 'Creator Build'}
+                                  </a>
+
+                                  <p className="text-xs text-white/65 line-clamp-2 leading-relaxed mt-0.5">
+                                    {item.linkDescription || item.text}
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-2 pt-0.5 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenMemberProfile({
+                                        uid: item.authorId,
+                                        displayName: getLiveUserDisplayName(item.authorId, item.authorName),
+                                        avatarUrl: getLiveUserAvatarUrl(item.authorId, item.authorAvatar),
+                                        avatarColor: item.authorColor,
+                                        role: item.authorRole,
+                                      });
+                                    }}
+                                    title={`View ${getLiveUserDisplayName(item.authorId, item.authorName)}'s profile`}
+                                    className="inline-flex items-center gap-2 min-w-0 cursor-pointer group/author text-left"
+                                  >
+                                    <img
+                                      src={getLiveUserAvatarUrl(item.authorId, item.authorAvatar)}
+                                      alt={item.authorName}
+                                      className="w-5 h-5 rounded-full object-cover border border-white/20 shrink-0 group-hover/author:ring-2 group-hover/author:ring-[#FFF025] transition-all"
+                                    />
+                                    <span className="text-xs font-semibold text-white/80 group-hover/author:text-[#FFF025] group-hover/author:underline truncate">
+                                      {getLiveUserDisplayName(item.authorId, item.authorName)}
+                                    </span>
+                                  </button>
+                                  {item.duplicateCount > 1 && (
+                                    <span className="text-[10px] font-mono text-white/45">
+                                      · Shared {item.duplicateCount}×
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Right Action Buttons (Color-Coded) */}
+                              <div className="flex flex-wrap sm:flex-col items-center sm:items-end justify-end sm:justify-center gap-1.5 shrink-0 pt-1 sm:pt-0">
+                                <div className="flex items-center gap-1.5">
+                                  {item.linkUrl && (
+                                    <a
+                                      href={item.linkUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black whitespace-nowrap"
+                                    >
+                                      <span>Open Link</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveThreadMessage(item)}
+                                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-xs font-bold text-sky-200 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <MessageSquare className="w-3 h-3" />
+                                    <span>Discuss ({effectiveCount})</span>
+                                  </button>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                                  {isOwnItem && userStatus === 'active' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartEditMessage(item, true)}
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                                    >
+                                      <Pencil className="w-2.5 h-2.5" />
+                                      <span>Edit</span>
+                                    </button>
+                                  )}
+                                  {item.showcaseStatus === 'approved' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/35 text-[10px] font-bold whitespace-nowrap">
+                                      <CheckCircle2 className="w-2.5 h-2.5" />
+                                      <span>Featured</span>
+                                    </span>
+                                  ) : item.showcaseStatus === 'pending' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/35 text-[10px] font-bold whitespace-nowrap">
+                                      <Clock className="w-2.5 h-2.5" />
+                                      <span>In Review</span>
+                                    </span>
+                                  ) : isOwnItem ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRequestPublicShowcase(item)}
+                                      className="px-2 py-1 rounded-md bg-[#B11469]/25 hover:bg-[#B11469]/40 text-pink-200 border border-[#B11469]/50 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                                    >
+                                      Showcase
+                                    </button>
+                                  ) : null}
+                                  {isSuperAdmin && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleStartCuratingMessage(item)}
+                                      className="px-2 py-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                                    >
+                                      Curate
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Inline Link & Category Edit Panel inside Category Directory */}
+                            {isEditingItem && (
+                              <form
+                                onSubmit={(e) => {
+                                  e.preventDefault();
+                                  handleSaveEditMessage(item);
+                                }}
+                                className="pt-2.5 border-t border-white/10 space-y-2"
+                              >
+                                <div className="grid sm:grid-cols-2 gap-2">
+                                  <input
+                                    type="url"
+                                    value={editingLinkUrl}
+                                    onChange={(e) => setEditingLinkUrl(e.target.value)}
+                                    placeholder="https://..."
+                                    className="px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 focus:border-[#FFF025] text-xs text-white focus:outline-none"
+                                  />
+                                  <select
+                                    value={editingLinkCategory}
+                                    onChange={(e) =>
+                                      setEditingLinkCategory(e.target.value as CreationCategory)
+                                    }
+                                    className="px-2.5 py-1.5 rounded-lg bg-[#161822] border border-white/15 text-xs text-white font-bold focus:outline-none"
+                                  >
+                                    <option value="game">Game</option>
+                                    <option value="website">Website</option>
+                                    <option value="video">Video</option>
+                                    <option value="novel">Novel</option>
+                                    <option value="other">Other</option>
+                                  </select>
+                                </div>
+                                <input
+                                  type="text"
+                                  value={editingLinkTitle}
+                                  onChange={(e) => setEditingLinkTitle(e.target.value)}
+                                  placeholder="Creation title..."
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 focus:border-[#FFF025] text-xs text-white focus:outline-none"
+                                />
+                                <input
+                                  type="text"
+                                  value={editingLinkDesc}
+                                  onChange={(e) => setEditingLinkDesc(e.target.value)}
+                                  placeholder="Short description..."
+                                  className="w-full px-2.5 py-1.5 rounded-lg bg-black/50 border border-white/15 focus:border-[#FFF025] text-xs text-white focus:outline-none"
+                                />
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="submit"
+                                    disabled={isSavingMessageEdit}
+                                    className="px-3 py-1 rounded-lg bg-[#FFF025] text-black text-xs font-black cursor-pointer"
+                                  >
+                                    {isSavingMessageEdit ? 'Saving...' : 'Save Changes'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingMessageId(null);
+                                      setEditingShowLinkFields(false);
+                                    }}
+                                    className="px-3 py-1 rounded-lg bg-white/10 text-white/80 text-xs font-bold cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </form>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
               ) : (
                 /* Scrollable Real-Time Message Stream with Progressive Scroll-Up Loading & Floating Scroll-to-Bottom Button */
                 <div className="relative flex-1 min-h-0 flex flex-col">
                 <div
                   ref={chatScrollContainerRef}
                   onScroll={handleMessageStreamScroll}
-                  onClick={() => setActiveActionMessageId(null)}
+                  onClick={() => setContextMenuState(null)}
                   className="flex-1 overflow-y-auto hub-scroll px-3 sm:px-6 py-4 select-text"
                 >
                   {groupedMessages.length === 0 ? (
@@ -4666,7 +5649,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           effectiveReplyCount > 0 ||
                           Object.values(msg.reactions || {}).some((c) => c > 0);
                         const isEditingThisMessage = editingMessageId === msg.id;
-                        const isActionOpen = activeActionMessageId === msg.id;
                         const mentionFlags = doesTextMentionUserOrAll(
                           msg.text,
                           builderProfile?.displayName
@@ -4691,7 +5673,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             onContextMenu={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              setActiveActionMessageId(null);
                               setContextMenuState({
                                 msg,
                                 x: e.clientX,
@@ -4701,23 +5682,56 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             onTouchStart={(e) => {
                               if (e.touches.length !== 1) return;
                               const t = e.touches[0];
+                              if (longPressTimerRef.current !== null) {
+                                window.clearTimeout(longPressTimerRef.current);
+                                longPressTimerRef.current = null;
+                              }
+                              const touchX = t.clientX;
+                              const touchY = t.clientY;
+                              longPressOriginRef.current = { id: msg.id, x: touchX, y: touchY };
+                              swipeHapticFiredRef.current = false;
+                              longPressTimerRef.current = window.setTimeout(() => {
+                                longPressTimerRef.current = null;
+                                longPressOriginRef.current = null;
+                                setSwipingMessageState(null);
+                                triggerHapticFeedback('medium');
+                                setContextMenuState({
+                                  msg,
+                                  x: touchX,
+                                  y: touchY,
+                                });
+                              }, LONG_PRESS_DELAY_MS);
                               setSwipingMessageState({
                                 id: msg.id,
-                                startX: t.clientX,
-                                startY: t.clientY,
+                                startX: touchX,
+                                startY: touchY,
                                 offsetPx: 0,
                                 shouldTriggerReply: false,
                               });
                             }}
                             onTouchMove={(e) => {
+                              if (e.touches.length !== 1) return;
+                              const t = e.touches[0];
+                              if (
+                                longPressTimerRef.current !== null &&
+                                longPressOriginRef.current &&
+                                shouldCancelLongPress(
+                                  longPressOriginRef.current.x,
+                                  longPressOriginRef.current.y,
+                                  t.clientX,
+                                  t.clientY
+                                )
+                              ) {
+                                window.clearTimeout(longPressTimerRef.current);
+                                longPressTimerRef.current = null;
+                                longPressOriginRef.current = null;
+                              }
                               if (
                                 !swipingMessageState ||
-                                swipingMessageState.id !== msg.id ||
-                                e.touches.length !== 1
+                                swipingMessageState.id !== msg.id
                               ) {
                                 return;
                               }
-                              const t = e.touches[0];
                               const evalSwipe = evaluateMessageSwipeToReply(
                                 swipingMessageState.startX,
                                 swipingMessageState.startY,
@@ -4726,12 +5740,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               );
                               if (evalSwipe.offsetPx > 0) {
                                 e.stopPropagation();
+                                if (evalSwipe.shouldTriggerReply && !swipeHapticFiredRef.current) {
+                                  swipeHapticFiredRef.current = true;
+                                  triggerHapticFeedback('light');
+                                } else if (!evalSwipe.shouldTriggerReply && swipeHapticFiredRef.current) {
+                                  swipeHapticFiredRef.current = false;
+                                }
                                 setSwipingMessageState({
                                   ...swipingMessageState,
                                   offsetPx: evalSwipe.offsetPx,
                                   shouldTriggerReply: evalSwipe.shouldTriggerReply,
                                 });
                               } else if (swipingMessageState.offsetPx > 0) {
+                                swipeHapticFiredRef.current = false;
                                 setSwipingMessageState({
                                   ...swipingMessageState,
                                   offsetPx: 0,
@@ -4740,6 +5761,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               }
                             }}
                             onTouchEnd={(e) => {
+                              if (longPressTimerRef.current !== null) {
+                                window.clearTimeout(longPressTimerRef.current);
+                                longPressTimerRef.current = null;
+                              }
+                              longPressOriginRef.current = null;
                               if (
                                 !swipingMessageState ||
                                 swipingMessageState.id !== msg.id
@@ -4748,6 +5774,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               }
                               const wasTriggered = swipingMessageState.shouldTriggerReply;
                               setSwipingMessageState(null);
+                              swipeHapticFiredRef.current = false;
                               if (wasTriggered) {
                                 e.stopPropagation();
                                 setReplyingTo(msg);
@@ -4756,17 +5783,29 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 }, 50);
                               }
                             }}
+                            onTouchCancel={() => {
+                              if (longPressTimerRef.current !== null) {
+                                window.clearTimeout(longPressTimerRef.current);
+                                longPressTimerRef.current = null;
+                              }
+                              longPressOriginRef.current = null;
+                              swipeHapticFiredRef.current = false;
+                              setSwipingMessageState(null);
+                            }}
                             style={
                               activeSwipeOffset > 0
                                 ? {
                                     transform: `translateX(${activeSwipeOffset}px)`,
                                     transition: 'none',
+                                    WebkitTouchCallout: 'none',
                                   }
-                                : undefined
+                                : {
+                                    WebkitTouchCallout: 'none',
+                                  }
                             }
                             className={`group relative rounded-xl px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 hover:bg-white/[0.035] transition-all duration-200 ${
                               isFirstInGroup ? 'mt-4 first:mt-0 pt-1.5 pb-1' : 'mt-0.5 py-0.5'
-                            } ${isActionOpen ? 'bg-white/[0.04]' : ''} ${
+                            } ${
                               isHighlightedForMe
                                 ? 'bg-[#FFF025]/[0.05] border-l-2 border-l-[#FFF025]'
                                 : ''
@@ -4841,13 +5880,29 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             <div className="flex items-start gap-2.5 sm:gap-3.5">
                               {/* Left Column: 40x40 Graphical Avatar with Verified Student Ring of Light */}
                               {isFirstInGroup ? (
-                                <VerifiedAvatarFrame
-                                  src={resolvedAvatarUrl}
-                                  alt={resolvedAuthorName}
-                                  isVerified={true}
-                                  sizeClass="w-9 h-9 sm:w-10 sm:h-10 mt-0.5"
-                                  ringPaddingClass="p-[2px]"
-                                />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenMemberProfile({
+                                      uid: msg.authorId,
+                                      displayName: resolvedAuthorName,
+                                      avatarUrl: resolvedAvatarUrl,
+                                      avatarColor: msg.authorColor,
+                                      role: msg.authorRole,
+                                    });
+                                  }}
+                                  title={`View ${resolvedAuthorName}'s profile`}
+                                  className="cursor-pointer rounded-full focus:outline-none focus:ring-2 focus:ring-[#FFF025] transition-transform hover:scale-105 shrink-0"
+                                >
+                                  <VerifiedAvatarFrame
+                                    src={resolvedAvatarUrl}
+                                    alt={resolvedAuthorName}
+                                    isVerified={true}
+                                    sizeClass="w-9 h-9 sm:w-10 sm:h-10 mt-0.5"
+                                    ringPaddingClass="p-[2px]"
+                                  />
+                                </button>
                               ) : (
                                 <div className="w-9 sm:w-10 shrink-0 flex items-center justify-end pr-1 pt-1 select-none">
                                   <span className="text-[10px] font-mono text-white/30 opacity-0 group-hover:opacity-100 transition-opacity tabular-nums">
@@ -4861,9 +5916,23 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 {isFirstInGroup && (
                                   <div className="flex items-baseline justify-between gap-2 mb-0.5">
                                     <div className="flex items-baseline gap-2 flex-wrap min-w-0">
-                                      <span className="font-mono font-extrabold text-sm tracking-tight truncate verified-student-name-gradient-dark">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenMemberProfile({
+                                            uid: msg.authorId,
+                                            displayName: resolvedAuthorName,
+                                            avatarUrl: resolvedAvatarUrl,
+                                            avatarColor: msg.authorColor,
+                                            role: msg.authorRole,
+                                          });
+                                        }}
+                                        title={`View ${resolvedAuthorName}'s profile`}
+                                        className="font-mono font-extrabold text-sm tracking-tight truncate verified-student-name-gradient-dark cursor-pointer hover:underline text-left"
+                                      >
                                         {resolvedAuthorName}
-                                      </span>
+                                      </button>
 
                                       {msg.authorRole === 'admin' && (
                                         <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-[#FFF025] text-black">
@@ -4887,7 +5956,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         const rect = e.currentTarget.getBoundingClientRect();
-                                        setActiveActionMessageId(null);
                                         setContextMenuState((prev) =>
                                           prev?.msg.id === msg.id
                                             ? null
@@ -4967,7 +6035,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                             handleSaveEditMessage(msg);
                                           }
                                         }}
-                                        placeholder="Edit message (Enter for new line, Ctrl+Enter to save)..."
+                                        placeholder="Edit message (Enter = save, Shift+Enter = new line)..."
                                         className="w-full px-3 py-2 rounded-xl bg-[#0b0c10] border border-white/20 focus:border-[#FFF025] text-sm font-mono text-white focus:outline-none resize-y"
                                       />
                                     </div>
@@ -5123,7 +6191,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         Cancel
                                       </button>
                                       <span className="text-[10px] text-white/40 ml-auto">
-                                        Enter = new line • Ctrl+Enter = save
+                                        Enter = save • Shift+Enter = new line
                                       </span>
                                     </div>
                                   </form>
@@ -5158,7 +6226,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           const rect = e.currentTarget.getBoundingClientRect();
-                                          setActiveActionMessageId(null);
                                           setContextMenuState((prev) =>
                                             prev?.msg.id === msg.id
                                               ? null
@@ -5373,135 +6440,6 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               </div>
                             </div>
 
-                            {/* Hover & Touch Action Bar (3D Animated Emote Pack, Reply, Thread, Edit, Delete, Report) */}
-                            <div
-                              onClick={(e) => e.stopPropagation()}
-                              className={`${
-                                isActionOpen ? 'flex' : 'hidden group-hover:flex'
-                              } items-center gap-1 absolute -top-3.5 right-2 sm:right-3 bg-[#1e2028] border border-white/15 rounded-2xl px-2 py-1 shadow-xl z-10 max-w-[95vw] overflow-x-auto no-scrollbar`}
-                            >
-                              {QUICK_EMOJIS.map((emoji) => (
-                                <button
-                                  key={emoji}
-                                  type="button"
-                                  onClick={() => {
-                                    handleToggleReaction(msg, emoji);
-                                    setActiveActionMessageId(null);
-                                  }}
-                                  title={`React with ${emoji}`}
-                                  className="p-1 rounded-lg hover:bg-white/10 cursor-pointer transition-transform hover:scale-125 active:scale-90 shrink-0 emote-3d-hover"
-                                >
-                                  <Emote3DIcon emote={emoji} size={18} />
-                                </button>
-                              ))}
-
-                              <div className="w-px h-4 bg-white/15 mx-1 shrink-0" />
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setReplyingTo(msg);
-                                  setActiveActionMessageId(null);
-                                }}
-                                title="Reply Inline"
-                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-white cursor-pointer shrink-0"
-                              >
-                                <Reply className="w-3.5 h-3.5" />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setForwardingMessage(msg);
-                                  setForwardTargetChannelId(activeStreamId || 'general-chat');
-                                  setForwardNoteText('');
-                                  setActiveActionMessageId(null);
-                                }}
-                                title="Forward Message"
-                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-sky-400 cursor-pointer shrink-0"
-                              >
-                                <Forward className="w-3.5 h-3.5" />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setShowAdminDrawer(false);
-                                  setShowMembersDrawer(false);
-                                  setActiveThreadMessage(msg);
-                                  setActiveActionMessageId(null);
-                                }}
-                                title="Open Discussion Thread"
-                                className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-[#FFF025] cursor-pointer shrink-0"
-                              >
-                                <MessageSquare className="w-3.5 h-3.5" />
-                              </button>
-
-                              {/* Pin / Unpin Message (Moderators & Admins) */}
-                              {(isSuperAdmin ||
-                                isCurrentChannelModerator ||
-                                isGlobalModerator) && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleTogglePinMessage(msg)}
-                                  title={msg.isPinned ? 'Unpin Message' : 'Pin Message'}
-                                  aria-label={msg.isPinned ? 'Unpin Message' : 'Pin Message'}
-                                  className={`p-1.5 rounded hover:bg-white/10 cursor-pointer shrink-0 ${
-                                    msg.isPinned
-                                      ? 'text-[#FFF025]'
-                                      : 'text-white/75 hover:text-[#FFF025]'
-                                  }`}
-                                >
-                                  <Pin className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-
-                              {/* Edit Own Message */}
-                              {isOwnMessage && userStatus === 'active' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleStartEditMessage(msg)}
-                                  title="Edit Message"
-                                  aria-label="Edit Message"
-                                  className="p-1.5 rounded hover:bg-white/10 text-white/75 hover:text-[#FFF025] cursor-pointer shrink-0"
-                                >
-                                  <Pencil className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-
-                              {/* Delete Own Message (or Admin/Moderator Delete) */}
-                              {(isOwnMessage ||
-                                isSuperAdmin ||
-                                isCurrentChannelModerator ||
-                                isGlobalModerator) && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    handleDeleteMessage(msg);
-                                    setActiveActionMessageId(null);
-                                  }}
-                                  title="Delete Message"
-                                  aria-label="Delete Message"
-                                  className="p-1.5 rounded hover:bg-rose-500/20 text-white/70 hover:text-rose-400 cursor-pointer shrink-0"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-
-                              {!isOwnMessage && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    handleReportMessage(msg);
-                                    setActiveActionMessageId(null);
-                                  }}
-                                  title="Report Message to Moderators"
-                                  className="p-1.5 rounded hover:bg-white/10 text-white/60 hover:text-amber-400 cursor-pointer shrink-0"
-                                >
-                                  <Flag className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                            </div>
                           </div>
                         );
                       })}
@@ -5754,9 +6692,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               if (!linkDescInput) setLinkDescInput(prev.description);
                             }
                           }}
-                          placeholder="https://your-game-or-site.app"
+                          placeholder={
+                            linkCategoryInput === 'game'
+                              ? 'https://game-name.vercel.app'
+                              : 'https://your-site-or-creation.app'
+                          }
                           className="w-full px-3 py-2 rounded-xl bg-[#111217] border border-white/15 text-xs text-white placeholder-white/30 focus:outline-none focus:border-[#FFF025]"
                         />
+                        {linkCategoryInput === 'game' && (
+                          <div className="text-[10px] text-white/50 mt-1">
+                            Approved students only: use https://game-name.vercel.app
+                          </div>
+                        )}
                       </div>
 
                       <div className="sm:col-span-4">
@@ -5881,8 +6828,8 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             : !canUserSendMessageInChannel
                               ? 'Channel is locked or restricted'
                               : activeSubGroup
-                                ? `Message #${activeSubGroup.name} (Enter = new line, Ctrl+Enter = send)...`
-                                : `Message #${activeChannel.name} (Enter = new line, Ctrl+Enter = send)...`
+                                ? `Message #${activeSubGroup.name} (Enter = send, Shift+Enter = new line, Ctrl+K = focus)...`
+                                : `Message #${activeChannel.name} (Enter = send, Shift+Enter = new line, Ctrl+K = focus)...`
                       }
                       className="w-full px-3.5 sm:px-4 py-2.5 rounded-xl bg-[#1c1e24] border border-white/10 text-sm font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025]/70 disabled:opacity-50 resize-none leading-relaxed max-h-36 overflow-y-auto"
                     />
@@ -5900,13 +6847,13 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       (cooldownRemaining > 0 && !isSuperAdmin && !isCurrentChannelModerator)
                     }
                     className="p-3 rounded-xl bg-[#eab308] hover:bg-[#facc15] disabled:opacity-40 text-black font-black border border-black/30 cursor-pointer transition-transform active:scale-95 shrink-0"
-                    title="Send Message (Ctrl + Enter)"
+                    title="Send Message (Enter)"
                   >
                     <Send className="w-4 h-4 stroke-[2.5]" />
                   </button>
                 </form>
                 <div className="hidden sm:flex items-center justify-between px-1 text-[10px] font-mono text-white/35">
-                  <span>Enter = new line • Ctrl + Enter = send message</span>
+                  <span>Enter = send • Shift + Enter = new line • Ctrl + K = focus input</span>
                   <span>Type @ to mention a builder or @all</span>
                 </div>
               </div>
@@ -5914,1018 +6861,11 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
           )}
         </main>
 
-        {/* RIGHT DRAWER: Admin/Moderator Dashboard OR Thread Replies OR Real Online Members
-            Responsive: Full-screen slide-over on mobile (<sm), 400px drawer on tablet/desktop */}
-        {(showAdminDrawer || activeThreadMessage || showMembersDrawer) && (
-          <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-[400px] lg:static lg:w-80 xl:w-[400px] bg-[#121317] border-l border-white/10 flex flex-col shrink-0 lg:z-20 shadow-2xl">
-            {showAdminDrawer && (isSuperAdmin || isCurrentChannelModerator) ? (
-              /* ==============================================================
-                 DEDICATED ADMIN & CHANNEL MODERATOR CONTROL DRAWER
-                 ============================================================== */
-              <>
-                <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between bg-[#171922]">
-                  <div className="flex items-center gap-2">
-                    <Crown className="w-4 h-4 text-[#FFF025]" />
-                    <span className="font-bold text-sm text-white">
-                      {isSuperAdmin ? 'Super Admin Control Center' : 'Channel Moderator Panel'}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setShowAdminDrawer(false)}
-                    className="p-1 rounded-lg text-white/60 hover:text-white hover:bg-white/10 cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Admin Navigation Tabs */}
-                <div className="px-3 pt-2.5 pb-2 border-b border-white/10 flex flex-wrap gap-1.5 bg-[#14151c]">
-                  {isSuperAdmin && (
-                    <button
-                      onClick={() => setAdminTab('access')}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors flex items-center gap-1.5 ${
-                        adminTab === 'access'
-                          ? 'bg-[#FFF025] text-black'
-                          : 'bg-white/5 text-white/70 hover:text-white'
-                      }`}
-                    >
-                      <span>Access Requests</span>
-                      {pendingHubRequestsCount > 0 && (
-                        <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[9px] font-black">
-                          {pendingHubRequestsCount}
-                        </span>
-                      )}
-                    </button>
-                  )}
-                  {isSuperAdmin && (
-                    <button
-                      onClick={() => setAdminTab('global')}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors ${
-                        adminTab === 'global'
-                          ? 'bg-[#FFF025] text-black'
-                          : 'bg-white/5 text-white/70 hover:text-white'
-                      }`}
-                    >
-                      Global Rules
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setAdminTab('channels')}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors ${
-                      adminTab === 'channels'
-                        ? 'bg-[#FFF025] text-black'
-                        : 'bg-white/5 text-white/70 hover:text-white'
-                    }`}
-                  >
-                    Channels & Perms
-                  </button>
-                  {isSuperAdmin && (
-                    <button
-                      onClick={() => setAdminTab('users')}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors ${
-                        adminTab === 'users'
-                          ? 'bg-[#FFF025] text-black'
-                          : 'bg-white/5 text-white/70 hover:text-white'
-                      }`}
-                    >
-                      All Accounts ({allPlatformUsers.length})
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setAdminTab('groups')}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black cursor-pointer transition-colors ${
-                      adminTab === 'groups'
-                        ? 'bg-[#FFF025] text-black'
-                        : 'bg-white/5 text-white/70 hover:text-white'
-                    }`}
-                  >
-                    Groups & Reports
-                  </button>
-                </div>
-
-                {/* Tab Body */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-5 text-xs">
-                  {adminTab === 'access' && isSuperAdmin && (
-                    /* TAB 0: STUDENT HUB ACCESS REQUESTS & UNAPPROVED ACCOUNTS (ADMIN ONLY) */
-                    <div className="space-y-4">
-                      <div className="p-3.5 rounded-2xl bg-[#1b1e2b] border border-[#FFF025]/40 space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="font-bold text-[#FFF025] text-sm flex items-center gap-1.5">
-                            <ShieldCheck className="w-4 h-4" />
-                            <span>Student Hub Access Gate</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              window.history.pushState({}, '', '/admin/student-access');
-                              window.dispatchEvent(new PopStateEvent('popstate'));
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-[#FFF025] text-black font-black text-[10px] cursor-pointer"
-                          >
-                            Full Admin Portal →
-                          </button>
-                        </div>
-                        <p className="text-[11px] text-white/70 leading-relaxed">
-                          Unapproved accounts are strictly hidden from the Private Chat and can only
-                          browse the Public Community. When you accept a student below, they gain
-                          Private Hub access, receive the Pro Gradient Ring &amp; Name, and a welcome
-                          announcement is automatically posted in <strong>#general-chat</strong> and{' '}
-                          <strong>#announcements</strong>.
-                        </p>
-                      </div>
-
-                      {/* Formal Student Access Requests */}
-                      <div className="space-y-2">
-                        <div className="font-black uppercase tracking-wider text-[10px] text-[#FFF025] flex items-center justify-between">
-                          <span>
-                            Student Access Applications ({hubAccessRequests.length})
-                          </span>
-                          <span className="text-white/50">
-                            {hubAccessRequests.filter((r) => r.status === 'pending').length} pending
-                          </span>
-                        </div>
-
-                        {hubAccessRequests.length === 0 ? (
-                          <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/50 text-[11px]">
-                            No formal student access applications submitted yet.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {hubAccessRequests.map((req) => (
-                              <div
-                                key={req.uid}
-                                className="p-3 rounded-2xl bg-white/[0.04] border border-white/15 space-y-2"
-                              >
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <div className="font-bold text-white text-xs truncate">
-                                      {req.fullName}
-                                    </div>
-                                    <div className="text-[10px] text-white/60 truncate">
-                                      {req.email}
-                                    </div>
-                                    <div className="text-[10px] text-white/75 mt-0.5">
-                                      🏫 {req.schoolName} • {req.gradeLevel}
-                                    </div>
-                                    <div className="text-[10px] text-[#FFF025]/90 truncate">
-                                      🎓 {req.programme}
-                                    </div>
-                                  </div>
-                                  <span
-                                    className={`px-2 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${
-                                      req.status === 'approved'
-                                        ? 'bg-emerald-400 text-black'
-                                        : req.status === 'pending'
-                                        ? 'bg-amber-400 text-black'
-                                        : 'bg-rose-500 text-white'
-                                    }`}
-                                  >
-                                    {req.status}
-                                  </span>
-                                </div>
-
-                                <div className="flex items-center gap-2 pt-1">
-                                  {req.status !== 'approved' && (
-                                    <button
-                                      type="button"
-                                      disabled={isProcessingHubAccess}
-                                      onClick={() => handleAdminApproveRequestInHub(req)}
-                                      className="flex-1 py-1.5 px-2.5 rounded-xl bg-emerald-400 hover:bg-emerald-300 text-black font-black text-[11px] cursor-pointer disabled:opacity-50"
-                                    >
-                                      ✓ Accept &amp; Welcome to Hub
-                                    </button>
-                                  )}
-                                  {req.status !== 'rejected' && (
-                                    <button
-                                      type="button"
-                                      disabled={isProcessingHubAccess}
-                                      onClick={() => handleAdminRejectRequestInHub(req)}
-                                      className="py-1.5 px-2.5 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white font-black text-[11px] cursor-pointer disabled:opacity-50"
-                                    >
-                                      Reject
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Unapproved Registered Accounts (Visible ONLY to Admin) */}
-                      <div className="space-y-2 pt-2 border-t border-white/10">
-                        <div className="font-black uppercase tracking-wider text-[10px] text-amber-300 flex items-center justify-between">
-                          <span>
-                            Unapproved Registered Accounts ({unapprovedPlatformUsers.length})
-                          </span>
-                          <span className="text-white/50">Hidden from Private Chat</span>
-                        </div>
-
-                        {unapprovedPlatformUsers.length === 0 ? (
-                          <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-white/50 text-[11px]">
-                            All registered accounts have been reviewed.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {unapprovedPlatformUsers.map((u) => (
-                              <div
-                                key={u.uid}
-                                className="p-3 rounded-2xl bg-white/[0.04] border border-amber-400/30 space-y-2"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="flex items-center gap-2 min-w-0">
-                                    <VerifiedAvatarFrame
-                                      src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
-                                      alt={u.displayName}
-                                      isVerified={false}
-                                      sizeClass="w-8 h-8"
-                                    />
-                                    <div className="min-w-0">
-                                      <div className="font-bold text-white truncate">
-                                        {u.displayName}
-                                      </div>
-                                      <div className="text-[10px] text-white/55 truncate">
-                                        {u.schoolName || 'Public Community Account'}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 text-[9px] font-black uppercase shrink-0">
-                                    Public Only
-                                  </span>
-                                </div>
-
-                                <div className="flex items-center gap-2 pt-1">
-                                  <button
-                                    type="button"
-                                    disabled={isProcessingHubAccess}
-                                    onClick={() => handleAdminApproveUserInHub(u)}
-                                    className="flex-1 py-1.5 px-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-[11px] cursor-pointer disabled:opacity-50"
-                                  >
-                                    ✓ Accept into Private Chat
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={isProcessingHubAccess}
-                                    onClick={() => handleAdminRevokeUserInHub(u)}
-                                    className="py-1.5 px-2.5 rounded-xl bg-white/10 hover:bg-rose-500/30 text-white/75 hover:text-rose-200 font-bold text-[10px] cursor-pointer disabled:opacity-50"
-                                  >
-                                    Keep Public
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {adminTab === 'global' && isSuperAdmin && (
-                    /* TAB 1: GLOBAL COMMUNITY SETTINGS */
-                    <div className="space-y-4">
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3">
-                        <div className="font-bold text-white text-sm flex items-center justify-between">
-                          <span>Slow-Mode Message Cooldown</span>
-                          <span className="text-[11px] font-mono text-[#FFF025]">
-                            {globalSettings.disableCooldown
-                              ? 'OFF (0s)'
-                              : `${globalSettings.cooldownSeconds}s`}
-                          </span>
-                        </div>
-                        <p className="text-white/60 text-[11px]">
-                          Control how long members wait between messages or disable cooldown completely.
-                        </p>
-
-                        <div className="flex flex-wrap gap-1.5">
-                          {[0, 3, 5, 10, 15, 30, 60].map((sec) => {
-                            const isActive =
-                              (sec === 0 && globalSettings.disableCooldown) ||
-                              (!globalSettings.disableCooldown &&
-                                globalSettings.cooldownSeconds === sec);
-                            return (
-                              <button
-                                key={sec}
-                                onClick={() =>
-                                  handleUpdateGlobalSettings({
-                                    cooldownSeconds: sec,
-                                    disableCooldown: sec === 0,
-                                  })
-                                }
-                                className={`px-2.5 py-1.5 rounded-lg font-mono font-bold cursor-pointer ${
-                                  isActive
-                                    ? 'bg-[#FFF025] text-black'
-                                    : 'bg-white/10 text-white/80 hover:bg-white/15'
-                                }`}
-                              >
-                                {sec === 0 ? 'Off (0s)' : `${sec}s`}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Global Chat Lock */}
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="font-bold text-white">Lock Entire Community Chat</div>
-                          <div className="text-[11px] text-white/55">
-                            When locked, only admins and moderators can send messages in any channel.
-                          </div>
-                        </div>
-                        <button
-                          onClick={() =>
-                            handleUpdateGlobalSettings({
-                              globalChatLocked: !globalSettings.globalChatLocked,
-                            })
-                          }
-                          className={`px-3 py-1.5 rounded-xl font-black cursor-pointer shrink-0 flex items-center gap-1.5 ${
-                            globalSettings.globalChatLocked
-                              ? 'bg-rose-500 text-white'
-                              : 'bg-white/10 text-white/80 hover:bg-white/15'
-                          }`}
-                        >
-                          {globalSettings.globalChatLocked ? (
-                            <>
-                              <Lock className="w-3.5 h-3.5" />
-                              <span>Locked</span>
-                            </>
-                          ) : (
-                            <>
-                              <Unlock className="w-3.5 h-3.5" />
-                              <span>Unlocked</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-
-                      {/* Global Link Ban */}
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="font-bold text-white">Ban External Links</div>
-                          <div className="text-[11px] text-white/55">
-                            Block regular members from posting URLs or attaching links across channels.
-                          </div>
-                        </div>
-                        <button
-                          onClick={() =>
-                            handleUpdateGlobalSettings({
-                              banLinks: !globalSettings.banLinks,
-                            })
-                          }
-                          className={`px-3 py-1.5 rounded-xl font-black cursor-pointer shrink-0 ${
-                            globalSettings.banLinks
-                              ? 'bg-rose-500 text-white'
-                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                          }`}
-                        >
-                          {globalSettings.banLinks ? 'Links Banned' : 'Links Allowed'}
-                        </button>
-                      </div>
-
-                      {/* Global Link Previews Toggle */}
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="font-bold text-white">Rich Link Previews</div>
-                          <div className="text-[11px] text-white/55">
-                            Toggle automatic OpenGraph & creation cover preview cards on messages.
-                          </div>
-                        </div>
-                        <button
-                          onClick={() =>
-                            handleUpdateGlobalSettings({
-                              enableLinkPreviews: !globalSettings.enableLinkPreviews,
-                            })
-                          }
-                          className={`px-3 py-1.5 rounded-xl font-black cursor-pointer shrink-0 ${
-                            globalSettings.enableLinkPreviews
-                              ? 'bg-[#FFF025] text-black'
-                              : 'bg-white/10 text-white/60'
-                          }`}
-                        >
-                          {globalSettings.enableLinkPreviews ? 'Previews ON' : 'Previews OFF'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {adminTab === 'channels' && (
-                    /* TAB 2: CHANNEL PERMISSIONS, MINI-ADMINS & KICK CONTROLS */
-                    <div className="space-y-4">
-                      {/* Channel Selector */}
-                      <div>
-                        <label className="block text-[10px] font-bold uppercase text-white/50 mb-1">
-                          Select Channel to Manage
-                        </label>
-                        <select
-                          value={selectedAdminChannelId}
-                          onChange={(e) => setSelectedAdminChannelId(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl bg-[#1a1c24] border border-white/15 text-xs font-bold text-white focus:outline-none focus:border-[#FFF025]"
-                        >
-                          {allChannels
-                            .filter(
-                              (ch) =>
-                                isSuperAdmin ||
-                                isGlobalModerator ||
-                                (currentUser &&
-                                  channelConfigs[ch.id]?.moderatorIds?.includes(currentUser.uid))
-                            )
-                            .map((ch) => (
-                              <option key={ch.id} value={ch.id}>
-                                {ch.emoji} #{ch.name} ({ch.category})
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-
-                      {/* Per-Channel Member Permissions */}
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-3">
-                        <div className="font-bold text-white text-xs uppercase tracking-wider text-[#FFF025]">
-                          #{adminTargetChannel.name} Permissions
-                        </div>
-
-                        {[
-                          {
-                            key: 'isLocked' as const,
-                            label: 'Lock This Channel',
-                            desc: 'Only admins and channel moderators can post',
-                            invertColor: true,
-                          },
-                          {
-                            key: 'allowMemberMessages' as const,
-                            label: 'Allow Members to Send Messages',
-                            desc: 'Let regular members chat in this channel',
-                          },
-                          {
-                            key: 'allowMemberGroups' as const,
-                            label: 'Allow Members to Create Sub-Groups',
-                            desc: 'Let regular members create rooms in this channel',
-                          },
-                          {
-                            key: 'allowMemberInvites' as const,
-                            label: 'Allow Members to Add Others to Groups',
-                            desc: 'Let members invite/add users into channel sub-groups',
-                          },
-                          {
-                            key: 'banLinks' as const,
-                            label: 'Ban Links in This Channel',
-                            desc: 'Block URLs from regular members in this channel',
-                            invertColor: true,
-                          },
-                          {
-                            key: 'enableLinkPreviews' as const,
-                            label: 'Show Link Preview Cards',
-                            desc: 'Render rich link preview cards in this channel',
-                          },
-                        ].map((perm) => {
-                          const val = Boolean(adminTargetConfig[perm.key]);
-                          return (
-                            <div
-                              key={perm.key}
-                              className="flex items-center justify-between gap-2 pt-2 border-t border-white/5 first:border-t-0 first:pt-0"
-                            >
-                              <div>
-                                <div className="font-bold text-white">{perm.label}</div>
-                                <div className="text-[10px] text-white/50">{perm.desc}</div>
-                              </div>
-                              <button
-                                onClick={() =>
-                                  handleSaveChannelConfig(selectedAdminChannelId, {
-                                    [perm.key]: !val,
-                                  })
-                                }
-                                className={`px-2.5 py-1 rounded-lg text-[11px] font-black cursor-pointer shrink-0 ${
-                                  val
-                                    ? perm.invertColor
-                                      ? 'bg-rose-500 text-white'
-                                      : 'bg-emerald-400 text-black'
-                                    : 'bg-white/10 text-white/60'
-                                }`}
-                              >
-                                {val ? 'ON' : 'OFF'}
-                              </button>
-                            </div>
-                          );
-                        })}
-
-                        {/* Channel Cooldown Override */}
-                        <div className="pt-2 border-t border-white/10 space-y-1.5">
-                          <div className="font-bold text-white">Channel Cooldown Override</div>
-                          <div className="flex flex-wrap gap-1">
-                            {[
-                              { val: -1, label: 'Global Default' },
-                              { val: 0, label: 'Off (0s)' },
-                              { val: 3, label: '3s' },
-                              { val: 5, label: '5s' },
-                              { val: 10, label: '10s' },
-                              { val: 30, label: '30s' },
-                            ].map((opt) => (
-                              <button
-                                key={opt.val}
-                                onClick={() =>
-                                  handleSaveChannelConfig(selectedAdminChannelId, {
-                                    cooldownSeconds: opt.val,
-                                  })
-                                }
-                                className={`px-2 py-1 rounded text-[10px] font-mono font-bold cursor-pointer ${
-                                  adminTargetConfig.cooldownSeconds === opt.val
-                                    ? 'bg-[#FFF025] text-black'
-                                    : 'bg-white/10 text-white/75'
-                                }`}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Appoint Channel Moderators ("Mini-Admins") — Super Admin Only */}
-                      {isSuperAdmin && (
-                        <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                          <div className="font-bold text-white">
-                            Appoint Channel Moderators (#{adminTargetChannel.name})
-                          </div>
-                          <p className="text-[11px] text-white/55">
-                            Channel Moderators act as mini-admins for this channel and can manage its permissions, sub-groups, and kick disruptive users.
-                          </p>
-                          {registeredUsers.length === 0 ? (
-                            <div className="text-white/40 italic">No registered users yet.</div>
-                          ) : (
-                            <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
-                              {registeredUsers.map((u) => {
-                                const isChannelMod = adminTargetConfig.moderatorIds.includes(u.uid);
-                                return (
-                                  <div
-                                    key={u.uid}
-                                    className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-black/30 border border-white/5"
-                                  >
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      <span
-                                        className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-black shrink-0"
-                                        style={{ backgroundColor: u.avatarColor }}
-                                      >
-                                        {u.displayName.charAt(0).toUpperCase()}
-                                      </span>
-                                      <span className="truncate font-bold text-white">
-                                        {u.displayName}
-                                      </span>
-                                    </div>
-                                    <button
-                                      onClick={() => {
-                                        const nextMods = isChannelMod
-                                          ? adminTargetConfig.moderatorIds.filter((id) => id !== u.uid)
-                                          : [...adminTargetConfig.moderatorIds, u.uid];
-                                        handleSaveChannelConfig(selectedAdminChannelId, {
-                                          moderatorIds: nextMods,
-                                        });
-                                      }}
-                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                        isChannelMod
-                                          ? 'bg-emerald-400 text-black'
-                                          : 'bg-white/10 text-white/70 hover:bg-white/20'
-                                      }`}
-                                    >
-                                      {isChannelMod ? '✓ Channel Mod' : 'Make Mod'}
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Kick / Restore Users from This Channel (Super Admin & Channel Moderator) */}
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                        <div className="font-bold text-white">
-                          Channel Member Access & Kick (#{adminTargetChannel.name})
-                        </div>
-                        <p className="text-[11px] text-white/55">
-                          Remove or restore members in #{adminTargetChannel.name}.
-                        </p>
-                        {registeredUsers.length === 0 ? (
-                          <div className="text-white/40 italic">No registered users yet.</div>
-                        ) : (
-                          <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
-                            {registeredUsers
-                              .filter((u) => u.role !== 'admin')
-                              .map((u) => {
-                                const isKicked = adminTargetConfig.kickedUserIds.includes(u.uid);
-                                return (
-                                  <div
-                                    key={u.uid}
-                                    className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-black/30 border border-white/5"
-                                  >
-                                    <span className="truncate font-bold text-white">
-                                      {u.displayName}
-                                    </span>
-                                    <button
-                                      onClick={() => {
-                                        const nextKicked = isKicked
-                                          ? adminTargetConfig.kickedUserIds.filter((id) => id !== u.uid)
-                                          : [...adminTargetConfig.kickedUserIds, u.uid];
-                                        handleSaveChannelConfig(selectedAdminChannelId, {
-                                          kickedUserIds: nextKicked,
-                                        });
-                                      }}
-                                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                        isKicked
-                                          ? 'bg-rose-500 text-white'
-                                          : 'bg-white/10 text-white/75 hover:bg-rose-500/20 hover:text-rose-300'
-                                      }`}
-                                    >
-                                      {isKicked ? 'Kicked (Restore)' : 'Kick from Channel'}
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Super Admin: Create New Custom Channel */}
-                      {isSuperAdmin && (
-                        <form
-                          onSubmit={handleCreateCustomChannel}
-                          className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5"
-                        >
-                          <div className="font-bold text-[#FFF025]">+ Create New Community Channel</div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <input
-                              type="text"
-                              value={newChannelEmoji}
-                              onChange={(e) => setNewChannelEmoji(e.target.value)}
-                              placeholder="Emoji"
-                              className="px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                            />
-                            <input
-                              type="text"
-                              value={newChannelName}
-                              onChange={(e) => setNewChannelName(e.target.value)}
-                              placeholder="Channel Name"
-                              className="col-span-2 px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                            />
-                          </div>
-                          <select
-                            value={newChannelCategory}
-                            onChange={(e) =>
-                              setNewChannelCategory(
-                                e.target.value as 'INFORMATION' | 'CREATOR SHOWCASES' | 'SOCIAL'
-                              )
-                            }
-                            className="w-full px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          >
-                            <option value="SOCIAL">SOCIAL</option>
-                            <option value="CREATOR SHOWCASES">CREATOR SHOWCASES</option>
-                            <option value="INFORMATION">INFORMATION</option>
-                          </select>
-                          <input
-                            type="text"
-                            value={newChannelDesc}
-                            onChange={(e) => setNewChannelDesc(e.target.value)}
-                            placeholder="Channel topic description..."
-                            className="w-full px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          />
-                          <button
-                            type="submit"
-                            className="w-full py-2 rounded-xl bg-[#FFF025] text-black font-black text-xs cursor-pointer"
-                          >
-                            Create Channel
-                          </button>
-                        </form>
-                      )}
-                    </div>
-                  )}
-
-                  {adminTab === 'users' && isSuperAdmin && (
-                    /* TAB 3: USER ACCOUNTS, BAN / SUSPEND & CREATE PROFILE */
-                    <div className="space-y-4">
-                      {/* Create Member Profile Form */}
-                      <form
-                        onSubmit={handleAdminCreateMemberProfile}
-                        className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5"
-                      >
-                        <div className="font-bold text-[#FFF025] flex items-center gap-1.5">
-                          <UserPlus className="w-3.5 h-3.5" />
-                          <span>Create New Member Account Profile</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            value={newMemberName}
-                            onChange={(e) => setNewMemberName(e.target.value)}
-                            placeholder="Builder Nickname *"
-                            className="px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          />
-                          <input
-                            type="text"
-                            value={newMemberSchool}
-                            onChange={(e) => setNewMemberSchool(e.target.value)}
-                            placeholder="School / Club"
-                            className="px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <input
-                            type="text"
-                            value={newMemberGrade}
-                            onChange={(e) => setNewMemberGrade(e.target.value)}
-                            placeholder="Grade Level"
-                            className="px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          />
-                          <select
-                            value={newMemberRole}
-                            onChange={(e) =>
-                              setNewMemberRole(e.target.value as 'member' | 'moderator')
-                            }
-                            className="px-2.5 py-1.5 rounded-xl bg-[#111217] border border-white/15 text-xs text-white"
-                          >
-                            <option value="member">Role: Member</option>
-                            <option value="moderator">Role: Global Moderator</option>
-                          </select>
-                        </div>
-                        <button
-                          type="submit"
-                          className="w-full py-2 rounded-xl bg-[#FFF025] text-black font-black text-xs cursor-pointer"
-                        >
-                          Create Member Profile
-                        </button>
-                      </form>
-
-                      {/* Search & Manage Signed-Up Users */}
-                      <div className="space-y-2.5">
-                        <input
-                          type="text"
-                          value={memberSearchQuery}
-                          onChange={(e) => setMemberSearchQuery(e.target.value)}
-                          placeholder="Search signed-up members..."
-                          className="w-full px-3 py-2 rounded-xl bg-[#1a1c24] border border-white/15 text-xs text-white"
-                        />
-
-                        {allPlatformUsers.length === 0 ? (
-                          <div className="p-6 text-center text-white/45 font-mono">
-                            No users have signed up yet.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {allPlatformUsers
-                              .filter((u) =>
-                                u.displayName
-                                  .toLowerCase()
-                                  .includes(memberSearchQuery.toLowerCase())
-                              )
-                              .map((u) => {
-                                const st = u.status || 'active';
-                                const isUserApprovedInHub =
-                                  u.role === 'admin' ||
-                                  u.role === 'moderator' ||
-                                  approvedHubMemberIds.has(u.uid);
-                                return (
-                                  <div
-                                    key={u.uid}
-                                    className="p-3 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5"
-                                  >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2 min-w-0">
-                                        <VerifiedAvatarFrame
-                                          src={getLiveUserAvatarUrl(u.uid, u.avatarUrl)}
-                                          alt={u.displayName}
-                                          isVerified={isUserApprovedInHub}
-                                          sizeClass="w-7 h-7"
-                                          ringPaddingClass="p-[1.5px]"
-                                        />
-                                        <div className="min-w-0">
-                                          <div className="font-bold text-white truncate flex items-center gap-1.5">
-                                            <span
-                                              className={
-                                                isUserApprovedInHub
-                                                  ? 'verified-student-name-gradient-dark'
-                                                  : 'text-white'
-                                              }
-                                            >
-                                              {u.displayName}
-                                            </span>
-                                            <span className="px-1.5 py-0.2 rounded bg-white/10 text-[9px] uppercase font-mono">
-                                              {u.role}
-                                            </span>
-                                          </div>
-                                          <div className="text-[10px] text-white/45 truncate">
-                                            {u.schoolName || 'Build Buds'} •{' '}
-                                            <strong
-                                              className={
-                                                isUserApprovedInHub
-                                                  ? 'text-emerald-400'
-                                                  : 'text-amber-300'
-                                              }
-                                            >
-                                              {isUserApprovedInHub
-                                                ? 'IN PRIVATE HUB'
-                                                : 'PUBLIC ONLY (HIDDEN)'}
-                                            </strong>
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      {/* Global Moderator Promotion Toggle */}
-                                      {u.role !== 'admin' && (
-                                        <button
-                                          onClick={() =>
-                                            handleUpdateUserAccount(u, {
-                                              role: u.role === 'moderator' ? 'member' : 'moderator',
-                                            })
-                                          }
-                                          className={`px-2 py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                            u.role === 'moderator'
-                                              ? 'bg-emerald-400 text-black'
-                                              : 'bg-white/10 text-white/75 hover:bg-white/20'
-                                          }`}
-                                        >
-                                          {u.role === 'moderator' ? 'Global Mod ✓' : 'Make Global Mod'}
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    {/* Student Hub Access Gate Control: Approve or Remove from Private Chat */}
-                                    {u.role !== 'admin' && (
-                                      <div className="pt-1">
-                                        {isUserApprovedInHub ? (
-                                          <button
-                                            type="button"
-                                            disabled={isProcessingHubAccess}
-                                            onClick={() => handleAdminRevokeUserInHub(u)}
-                                            className="w-full py-1.5 px-2.5 rounded-lg bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-[10px] font-black cursor-pointer transition-colors"
-                                          >
-                                            Remove from Private Chat (Restrict to Public Only)
-                                          </button>
-                                        ) : (
-                                          <button
-                                            type="button"
-                                            disabled={isProcessingHubAccess}
-                                            onClick={() => handleAdminApproveUserInHub(u)}
-                                            className="w-full py-1.5 px-2.5 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black text-[10px] font-black cursor-pointer transition-colors"
-                                          >
-                                            ✓ Approve for Private Student Chat
-                                          </button>
-                                        )}
-                                      </div>
-                                    )}
-
-                                    {/* Account Status Controls: Active | Suspend (Read-Only) | Ban (Block Access) */}
-                                    {u.role !== 'admin' && (
-                                      <div className="grid grid-cols-3 gap-1.5 pt-1">
-                                        <button
-                                          onClick={() =>
-                                            handleUpdateUserAccount(u, { status: 'active' })
-                                          }
-                                          className={`py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                            st === 'active'
-                                              ? 'bg-emerald-500 text-black'
-                                              : 'bg-white/5 text-white/60 hover:bg-white/10'
-                                          }`}
-                                        >
-                                          Active
-                                        </button>
-                                        <button
-                                          onClick={() =>
-                                            handleUpdateUserAccount(u, { status: 'suspended' })
-                                          }
-                                          className={`py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                            st === 'suspended'
-                                              ? 'bg-amber-400 text-black'
-                                              : 'bg-white/5 text-white/60 hover:bg-amber-500/20 hover:text-amber-300'
-                                          }`}
-                                        >
-                                          Suspend (Read-Only)
-                                        </button>
-                                        <button
-                                          onClick={() =>
-                                            handleUpdateUserAccount(u, { status: 'banned' })
-                                          }
-                                          className={`py-1 rounded-lg text-[10px] font-black cursor-pointer ${
-                                            st === 'banned'
-                                              ? 'bg-rose-500 text-white'
-                                              : 'bg-white/5 text-white/60 hover:bg-rose-500/20 hover:text-rose-300'
-                                          }`}
-                                        >
-                                          Ban Account
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {adminTab === 'groups' && (
-                    /* TAB 4: SUB-GROUPS IN ACTIVE CHANNEL & MODERATION REPORTS */
-                    <div className="space-y-4">
-                      <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-white">
-                            Sub-Groups in #{activeChannel.name} ({channelSubGroups.length})
-                          </span>
-                          <button
-                            onClick={() => setShowCreateGroupModal(true)}
-                            className="px-2.5 py-1 rounded-lg bg-[#FFF025] text-black font-black text-[10px] cursor-pointer"
-                          >
-                            + New Sub-Group
-                          </button>
-                        </div>
-
-                        {channelSubGroups.length === 0 ? (
-                          <div className="text-white/45 text-[11px]">
-                            No sub-groups created in #{activeChannel.name} yet.
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            {channelSubGroups.map((grp) => (
-                              <div
-                                key={grp.id}
-                                className="p-2.5 rounded-xl bg-black/30 border border-white/10 flex items-center justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <div className="font-bold text-white truncate">
-                                    {grp.isPrivate ? '🔒' : '👥'} {grp.name}
-                                  </div>
-                                  <div className="text-[10px] text-white/50">
-                                    {grp.memberIds.length} members
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-1.5">
-                                  <button
-                                    onClick={() => {
-                                      setActiveSubGroupId(grp.id);
-                                      setShowManageGroupModal(true);
-                                    }}
-                                    className="px-2 py-1 rounded bg-white/10 hover:bg-white/15 text-white text-[10px] font-bold cursor-pointer"
-                                  >
-                                    Members
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteSubGroup(grp)}
-                                    className="p-1 rounded bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
-                                    title="Delete Sub-Group"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Flagged Message Reports */}
-                      {isGlobalModerator && (
-                        <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2.5">
-                          <div className="font-bold text-white">
-                            Flagged Message Reports ({reports.filter((r) => r.status === 'open').length} open)
-                          </div>
-                          {reports.length === 0 ? (
-                            <div className="text-white/45 text-[11px]">No message reports.</div>
-                          ) : (
-                            <div className="space-y-2">
-                              {reports.map((rep) => (
-                                <div
-                                  key={rep.id}
-                                  className="p-2.5 rounded-xl bg-black/30 border border-white/10 space-y-1.5"
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="font-mono text-[10px] text-[#FFF025]">
-                                      #{rep.channelId}
-                                    </span>
-                                    <span
-                                      className={`text-[10px] font-bold uppercase ${
-                                        rep.status === 'open' ? 'text-amber-400' : 'text-emerald-400'
-                                      }`}
-                                    >
-                                      {rep.status}
-                                    </span>
-                                  </div>
-                                  <p className="text-[11px] text-white/80">{rep.reason}</p>
-                                  {rep.status === 'open' && (
-                                    <button
-                                      onClick={() => handleResolveReport(rep.id)}
-                                      className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 text-[10px] font-bold cursor-pointer"
-                                    >
-                                      Mark Resolved
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : activeThreadMessage ? (
+        {/* RIGHT DRAWER: Thread Replies OR Real Online Members
+            Responsive: Full-screen slide-over on mobile (<sm), 384px drawer on tablet/desktop */}
+        {(activeThreadMessage || showMembersDrawer) && (
+          <aside className="fixed inset-y-0 right-0 z-40 w-full sm:w-[400px] lg:static lg:w-80 xl:w-[380px] bg-[#121317] border-l border-white/10 flex flex-col shrink-0 lg:z-20 shadow-2xl">
+            {activeThreadMessage ? (
               /* THREAD REPLIES PANEL (WITH EDIT & DELETE FOR REPLIES + ACCURATE COUNT) */
               <>
                 <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between bg-[#15171e]">
@@ -6950,17 +6890,39 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                 </div>
 
                 <div className="p-4 border-b border-white/10 bg-white/[0.02] space-y-2">
-                  <div className="flex items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleOpenMemberProfile({
+                        uid: activeThreadMessage.authorId,
+                        displayName: getLiveUserDisplayName(
+                          activeThreadMessage.authorId,
+                          activeThreadMessage.authorName
+                        ),
+                        avatarUrl: getLiveUserAvatarUrl(
+                          activeThreadMessage.authorId,
+                          activeThreadMessage.authorAvatar
+                        ),
+                        avatarColor: activeThreadMessage.authorColor,
+                        role: activeThreadMessage.authorRole,
+                      })
+                    }
+                    title={`View ${getLiveUserDisplayName(
+                      activeThreadMessage.authorId,
+                      activeThreadMessage.authorName
+                    )}'s profile`}
+                    className="flex items-center gap-2.5 text-left group cursor-pointer"
+                  >
                     <img
                       src={getLiveUserAvatarUrl(
                         activeThreadMessage.authorId,
                         activeThreadMessage.authorAvatar
                       )}
                       alt={activeThreadMessage.authorName}
-                      className="w-7 h-7 rounded-full object-cover border border-white/20 shrink-0"
+                      className="w-7 h-7 rounded-full object-cover border border-white/20 shrink-0 group-hover:ring-2 group-hover:ring-[#FFF025] transition-all"
                     />
                     <span
-                      className="font-mono font-bold text-xs truncate"
+                      className="font-mono font-bold text-xs truncate group-hover:underline"
                       style={{
                         color: getLiveUserColor(
                           activeThreadMessage.authorId,
@@ -6976,7 +6938,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     <span className="text-[11px] font-mono text-white/40 shrink-0">
                       {activeThreadMessage.timeLabel}
                     </span>
-                  </div>
+                  </button>
                   <p className="text-xs font-mono text-white/90 leading-relaxed select-text break-words">
                     {activeThreadMessage.text}
                   </p>
@@ -7019,7 +6981,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               className="group/reply p-3 rounded-xl bg-white/[0.03] hover:bg-white/[0.05] border border-white/10 space-y-1.5 transition-colors"
                             >
                               <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleOpenMemberProfile({
+                                      uid: reply.authorId,
+                                      displayName: getLiveUserDisplayName(reply.authorId, reply.authorName),
+                                      avatarUrl: getLiveUserAvatarUrl(reply.authorId),
+                                      avatarColor: reply.authorColor,
+                                    })
+                                  }
+                                  title={`View ${getLiveUserDisplayName(reply.authorId, reply.authorName)}'s profile`}
+                                  className="flex items-center gap-2 min-w-0 text-left group/author cursor-pointer"
+                                >
                                   <VerifiedAvatarFrame
                                     src={getLiveUserAvatarUrl(reply.authorId)}
                                     alt={reply.authorName}
@@ -7028,14 +7002,14 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                     ringPaddingClass="p-[1.5px]"
                                   />
                                   <span
-                                    className="font-mono text-xs font-bold truncate"
+                                    className="font-mono text-xs font-bold truncate group-hover/author:underline"
                                     style={{
                                       color: getLiveUserColor(reply.authorId, reply.authorColor),
                                     }}
                                   >
                                     {getLiveUserDisplayName(reply.authorId, reply.authorName)}
                                   </span>
-                                </div>
+                                </button>
 
                                 <div className="flex items-center gap-1 shrink-0">
                                   <span className="text-[10px] font-mono text-white/35 mr-1">
@@ -7164,7 +7138,29 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                               className="p-3 rounded-xl bg-sky-500/[0.04] border border-sky-400/20 space-y-1.5"
                             >
                               <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleOpenMemberProfile({
+                                      uid: inlineMsg.authorId,
+                                      displayName: getLiveUserDisplayName(
+                                        inlineMsg.authorId,
+                                        inlineMsg.authorName
+                                      ),
+                                      avatarUrl: getLiveUserAvatarUrl(
+                                        inlineMsg.authorId,
+                                        inlineMsg.authorAvatar
+                                      ),
+                                      avatarColor: inlineMsg.authorColor,
+                                      role: inlineMsg.authorRole,
+                                    })
+                                  }
+                                  title={`View ${getLiveUserDisplayName(
+                                    inlineMsg.authorId,
+                                    inlineMsg.authorName
+                                  )}'s profile`}
+                                  className="flex items-center gap-2 min-w-0 text-left group/author cursor-pointer"
+                                >
                                   <VerifiedAvatarFrame
                                     src={getLiveUserAvatarUrl(
                                       inlineMsg.authorId,
@@ -7176,7 +7172,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                     ringPaddingClass="p-[1.5px]"
                                   />
                                   <span
-                                    className="font-mono text-xs font-bold truncate"
+                                    className="font-mono text-xs font-bold truncate group-hover/author:underline"
                                     style={{
                                       color: getLiveUserColor(
                                         inlineMsg.authorId,
@@ -7192,7 +7188,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   <span className="px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 text-[9px] font-mono">
                                     inline
                                   </span>
-                                </div>
+                                </button>
 
                                 <div className="flex items-center gap-1 shrink-0">
                                   <span className="text-[10px] font-mono text-white/35 mr-1">
@@ -7238,6 +7234,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       variant="dark"
                     />
                     <textarea
+                      ref={threadComposerRef}
                       rows={Math.min(4, Math.max(1, threadInput.split('\n').length))}
                       disabled={userStatus === 'suspended'}
                       value={threadInput}
@@ -7258,7 +7255,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       placeholder={
                         userStatus === 'suspended'
                           ? 'Suspended (Read-Only)'
-                          : 'Reply to thread (Enter = new line, Ctrl+Enter = send)...'
+                          : 'Reply to thread (Enter = send, Shift+Enter = new line)...'
                       }
                       className="w-full px-3 py-2 rounded-xl bg-[#1c1e24] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] disabled:opacity-50 resize-none leading-relaxed"
                     />
@@ -7266,7 +7263,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                   <button
                     type="submit"
                     disabled={userStatus === 'suspended'}
-                    title="Send Reply (Ctrl + Enter)"
+                    title="Send Reply (Enter)"
                     className="px-3.5 py-2.5 rounded-xl bg-[#FFF025] hover:bg-[#ffe500] text-black font-black text-xs cursor-pointer disabled:opacity-40 shrink-0"
                   >
                     Reply
@@ -7309,9 +7306,19 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                     ) : (
                       <div className="space-y-1">
                         {effectiveOnlineMembers.map((member) => (
-                          <div
+                          <button
                             key={member.uid}
-                            className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
+                            type="button"
+                            onClick={() =>
+                              handleOpenMemberProfile({
+                                uid: member.uid,
+                                displayName: getLiveUserDisplayName(member.uid, member.displayName),
+                                avatarUrl: getLiveUserAvatarUrl(member.uid, member.avatarUrl),
+                                avatarColor: member.avatarColor,
+                              })
+                            }
+                            title={`View ${getLiveUserDisplayName(member.uid, member.displayName)}'s profile`}
+                            className="w-full text-left flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 transition-colors cursor-pointer group"
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
                               <VerifiedAvatarFrame
@@ -7324,7 +7331,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#121317]" />
                               </VerifiedAvatarFrame>
                               <div className="min-w-0">
-                                <div className="text-xs font-extrabold truncate verified-student-name-gradient-dark">
+                                <div className="text-xs font-extrabold truncate verified-student-name-gradient-dark group-hover:underline">
                                   {getLiveUserDisplayName(member.uid, member.displayName)}
                                 </div>
                                 <div className="text-[10px] text-white/45 font-mono truncate">
@@ -7335,7 +7342,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                             {member.isTyping && (
                               <span className="text-[10px] font-mono text-[#FFF025]">typing...</span>
                             )}
-                          </div>
+                          </button>
                         ))}
                       </div>
                     )}
@@ -7355,9 +7362,20 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                         {registeredUsers.map((u) => {
                           const isOnline = effectiveOnlineMembers.some((m) => m.uid === u.uid);
                           return (
-                            <div
+                            <button
                               key={u.uid}
-                              className="flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/5"
+                              type="button"
+                              onClick={() =>
+                                handleOpenMemberProfile({
+                                  uid: u.uid,
+                                  displayName: u.displayName,
+                                  avatarUrl: u.avatarUrl,
+                                  avatarColor: u.avatarColor,
+                                  role: u.role,
+                                })
+                              }
+                              title={`View ${u.displayName}'s profile`}
+                              className="w-full text-left flex items-center justify-between px-2.5 py-2 rounded-xl hover:bg-white/10 transition-colors cursor-pointer group"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
                                 <VerifiedAvatarFrame
@@ -7375,7 +7393,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                 </VerifiedAvatarFrame>
                                 <div className="min-w-0">
                                   <div className="text-xs font-extrabold truncate flex items-center gap-1">
-                                    <span className="truncate verified-student-name-gradient-dark">
+                                    <span className="truncate verified-student-name-gradient-dark group-hover:underline">
                                       {u.displayName}
                                     </span>
                                     {u.role === 'admin' && (
@@ -7394,7 +7412,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                                   </div>
                                 </div>
                               </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -8336,14 +8354,18 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
         </div>
       )}
 
-      {/* RIGHT-CLICK / ACTION DROPDOWN CONTEXT MENU FOR MESSAGES */}
+      {/* WHATSAPP-STYLE DETACHED REACTION CAPSULE & DARK CONTEXT MENU */}
       {contextMenuState && (
         <div
           className="fixed inset-0 z-[195]"
-          onClick={() => setContextMenuState(null)}
+          onClick={() => {
+            setContextMenuState(null);
+            setShowExtendedContextEmotes(false);
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
             setContextMenuState(null);
+            setShowExtendedContextEmotes(false);
           }}
         >
           {(() => {
@@ -8353,54 +8375,161 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
               targetMsg,
               activeChannel.defaultCreationCategory
             );
-            const menuWidth = 248;
-            const menuHeight = 380;
-            const safeLeft =
+            const capsuleWidth = 296;
+            const capsuleHeight = showExtendedContextEmotes ? 92 : 48;
+            const menuWidth = 228;
+            const menuHeight = 360;
+            const totalHeight = capsuleHeight + 8 + menuHeight;
+
+            const safeTop =
+              typeof window !== 'undefined'
+                ? Math.max(
+                    12,
+                    Math.min(contextMenuState.y - 54, window.innerHeight - totalHeight - 12)
+                  )
+                : contextMenuState.y;
+            const safeCapsuleLeft =
+              typeof window !== 'undefined'
+                ? Math.max(12, Math.min(contextMenuState.x - 40, window.innerWidth - capsuleWidth - 12))
+                : contextMenuState.x;
+            const safeMenuLeft =
               typeof window !== 'undefined'
                 ? Math.max(12, Math.min(contextMenuState.x, window.innerWidth - menuWidth - 12))
                 : contextMenuState.x;
-            const safeTop =
-              typeof window !== 'undefined'
-                ? Math.max(12, Math.min(contextMenuState.y, window.innerHeight - menuHeight - 12))
-                : contextMenuState.y;
+
+            const closeContext = () => {
+              setContextMenuState(null);
+              setShowExtendedContextEmotes(false);
+            };
+
+            const extendedEmotes = ['🔥', '🚀', '👏', '🎉', '👎', '💯'];
 
             return (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                style={{ left: `${safeLeft}px`, top: `${safeTop}px` }}
-                className="fixed w-60 rounded-2xl bg-[#181a22] border border-white/15 shadow-[0_16px_48px_rgba(0,0,0,0.75)] py-1.5 text-xs font-mono text-white z-[196] overflow-hidden"
-              >
-                {/* Quick Reaction Row inside Dropdown */}
-                <div className="px-2.5 py-1.5 border-b border-white/10 flex items-center justify-between gap-1">
-                  {QUICK_EMOJIS.slice(0, 6).map((emoji) => (
+              <>
+                {/* Detached Floating WhatsApp Glossy Reaction Bar */}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ left: `${safeCapsuleLeft}px`, top: `${safeTop}px` }}
+                  className="fixed z-[197] max-w-[calc(100vw-24px)]"
+                >
+                  <div className="rounded-full bg-[#202c33] border border-white/10 shadow-[0_10px_28px_rgba(0,0,0,0.65)] px-2 py-1.5 flex items-center gap-1">
+                    {QUICK_EMOJIS.slice(0, 6).map((emoji) => {
+                      const reacted = Boolean(
+                        currentUser &&
+                          Array.isArray(targetMsg.userReactions?.[emoji]) &&
+                          targetMsg.userReactions?.[emoji]?.includes(currentUser.uid)
+                      );
+                      return (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => {
+                            triggerHapticFeedback('light');
+                            handleToggleReaction(targetMsg, emoji);
+                            closeContext();
+                          }}
+                          className={`w-9 h-9 rounded-full flex items-center justify-center cursor-pointer transition-transform hover:scale-115 active:scale-90 ${
+                            reacted ? 'bg-white/15 ring-1 ring-white/25' : 'hover:bg-white/10'
+                          }`}
+                          title={`React with ${emoji}`}
+                        >
+                          <Emote3DIcon emote={emoji} size={22} />
+                        </button>
+                      );
+                    })}
                     <button
-                      key={emoji}
                       type="button"
-                      onClick={() => {
-                        handleToggleReaction(targetMsg, emoji);
-                        setContextMenuState(null);
-                      }}
-                      className="p-1 rounded-lg hover:bg-white/10 cursor-pointer transition-transform hover:scale-125"
-                      title={`React with ${emoji}`}
+                      onClick={() => setShowExtendedContextEmotes((prev) => !prev)}
+                      title="More reactions"
+                      aria-label="More reactions"
+                      className={`w-8 h-8 rounded-full flex items-center justify-center text-white/80 hover:text-white cursor-pointer transition-colors ${
+                        showExtendedContextEmotes ? 'bg-white/20' : 'bg-white/10 hover:bg-white/15'
+                      }`}
                     >
-                      <Emote3DIcon emote={emoji} size={18} />
+                      <Plus className="w-4 h-4" />
                     </button>
-                  ))}
+                  </div>
+
+                  {showExtendedContextEmotes && (
+                    <div className="mt-1.5 rounded-full bg-[#202c33] border border-white/10 shadow-[0_10px_28px_rgba(0,0,0,0.65)] px-2.5 py-1.5 flex items-center justify-center gap-1">
+                      {extendedEmotes.map((emoji) => {
+                        const reacted = Boolean(
+                          currentUser &&
+                            Array.isArray(targetMsg.userReactions?.[emoji]) &&
+                            targetMsg.userReactions?.[emoji]?.includes(currentUser.uid)
+                        );
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => {
+                              triggerHapticFeedback('light');
+                              handleToggleReaction(targetMsg, emoji);
+                              closeContext();
+                            }}
+                            className={`w-8 h-8 rounded-full flex items-center justify-center cursor-pointer transition-transform hover:scale-115 active:scale-90 ${
+                              reacted ? 'bg-white/15 ring-1 ring-white/25' : 'hover:bg-white/10'
+                            }`}
+                            title={`React with ${emoji}`}
+                          >
+                            <Emote3DIcon emote={emoji} size={20} />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
-                {/* Primary Message Actions */}
-                <div className="py-1">
+                {/* Detached Dark Vertical Action Menu */}
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    left: `${safeMenuLeft}px`,
+                    top: `${safeTop + capsuleHeight + 8}px`,
+                  }}
+                  className="fixed w-56 rounded-2xl bg-[#202c33] border border-white/10 shadow-[0_16px_44px_rgba(0,0,0,0.75)] py-1.5 text-[13px] font-sans text-[#e9edef] z-[196] overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminDrawer(false);
+                      setShowMembersDrawer(false);
+                      setActiveThreadMessage(targetMsg);
+                      closeContext();
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
+                  >
+                    <MessageSquare className="w-4 h-4 text-[#aebac1]" />
+                    <span>Message Thread</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
                       setReplyingTo(targetMsg);
-                      setContextMenuState(null);
+                      closeContext();
                       window.setTimeout(() => composerTextareaRef.current?.focus(), 50);
                     }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
+                    className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
                   >
-                    <Reply className="w-3.5 h-3.5 text-[#FFF025]" />
-                    <span>Reply to Message</span>
+                    <Reply className="w-4 h-4 text-[#aebac1]" />
+                    <span>Reply</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (navigator.clipboard) {
+                        navigator.clipboard.writeText(targetMsg.text || '');
+                      }
+                      closeContext();
+                      setComposerNotice('Message copied to clipboard!');
+                      window.setTimeout(() => setComposerNotice(null), 3000);
+                    }}
+                    className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
+                  >
+                    <Copy className="w-4 h-4 text-[#aebac1]" />
+                    <span>Copy</span>
                   </button>
 
                   <button
@@ -8409,59 +8538,68 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       setForwardingMessage(targetMsg);
                       setForwardTargetChannelId(activeStreamId || 'general-chat');
                       setForwardNoteText('');
-                      setContextMenuState(null);
+                      closeContext();
                     }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
+                    className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
                   >
-                    <Forward className="w-3.5 h-3.5 text-sky-400" />
-                    <span>Forward Message...</span>
+                    <Forward className="w-4 h-4 text-[#aebac1]" />
+                    <span>Forward</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAdminDrawer(false);
-                      setShowMembersDrawer(false);
-                      setActiveThreadMessage(targetMsg);
-                      setContextMenuState(null);
-                    }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-white cursor-pointer"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Open Discussion Thread</span>
-                  </button>
-
-                  {isTargetOwn && userStatus === 'active' && (
+                  {(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator) && (
                     <button
                       type="button"
-                      onClick={() => handleStartEditMessage(targetMsg, false)}
-                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-[#FFF025] cursor-pointer font-bold"
+                      onClick={() => {
+                        handleTogglePinMessage(targetMsg);
+                        closeContext();
+                      }}
+                      className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
                     >
-                      <Pencil className="w-3.5 h-3.5" />
-                      <span>Edit Message{targetResolvedLink ? ' & Link' : ''}</span>
+                      <Pin className="w-4 h-4 text-[#aebac1]" />
+                      <span>{targetMsg.isPinned ? 'Unpin' : 'Pin'}</span>
                     </button>
                   )}
 
                   {isTargetOwn && userStatus === 'active' && (
-                    <button
-                      type="button"
-                      onClick={() => handleStartEditMessage(targetMsg, true)}
-                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-sky-300 cursor-pointer"
-                    >
-                      <LinkIcon className="w-3.5 h-3.5" />
-                      <span>{targetResolvedLink ? 'Edit Link & Preview' : 'Attach Link to Message'}</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleStartEditMessage(targetMsg, false);
+                          closeContext();
+                        }}
+                        className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
+                      >
+                        <Pencil className="w-4 h-4 text-[#aebac1]" />
+                        <span>Edit{targetResolvedLink ? ' Message & Link' : ''}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleStartEditMessage(targetMsg, true);
+                          closeContext();
+                        }}
+                        className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
+                      >
+                        <LinkIcon className="w-4 h-4 text-[#aebac1]" />
+                        <span>{targetResolvedLink ? 'Edit Link Preview' : 'Attach Link'}</span>
+                      </button>
+                    </>
                   )}
 
                   {targetResolvedLink && (
                     <>
                       <button
                         type="button"
-                        onClick={() => handleRefreshMessageLinkPreview(targetMsg)}
-                        className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-[#FFF025] cursor-pointer"
+                        onClick={() => {
+                          handleRefreshMessageLinkPreview(targetMsg);
+                          closeContext();
+                        }}
+                        className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
                       >
-                        <RefreshCw className="w-3.5 h-3.5 text-[#FFF025]" />
-                        <span>Refresh Link Preview</span>
+                        <RefreshCw className="w-4 h-4 text-[#aebac1]" />
+                        <span>Refresh Preview</span>
                       </button>
 
                       <button
@@ -8470,61 +8608,33 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                           if (navigator.clipboard) {
                             navigator.clipboard.writeText(targetResolvedLink.linkUrl);
                           }
-                          setContextMenuState(null);
+                          closeContext();
                           setComposerNotice('Link URL copied to clipboard!');
                           window.setTimeout(() => setComposerNotice(null), 3000);
                         }}
-                        className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-white cursor-pointer"
+                        className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 cursor-pointer"
                       >
-                        <Copy className="w-3.5 h-3.5 text-white/60" />
-                        <span>Copy Link URL</span>
+                        <ExternalLink className="w-4 h-4 text-[#aebac1]" />
+                        <span>Copy Link</span>
                       </button>
                     </>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (navigator.clipboard) {
-                        navigator.clipboard.writeText(targetMsg.text || '');
-                      }
-                      setContextMenuState(null);
-                      setComposerNotice('Message text copied to clipboard!');
-                      window.setTimeout(() => setComposerNotice(null), 3000);
-                    }}
-                    className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/85 hover:text-white cursor-pointer"
-                  >
-                    <Copy className="w-3.5 h-3.5 text-white/60" />
-                    <span>Copy Message Text</span>
-                  </button>
+                  {(!isTargetOwn ||
+                    isSuperAdmin ||
+                    isCurrentChannelModerator ||
+                    isGlobalModerator) && <div className="my-1 border-t border-white/10" />}
 
-                  {(isSuperAdmin || isCurrentChannelModerator || isGlobalModerator) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleTogglePinMessage(targetMsg);
-                        setContextMenuState(null);
-                      }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-white/10 flex items-center gap-2.5 text-white/90 hover:text-[#FFF025] cursor-pointer"
-                    >
-                      <Pin className="w-3.5 h-3.5 text-[#FFF025]" />
-                      <span>{targetMsg.isPinned ? 'Unpin Message' : 'Pin Message'}</span>
-                    </button>
-                  )}
-                </div>
-
-                {/* Moderation / Danger Zone */}
-                <div className="border-t border-white/10 pt-1">
                   {!isTargetOwn && (
                     <button
                       type="button"
                       onClick={() => {
                         handleReportMessage(targetMsg);
-                        setContextMenuState(null);
+                        closeContext();
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-amber-500/15 flex items-center gap-2.5 text-amber-300 cursor-pointer"
+                      className="w-full px-4 py-2 text-left hover:bg-white/[0.06] flex items-center gap-3 text-amber-300 cursor-pointer"
                     >
-                      <Flag className="w-3.5 h-3.5" />
+                      <Flag className="w-4 h-4" />
                       <span>Report Message</span>
                     </button>
                   )}
@@ -8537,16 +8647,16 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       type="button"
                       onClick={() => {
                         handleDeleteMessage(targetMsg);
-                        setContextMenuState(null);
+                        closeContext();
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-rose-500/20 flex items-center gap-2.5 text-rose-400 font-bold cursor-pointer"
+                      className="w-full px-4 py-2 text-left hover:bg-rose-500/15 flex items-center gap-3 text-rose-400 cursor-pointer"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Delete Message</span>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Delete</span>
                     </button>
                   )}
                 </div>
-              </div>
+              </>
             );
           })()}
         </div>
@@ -8662,7 +8772,7 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
                       handleExecuteForwardMessage(e);
                     }
                   }}
-                  placeholder="Optional comment (Enter = new line, Ctrl+Enter = forward)..."
+                  placeholder="Optional comment (Enter = forward, Shift+Enter = new line)..."
                   className="w-full px-3 py-2 rounded-xl bg-[#101218] border border-white/15 text-xs font-mono text-white placeholder-white/35 focus:outline-none focus:border-[#FFF025] resize-none"
                 />
               </div>
@@ -8691,6 +8801,130 @@ export const CommunityHub: React.FC<CommunityHubProps> = ({
             </div>
           </form>
         </div>
+      )}
+
+      {/* Clickable Member Profile Modal */}
+      <MemberProfileModal
+        member={viewingMemberProfile}
+        onClose={() => setViewingMemberProfile(null)}
+        currentUserUid={currentUser?.uid}
+        sharedCreationsCount={
+          viewingMemberProfile
+            ? deduplicatedSharedLinks.filter(
+                (item) => item.authorId === viewingMemberProfile.uid
+              ).length
+            : undefined
+        }
+        onMentionMember={handleMentionFromMemberProfile}
+        onEditOwnProfile={() => handleOpenProfileSettings('profile')}
+        isFollowing={Boolean(
+          viewingMemberProfile && followingCreatorIds.includes(viewingMemberProfile.uid)
+        )}
+        onToggleFollow={handleToggleFollowCreator}
+        onReportMember={handleReportMember}
+        variant="dark"
+      />
+
+      {/* Spacious, Minimalistic Admin & Moderator Control Center Modal */}
+      {isModeratorAnywhere && (
+        <AdminControlCenterModal
+          isOpen={showAdminDrawer}
+          onClose={() => setShowAdminDrawer(false)}
+          activeTab={adminTab}
+          onChangeTab={(nextTab) => setAdminTab(nextTab)}
+          isSuperAdmin={isSuperAdmin}
+          isGlobalModerator={isGlobalModerator}
+          moderatedChannelIds={moderatedChannelIds}
+          currentUserUid={currentUser?.uid}
+          reports={reports}
+          openReportsCount={openReportsCount}
+          onResolveReport={handleResolveReport}
+          onJumpToReportedMessage={(channelId, messageId, authorName, snippet) => {
+            const baseCh = (channelId || 'general-chat').split('__group__')[0];
+            setShowAdminDrawer(false);
+            if (baseCh !== activeChannelId) {
+              setActiveChannelId(baseCh);
+              setActiveSubGroupId(null);
+            }
+            setViewMode('chat');
+            window.setTimeout(() => {
+              handleJumpToMessage(messageId, authorName, snippet);
+            }, 220);
+          }}
+          knownMessages={[...firestoreMessages, ...optimisticMessages, ...allShowcaseMessages]}
+          activeAccessRequests={activeAccessRequests}
+          unapprovedPlatformUsers={unapprovedPlatformUsers}
+          pendingHubRequestsCount={pendingHubRequestsCount}
+          isProcessingHubAccess={isProcessingHubAccess}
+          onApproveRequest={handleAdminApproveRequestInHub}
+          onRejectRequest={handleAdminRejectRequestInHub}
+          onApproveUserForHub={handleAdminApproveUserInHub}
+          onRevokeUserFromHub={handleAdminRevokeUserInHub}
+          onOpenFullAccessPortal={() => {
+            setShowAdminDrawer(false);
+            window.history.pushState({}, '', '/admin/student-access');
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }}
+          allChannels={allChannels}
+          channelConfigs={channelConfigs}
+          selectedChannelId={selectedAdminChannelId}
+          onSelectChannelId={(chId) => {
+            setSelectedAdminChannelId(chId);
+            if (chId !== activeChannelId) {
+              setActiveChannelId(chId);
+              setActiveSubGroupId(null);
+            }
+          }}
+          onSaveChannelConfig={handleSaveChannelConfig}
+          channelSubGroups={channelSubGroups}
+          onOpenCreateGroupModal={(chId) => {
+            if (chId !== activeChannelId) {
+              setActiveChannelId(chId);
+            }
+            setShowAdminDrawer(false);
+            setShowCreateGroupModal(true);
+          }}
+          onManageSubGroup={(chId, groupId) => {
+            if (chId !== activeChannelId) {
+              setActiveChannelId(chId);
+            }
+            setActiveSubGroupId(groupId);
+            setShowAdminDrawer(false);
+            setShowManageGroupModal(true);
+          }}
+          onDeleteSubGroup={handleDeleteSubGroup}
+          newChannelName={newChannelName}
+          onChangeNewChannelName={setNewChannelName}
+          newChannelCategory={newChannelCategory}
+          onChangeNewChannelCategory={setNewChannelCategory}
+          newChannelEmoji={newChannelEmoji}
+          onChangeNewChannelEmoji={setNewChannelEmoji}
+          newChannelDesc={newChannelDesc}
+          onChangeNewChannelDesc={setNewChannelDesc}
+          onCreateCustomChannel={handleCreateCustomChannel}
+          allPlatformUsers={allPlatformUsers}
+          registeredUsers={registeredUsers}
+          approvedHubMemberIds={approvedHubMemberIds}
+          getLiveUserAvatarUrl={getLiveUserAvatarUrl}
+          onUpdateUserAccount={handleUpdateUserAccount}
+          onInspectMemberProfile={(u) => {
+            setShowAdminDrawer(false);
+            handleOpenMemberProfile(u);
+          }}
+          memberSearchQuery={memberSearchQuery}
+          onChangeMemberSearchQuery={setMemberSearchQuery}
+          newMemberName={newMemberName}
+          onChangeNewMemberName={setNewMemberName}
+          newMemberSchool={newMemberSchool}
+          onChangeNewMemberSchool={setNewMemberSchool}
+          newMemberGrade={newMemberGrade}
+          onChangeNewMemberGrade={setNewMemberGrade}
+          newMemberRole={newMemberRole}
+          onChangeNewMemberRole={setNewMemberRole}
+          onCreateMemberProfile={handleAdminCreateMemberProfile}
+          globalSettings={globalSettings}
+          onUpdateGlobalSettings={handleUpdateGlobalSettings}
+        />
       )}
     </div>
   );

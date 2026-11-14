@@ -155,10 +155,27 @@ export const requestBrowserNotificationPermission = async (): Promise<Notificati
   }
 };
 
+const dispatchedNotificationTags = new Set<string>();
+
+export const hasDispatchedNotificationTag = (tag: string): boolean => {
+  return dispatchedNotificationTags.has(tag);
+};
+
+export const markNotificationTagDispatched = (tag: string): boolean => {
+  if (!tag) return false;
+  if (dispatchedNotificationTags.has(tag)) return false;
+  dispatchedNotificationTags.add(tag);
+  if (dispatchedNotificationTags.size > 250) {
+    const first = dispatchedNotificationTags.values().next().value;
+    if (first) dispatchedNotificationTags.delete(first);
+  }
+  return true;
+};
+
 /**
  * Low-level helper that sends a real OS / Desktop notification to the Chrome/PC notification centre.
- * Uses ServiceWorkerRegistration.showNotification AND falls back to `new Notification()` so it
- * reliably appears in the desktop notification tray.
+ * Uses direct Notification when supported on desktop and falls back to ServiceWorkerRegistration.showNotification
+ * (required on Android Chrome / standalone PWAs). Deduplicates tags so global and hub listeners never double-fire.
  */
 export const triggerSystemDesktopNotification = async (params: {
   title: string;
@@ -171,6 +188,7 @@ export const triggerSystemDesktopNotification = async (params: {
 }): Promise<boolean> => {
   if (!isBrowserNotificationSupported()) return false;
   if (Notification.permission !== 'granted') return false;
+  if (!markNotificationTagDispatched(params.tag)) return false;
 
   const icon = params.iconUrl || BUILDBUDS_LOGO_ICON;
   const truncatedBody =

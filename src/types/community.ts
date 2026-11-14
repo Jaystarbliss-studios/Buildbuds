@@ -89,17 +89,50 @@ export interface UserNotificationItem {
     | 'student_access_more_info'
     | 'student_access_suspended'
     | 'post_moderated'
+    | 'post_pending_review'
+    | 'moderation_report'
     | 'curation_approved'
     | 'curation_rejected'
     | 'post_reaction'
     | 'post_comment'
+    | 'mention'
+    | 'followed_creator_post'
+    | 'new_follower'
+    | 'hub_message'
     | 'general';
   title: string;
   message: string;
   actionUrl?: string;
   actionLabel?: string;
+  senderId?: string;
+  senderName?: string;
+  senderAvatar?: string;
+  channelId?: string;
+  postId?: string;
   read: boolean;
   createdAt: string;
+}
+
+export interface CreatorFollowDoc {
+  id: string;
+  followerUid: string;
+  creatorUid: string;
+  followerName?: string;
+  creatorName?: string;
+  createdAt: string;
+}
+
+export interface ChannelActivityDoc {
+  channelId: string;
+  streamId: string;
+  lastMessageId: string;
+  lastMessageAtMillis: number;
+  lastMessageAuthorId: string;
+  lastMessageAuthorName: string;
+  lastMessagePreview?: string;
+  lastMentionedUids: string[];
+  lastMentionAll: boolean;
+  updatedAt: string;
 }
 
 export interface CloudinaryMediaItem {

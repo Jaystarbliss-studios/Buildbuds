@@ -18,7 +18,7 @@ import { CommunityValues } from './components/CommunityValues.tsx';
 import { FAQSection } from './components/FAQSection.tsx';
 import { FinalCTA } from './components/FinalCTA.tsx';
 import { SiteFooter } from './components/SiteFooter.tsx';
-import { CommunityHub } from './components/CommunityHub.tsx';
+import { CommunityHub, DEFAULT_COMMUNITY_CHANNELS } from './components/CommunityHub.tsx';
 
 // Public Community & Student Verification Pages
 import { PublicCommunityPage, PublicCommunityTab } from './components/PublicCommunityPage.tsx';
@@ -60,7 +60,14 @@ import {
   StudentAccessRequest,
   StudentAccessStatus,
   PublicPost,
+  UserNotificationItem,
 } from './types/community.ts';
+import { InboxCenterModal } from './components/InboxCenterModal.tsx';
+import {
+  subscribeToUserNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+} from './utils/communityService.ts';
 
 import { OfflineIndicator } from './components/PWAInstallButton.tsx';
 import {
@@ -182,6 +189,8 @@ function BuildBudsApp() {
   const [isGuidelinesOpen, setIsGuidelinesOpen] = useState(false);
   const [isShareProjectOpen, setIsShareProjectOpen] = useState(false);
   const [isNotifPromptOpen, setIsNotifPromptOpen] = useState(false);
+  const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
 
   const initialPostsSnapshotSeenRef = useRef(false);
   const knownPostIdsRef = useRef<Set<string>>(new Set());
@@ -356,6 +365,16 @@ function BuildBudsApp() {
     };
   }, [currentUser?.uid]);
 
+  // Global real-time Inbox notifications listener for the signed-in user
+  useEffect(() => {
+    if (!currentUser) {
+      setNotifications([]);
+      setIsInboxOpen(false);
+      return;
+    }
+    return subscribeToUserNotifications(currentUser.uid, setNotifications);
+  }, [currentUser?.uid]);
+
   // First-time sign-in prompt & Push Notification Prompt Modal on App Open
   useEffect(() => {
     if (isAuthChecking) return;
@@ -363,28 +382,6 @@ function BuildBudsApp() {
     // If notifications are already granted, ensure Service Worker is active
     if (isBrowserNotificationSupported() && getBrowserNotificationPermission() === 'granted') {
       registerNotificationServiceWorker();
-    }
-
-    // If user is not signed in yet when opening the app for the first time, request Sign In / Login
-    if (!currentUser && !isStandaloneAppMode) {
-      let alreadyPrompted = false;
-      try {
-        alreadyPrompted = window.sessionStorage.getItem(FIRST_TIME_AUTH_PROMPTED_KEY) === '1';
-      } catch {
-        // Ignore
-      }
-      if (!alreadyPrompted) {
-        try {
-          window.sessionStorage.setItem(FIRST_TIME_AUTH_PROMPTED_KEY, '1');
-        } catch {
-          // Ignore
-        }
-        setPublicAuthMode('signin');
-        setPublicAuthDescription(
-          'sign in to your Build Buds account (or create one if this is your first time)'
-        );
-        setIsPublicAuthOpen(true);
-      }
     }
 
     // Show "Do you want to receive notifications from Build Buds?" modal once user is in the app
@@ -399,7 +396,7 @@ function BuildBudsApp() {
       }, 900);
       return () => window.clearTimeout(timer);
     }
-  }, [isAuthChecking, currentUser, isStandaloneAppMode]);
+  }, [isAuthChecking, isStandaloneAppMode]);
 
   // Listen for Service Worker notification clicks to navigate to the target channel or post
   useEffect(() => {
@@ -418,11 +415,9 @@ function BuildBudsApp() {
     return () => navigator.serviceWorker.removeEventListener('message', handleSwMessage);
   }, [navigateTo]);
 
-  // Global real-time desktop/PC notification listener for newly published Public Community Posts (`publicPosts`)
+  // Global real-time desktop/mobile push notification listener for newly published Public Community Posts (`publicPosts`)
   // Uses a minimal limit(5) query so opening the app does not consume extra read quota.
   useEffect(() => {
-    if (!currentUser) return;
-
     initialPostsSnapshotSeenRef.current = false;
     knownPostIdsRef.current.clear();
     const postsQ = query(collection(db, 'publicPosts'), orderBy('createdAt', 'desc'), limit(5));
@@ -441,7 +436,7 @@ function BuildBudsApp() {
           knownPostIdsRef.current.add(postId);
 
           const post = change.doc.data() as PublicPost;
-          if (post.authorId === currentUser.uid) return;
+          if (currentUser && post.authorId === currentUser.uid) return;
           if (post.status && post.status !== 'published') return;
           const createdMs = post.createdAt ? new Date(post.createdAt).getTime() : Date.now();
           if (Date.now() - createdMs > 120000) return;
@@ -450,7 +445,7 @@ function BuildBudsApp() {
           if (prefs.explicitlyDisabled) return;
 
           triggerSystemDesktopNotification({
-            title: `🚀 New on Build Buds: ${post.title}`,
+            title: `New on Build Buds: ${post.title}`,
             body: `${post.authorName} published in ${post.categoryName || 'Community'}: ${
               post.summary || post.body || ''
             }`,
@@ -470,6 +465,7 @@ function BuildBudsApp() {
   }, [currentUser?.uid, navigateTo]);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
+  const isModeratorOrAdmin = isAdmin || builderProfile?.role === 'moderator';
 
   // Student Hub Approval Gate:
   // Approved students (`communityMemberships/{uid}.status === 'approved'`), pre-existing Student Hub builders, or Admins can enter `/hub`
@@ -479,6 +475,111 @@ function BuildBudsApp() {
     membership,
     studentRequest,
   });
+
+  const handleSelectInboxNotification = useCallback(
+    (notif: UserNotificationItem) => {
+      if (currentUser && !notif.read) {
+        void markNotificationAsRead(currentUser.uid, notif.id);
+        setNotifications((prev) =>
+          prev.map((item) => (item.id === notif.id ? { ...item, read: true } : item))
+        );
+      }
+      setIsInboxOpen(false);
+      const target = notif.actionUrl || '/community';
+      if (target.startsWith('/hub')) {
+        const qIdx = target.indexOf('?');
+        if (qIdx !== -1) {
+          const sp = new URLSearchParams(target.slice(qIdx + 1));
+          const ch = sp.get('channel');
+          if (ch) setHubChannelId(ch);
+        }
+        navigateTo(target);
+      } else {
+        navigateTo(target);
+      }
+    },
+    [currentUser?.uid, navigateTo]
+  );
+
+  const handleMarkAllNotificationsRead = useCallback(() => {
+    if (!currentUser) return;
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    void markAllNotificationsAsRead(currentUser.uid, notifications);
+  }, [currentUser?.uid, notifications]);
+
+  // Global real-time push notification listener for new messages across ALL channels
+  // Active whenever the user is signed in and approved for the Hub, even while browsing `/` or `/community`.
+  // Uses a bounded limit(5) query + shared tag deduplication to preserve read quota and prevent duplicate alerts.
+  useEffect(() => {
+    if (!currentUser || !isApprovedForHub) return;
+
+    initialGlobalMessagesSeenRef.current = false;
+    knownGlobalMessageIdsRef.current.clear();
+
+    const globalMsgsQ = query(
+      collection(db, 'messages'),
+      orderBy('createdAt', 'desc'),
+      limit(5)
+    );
+
+    const unsubGlobalMsgs = onSnapshot(
+      globalMsgsQ,
+      (snap) => {
+        if (!initialGlobalMessagesSeenRef.current) {
+          snap.docs.forEach((d) => knownGlobalMessageIdsRef.current.add(d.id));
+          initialGlobalMessagesSeenRef.current = true;
+          return;
+        }
+        const prefs = loadNotificationPreferences();
+        snap.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const docId = change.doc.id;
+          if (knownGlobalMessageIdsRef.current.has(docId)) return;
+          knownGlobalMessageIdsRef.current.add(docId);
+
+          const data = change.doc.data() as Record<string, any>;
+          const createdAtField = data.createdAt;
+          const createdMillis =
+            createdAtField && typeof createdAtField.toMillis === 'function'
+              ? createdAtField.toMillis()
+              : typeof data.createdAtMillis === 'number'
+              ? data.createdAtMillis
+              : Date.now();
+          if (Date.now() - createdMillis > 90000) return;
+
+          const rawChannelId = String(data.channelId || 'general-chat');
+          const baseChannelId = rawChannelId.split('__group__')[0];
+          const chObj = DEFAULT_COMMUNITY_CHANNELS.find((c) => c.id === baseChannelId);
+          const channelName = chObj?.name || baseChannelId;
+
+          dispatchMessageBrowserNotification({
+            messageId: docId,
+            channelId: rawChannelId,
+            channelName,
+            authorId: String(data.authorId || ''),
+            authorName: String(data.authorName || 'Builder'),
+            authorAvatarUrl: resolveBuilderAvatarUrl(
+              data.authorAvatar,
+              String(data.authorId || 'builder')
+            ),
+            text: String(data.text || ''),
+            currentUserId: currentUser.uid,
+            currentUserDisplayName: builderProfile?.displayName,
+            preferences: prefs,
+            onNavigateToChannel: (targetChannelId) => {
+              setHubChannelId(targetChannelId);
+              navigateTo(`/hub?channel=${encodeURIComponent(targetChannelId)}`);
+            },
+          });
+        });
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubGlobalMsgs();
+    };
+  }, [currentUser?.uid, isApprovedForHub, builderProfile?.displayName, navigateTo]);
 
   const studentAccessStatus: StudentAccessStatus = isApprovedForHub
     ? 'approved'
@@ -606,6 +707,14 @@ function BuildBudsApp() {
         isOpen={isNotifPromptOpen && !isPublicAuthOpen && currentPath !== '/login'}
         onClose={() => setIsNotifPromptOpen(false)}
       />
+      <InboxCenterModal
+        isOpen={isInboxOpen && Boolean(currentUser)}
+        onClose={() => setIsInboxOpen(false)}
+        notifications={notifications}
+        onSelectNotification={handleSelectInboxNotification}
+        onMarkAllRead={handleMarkAllNotificationsRead}
+        isModeratorOrAdmin={isModeratorOrAdmin}
+      />
     </>
   );
 
@@ -726,13 +835,18 @@ function BuildBudsApp() {
 
     // Only approved students or admins can enter the private CommunityHub
     if (currentUser && builderProfile && isApprovedForHub) {
+      const hubParams = new URLSearchParams(queryString);
+      const effectiveInitialChannel = hubParams.get('channel') || hubChannelId;
       return (
         <>
           <CommunityHub
             currentUser={currentUser}
             builderProfile={builderProfile}
-            initialChannelId={hubChannelId}
+            initialChannelId={effectiveInitialChannel}
             isStandaloneApp={false}
+            isApprovedForHub={isApprovedForHub}
+            notifications={notifications}
+            onOpenInbox={() => setIsInboxOpen(true)}
             onBackToLanding={() => {
               try {
                 localStorage.setItem(HUB_OPEN_STORAGE_KEY, '0');
@@ -802,12 +916,9 @@ function BuildBudsApp() {
     );
   }
 
-  // ROUTE 4 (DEFAULT APP ENTRY): PUBLIC COMMUNITY DISCOVERY MAIN PAGE (`/`, `/community`, `/community/*`, `/login`)
-  if (
-    cleanPathname === '/' ||
-    cleanPathname.startsWith('/community') ||
-    cleanPathname === '/login'
-  ) {
+  // ROUTE 4: PUBLIC COMMUNITY DISCOVERY MAIN PAGE (`/community`, `/community/*`, `/login`)
+  // Note: `/` stays on the Landing Homepage until the user explicitly clicks Enter Community / Join Community / Explore Creations.
+  if (cleanPathname.startsWith('/community') || cleanPathname === '/login') {
     let initialTab: PublicCommunityTab = 'all';
     let initialPostId: string | null = null;
 
@@ -828,6 +939,8 @@ function BuildBudsApp() {
       initialTab = 'my-posts';
     } else if (tabParam === 'challenges') {
       initialTab = 'challenges';
+    } else if (tabParam === 'review') {
+      initialTab = 'review';
     }
 
     return (
@@ -840,6 +953,9 @@ function BuildBudsApp() {
           isAuthChecking={isAuthChecking}
           initialTab={initialTab}
           initialPostId={initialPostId}
+          notifications={notifications}
+          onOpenInbox={() => setIsInboxOpen(true)}
+          onSelectNotification={handleSelectInboxNotification}
           onNavigate={navigateTo}
           onRequireAuth={handleRequirePublicAuth}
           onSignOut={handleSignOutAll}
@@ -870,6 +986,9 @@ function BuildBudsApp() {
         studentAccessStatus={studentAccessStatus}
         isApprovedForHub={isApprovedForHub}
         isAuthChecking={isAuthChecking}
+        notifications={notifications}
+        onOpenInbox={() => setIsInboxOpen(true)}
+        onSelectNotification={handleSelectInboxNotification}
         onNavigate={navigateTo}
         onSignOut={handleSignOutAll}
         onJoinClick={handleJoinBuildBudsClick}

@@ -29,6 +29,8 @@ import {
   MAX_IMAGES_PER_POST,
   getCloudinaryResponsiveUrl,
 } from '../utils/communityService.ts';
+import { validateVercelGameUrl } from '../utils/moderation.ts';
+import { MentionAutocompletePopover, useMentionableUsers } from './MentionAndEmotes.tsx';
 import { useTheme } from '../utils/themeContext.tsx';
 
 interface PublicPostComposerProps {
@@ -74,6 +76,10 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const directoryUsers = useMentionableUsers();
+  const isModOrAdmin = authorProfile.role === 'admin' || authorProfile.role === 'moderator';
+  const isGamePost = categoryId === 'games' || Boolean(gameUrl.trim());
+  const gameUrlCheck = gameUrl.trim() ? validateVercelGameUrl(gameUrl) : null;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -187,7 +193,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
           prev.map((item, idx) => (idx === i ? { ...item, error: msg } : item))
         );
         setErrorMessage(
-          `${msg} — Your post text and draft have been preserved. You can publish without images or retry.`
+          `${msg} — Your post text and draft have been preserved. Retry image upload before submitting.`
         );
       }
     }
@@ -208,6 +214,25 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
   const handleSubmit = async (desiredStatus: 'draft' | 'published') => {
     setErrorMessage(null);
     setStatusBanner(null);
+
+    if (desiredStatus !== 'draft') {
+      if (media.length < 1) {
+        setErrorMessage(
+          'All community posts require at least 1 uploaded image (automatically hosted on Cloudinary) before submitting.'
+        );
+        return;
+      }
+      if (categoryId === 'games' || gameUrl.trim()) {
+        const check = validateVercelGameUrl(gameUrl);
+        if (!check.valid) {
+          setErrorMessage(
+            check.error || 'Game links must follow the format https://game-name.vercel.app'
+          );
+          return;
+        }
+      }
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -352,15 +377,22 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
             />
           </div>
 
-          <div>
+          <div className="relative">
             <label className="block text-xs font-black uppercase tracking-wider mb-1">
-              Full Story, Details, or Tutorial Steps *
+              Full Story, Details, or Tutorial Steps * (Type @ to tag a creator)
             </label>
+            <MentionAutocompletePopover
+              inputValue={body}
+              onSelectMention={(nextVal) => setBody(nextVal)}
+              overrideUsers={directoryUsers}
+              position="above"
+              variant={isDark ? 'dark' : 'light'}
+            />
             <textarea
               rows={6}
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              placeholder="Explain how your project works, what tools you used, what challenges you solved, or what feedback you're looking for..."
+              placeholder="Explain how your project works, what tools you used, or type @username / @all to tag fellow builders..."
               className={`w-full px-3.5 py-2.5 text-sm rounded-xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] leading-relaxed ${
                 isDark ? 'bg-[#1b1b2f] text-white' : 'bg-white text-black'
               }`}
@@ -404,17 +436,34 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
                   }`}
                 >
                   <Gamepad2 className="w-3.5 h-3.5 text-[#C15D00]" />
-                  <span>Playable Game Link</span>
+                  <span>Playable Game Link {categoryId === 'games' ? '*' : ''}</span>
                 </label>
                 <input
                   type="url"
                   value={gameUrl}
                   onChange={(e) => setGameUrl(e.target.value)}
-                  placeholder="https://..."
-                  className={`w-full px-2.5 py-1.5 text-xs rounded-lg border-2 border-black ${
-                    isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
-                  }`}
+                  placeholder="https://game-name.vercel.app"
+                  className={`w-full px-2.5 py-1.5 text-xs rounded-lg border-2 ${
+                    gameUrlCheck && !gameUrlCheck.valid
+                      ? 'border-rose-500'
+                      : 'border-black'
+                  } ${isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'}`}
                 />
+                {isGamePost && (
+                  <p
+                    className={`text-[10px] font-bold mt-1 ${
+                      gameUrlCheck && !gameUrlCheck.valid
+                        ? 'text-rose-500'
+                        : isDark
+                        ? 'text-amber-300'
+                        : 'text-amber-800'
+                    }`}
+                  >
+                    {gameUrlCheck && !gameUrlCheck.valid
+                      ? gameUrlCheck.error
+                      : 'Private Student Hub only • Must use https://game-name.vercel.app'}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -457,22 +506,27 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
 
           {/* Signed Cloudinary Image Uploader */}
           <div
-            className={`p-4 rounded-2xl border-2 border-black space-y-3 ${
-              isDark ? 'bg-[#1b1b2f]' : 'bg-[#FFFDF5]'
-            }`}
+            className={`p-4 rounded-2xl border-2 space-y-3 ${
+              media.length === 0
+                ? 'border-amber-500'
+                : 'border-black'
+            } ${isDark ? 'bg-[#1b1b2f]' : 'bg-[#FFFDF5]'}`}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5">
+                <div className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
                   <ImageIcon className="w-4 h-4 text-[#B11469]" />
-                  <span>Project Screenshots & Images ({media.length}/{MAX_IMAGES_PER_POST})</span>
+                  <span>Project Image / Cover ({media.length}/{MAX_IMAGES_PER_POST})</span>
+                  <span className="px-2 py-0.5 rounded bg-[#B11469] text-white text-[10px] font-black">
+                    Required • Cloudinary Hosted
+                  </span>
                 </div>
                 <p
                   className={`text-[11px] mt-0.5 ${
                     isDark ? 'text-slate-300' : 'text-slate-600'
                   }`}
                 >
-                  JPEG, PNG, WebP, or AVIF • Max 5 MB per image • Up to 5 images per post
+                  Every post requires at least 1 image uploaded directly to Cloudinary (JPEG, PNG, WebP, AVIF • Max 5 MB)
                 </p>
               </div>
 
@@ -556,6 +610,18 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
             )}
           </div>
 
+          {!isModOrAdmin && (
+            <div
+              className={`p-3 rounded-xl border text-xs font-bold ${
+                isDark
+                  ? 'bg-amber-500/10 border-amber-400/30 text-amber-200'
+                  : 'bg-amber-50 border-amber-300 text-amber-900'
+              }`}
+            >
+              🛡️ Moderator Check Required: Submitted posts go to the Moderator Review Queue before appearing live and notifying your followers.
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div
             className={`pt-3 flex flex-wrap items-center justify-between gap-3 border-t-2 ${
@@ -597,11 +663,13 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
                 <Send className="w-4 h-4 stroke-[2.5]" />
                 <span>
                   {isSubmitting
-                    ? 'Publishing...'
+                    ? 'Submitting...'
+                    : !isModOrAdmin
+                    ? editingPost
+                      ? 'Save & Re-Submit for Review'
+                      : 'Submit for Review'
                     : editingPost
                     ? 'Save Changes'
-                    : requireReview && authorProfile.role !== 'admin'
-                    ? 'Submit for Review'
                     : 'Publish Post'}
                 </span>
               </button>

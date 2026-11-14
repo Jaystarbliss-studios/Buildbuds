@@ -12,7 +12,10 @@ import {
   buildPinMessagePatch,
   computeVisibleMessageWindow,
   evaluateChatComposerKeyDown,
+  isFocusComposerShortcut,
   shouldShowScrollToBottomButton,
+  resolveMentionedTargets,
+  computeChannelUnreadState,
   INITIAL_VISIBLE_MESSAGES_COUNT,
   SCROLL_UP_LOAD_BATCH_SIZE,
   GROUPING_TIME_WINDOW_MS,
@@ -36,6 +39,8 @@ import {
   inferCategoryFromHintText,
   findDuplicateLinkMessage,
   deduplicateSharedLinks,
+  validateVercelGameUrl,
+  type DeduplicatableSharedLinkMessage,
 } from './moderation';
 
 test('Discord-style consecutive message grouping combines same-user messages within 5 minutes', () => {
@@ -349,22 +354,28 @@ test('computeVisibleMessageWindow renders only the last few messages initially a
   assert.equal(step3.hasOlderMessages, false);
 });
 
-test('evaluateChatComposerKeyDown maps Enter to newline and Ctrl+Enter / Cmd+Enter to send', () => {
-  // Plain Enter moves to a new line
-  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter' }), 'newline');
-  // Shift + Enter also moves to a new line
-  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', shiftKey: true }), 'newline');
-  // Ctrl + Enter sends the message
+test('evaluateChatComposerKeyDown maps Enter to send and Shift+Enter to newline', () => {
+  // Plain Enter sends the message immediately
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter' }), 'send');
+  // Ctrl + Enter / Cmd + Enter also send cleanly
   assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', ctrlKey: true }), 'send');
-  // Cmd + Enter (macOS) sends the message
   assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', metaKey: true }), 'send');
+  // Shift + Enter inserts a new line
+  assert.equal(evaluateChatComposerKeyDown({ key: 'Enter', shiftKey: true }), 'newline');
   // IME composition does not trigger send
   assert.equal(
-    evaluateChatComposerKeyDown({ key: 'Enter', ctrlKey: true, isComposing: true }),
+    evaluateChatComposerKeyDown({ key: 'Enter', isComposing: true }),
     'noop'
   );
   // Escape cancels inline edit/reply
   assert.equal(evaluateChatComposerKeyDown({ key: 'Escape' }), 'cancel');
+});
+
+test('isFocusComposerShortcut detects Ctrl+K and Cmd+K while ignoring modified or plain keys', () => {
+  assert.equal(isFocusComposerShortcut({ key: 'k', ctrlKey: true }), true);
+  assert.equal(isFocusComposerShortcut({ key: 'K', metaKey: true }), true);
+  assert.equal(isFocusComposerShortcut({ key: 'k', ctrlKey: true, shiftKey: true }), false);
+  assert.equal(isFocusComposerShortcut({ key: 'k' }), false);
 });
 
 test('extractFirstUrl and cleanExtractedUrl detect https, www, and bare creator URLs while stripping trailing punctuation', () => {
@@ -534,4 +545,242 @@ test('shouldShowScrollToBottomButton shows button only when scrolled up beyond t
   assert.equal(shouldShowScrollToBottomButton(1200, 450, 500), true);
 });
 
+test('Strict category separation keeps only game links in Games and only website links in Websites even with stale defaults', () => {
+  const mixedMessages: DeduplicatableSharedLinkMessage[] = [
+    // School website wrongly tagged as 'game' in an older session
+    {
+      id: 'w1',
+      channelId: 'games',
+      createdAtMillis: 1_000,
+      text: 'Check out Golden Minds International School website',
+      linkUrl: 'https://golden-minds.vercel.app',
+      linkTitle: 'Golden Minds International School',
+      linkCategory: 'game' as const,
+    },
+    // Website for a game studio (contains both "website" and "game", must resolve as website)
+    {
+      id: 'w2',
+      channelId: 'general-chat',
+      createdAtMillis: 2_000,
+      text: 'Built a portfolio website for my game studio!',
+      linkUrl: 'https://studio-hub.vercel.app',
+      linkTitle: 'Studio Hub — Live Web App',
+      linkCategory: 'game' as const,
+    },
+    // Playable game shared in general-chat whose old Firestore record defaulted to 'website'
+    {
+      id: 'g1',
+      channelId: 'general-chat',
+      createdAtMillis: 3_000,
+      text: 'No escape is very scary and there are monsters',
+      linkUrl: 'https://no-escape-in-the-game.vercel.app',
+      linkTitle: 'No Escape — Live Web App',
+      linkCategory: 'website' as const,
+    },
+    // Playable game described with "game links" in general-chat
+    {
+      id: 'g2',
+      channelId: 'general-chat',
+      createdAtMillis: 4_000,
+      text: 'Game links: https://my-2d-quest.vercel.app',
+      linkUrl: 'https://my-2d-quest.vercel.app',
+      linkTitle: 'My 2d Quest — Live Web App',
+      linkCategory: 'website' as const,
+    },
+    // YouTube video accidentally posted in #games
+    {
+      id: 'v1',
+      channelId: 'games',
+      createdAtMillis: 5_000,
+      text: 'Gameplay devlog',
+      linkUrl: 'https://youtu.be/demoVideo99',
+      linkCategory: 'game' as const,
+    },
+    // Explicitly manually overridden category by user in Edit Link modal
+    {
+      id: 'g3',
+      channelId: 'websites',
+      createdAtMillis: 6_000,
+      text: 'My custom creation',
+      linkUrl: 'https://custom-engine.vercel.app',
+      linkCategory: 'game' as const,
+      categoryManuallySet: true,
+    },
+  ];
 
+  const deduped = deduplicateSharedLinks(mixedMessages);
+  const gamesOnly = deduped.filter((item) => item.linkCategory === 'game').map((i) => i.id);
+  const websitesOnly = deduped.filter((item) => item.linkCategory === 'website').map((i) => i.id);
+  const videosOnly = deduped.filter((item) => item.linkCategory === 'video').map((i) => i.id);
+
+  assert.deepEqual(gamesOnly.sort(), ['g1', 'g2', 'g3']);
+  assert.deepEqual(websitesOnly.sort(), ['w1', 'w2']);
+  assert.deepEqual(videosOnly, ['v1']);
+});
+
+import {
+  LONG_PRESS_DELAY_MS,
+  LONG_PRESS_MOVE_TOLERANCE_PX,
+  shouldCancelLongPress,
+} from './haptics';
+import {
+  hasDispatchedNotificationTag,
+  markNotificationTagDispatched,
+} from './notifications';
+
+test('Mobile tap-and-hold long press cancels when finger moves for scrolling or swipe-to-reply', () => {
+  assert.equal(LONG_PRESS_DELAY_MS, 400);
+  // Small finger jitter within tolerance keeps long-press active
+  assert.equal(shouldCancelLongPress(120, 300, 124, 305), false);
+  // Horizontal drag (swipe-to-reply) beyond tolerance cancels long-press immediately
+  assert.equal(
+    shouldCancelLongPress(120, 300, 120 + LONG_PRESS_MOVE_TOLERANCE_PX + 2, 300),
+    true
+  );
+  // Vertical scroll beyond tolerance cancels long-press immediately
+  assert.equal(
+    shouldCancelLongPress(120, 300, 120, 300 + LONG_PRESS_MOVE_TOLERANCE_PX + 2),
+    true
+  );
+});
+
+test('markNotificationTagDispatched deduplicates global and hub notification tags', () => {
+  const uniqueTag = `buildbuds-msg-test-${Date.now()}`;
+  assert.equal(hasDispatchedNotificationTag(uniqueTag), false);
+  assert.equal(markNotificationTagDispatched(uniqueTag), true);
+  assert.equal(hasDispatchedNotificationTag(uniqueTag), true);
+  // Second attempt with the exact same tag is ignored so user never receives duplicate push alerts
+  assert.equal(markNotificationTagDispatched(uniqueTag), false);
+});
+import {
+  buildPublicMemberProfileSummary,
+  formatMemberJoinDate,
+} from './memberProfile';
+
+test('buildPublicMemberProfileSummary normalizes general member details without exposing private PII', () => {
+  const summary = buildPublicMemberProfileSummary({
+    uid: 'student-42',
+    displayName: 'Jaystarbliss',
+    role: 'moderator',
+    schoolName: 'Horizon Tech Academy',
+    gradeLevel: 'Grade 9',
+    primaryInterest: '3D Games & Physics',
+    createdAt: '2025-09-10T12:00:00.000Z',
+    isOnline: true,
+    activeChannelName: 'games',
+  });
+
+  assert.equal(summary.uid, 'student-42');
+  assert.equal(summary.displayName, 'Jaystarbliss');
+  assert.equal(summary.role, 'moderator');
+  assert.equal(summary.roleLabel, 'Moderator');
+  assert.equal(summary.isVerifiedStudent, true);
+  assert.equal(summary.schoolName, 'Horizon Tech Academy');
+  assert.equal(summary.gradeLevel, 'Grade 9');
+  assert.equal(summary.primaryInterest, '3D Games & Physics');
+  assert.equal(summary.isOnline, true);
+  assert.equal(summary.activeChannelName, 'games');
+  assert.ok(!('email' in summary));
+  assert.ok(formatMemberJoinDate(summary.createdAt).includes('2025'));
+});
+
+test('validateVercelGameUrl strictly accepts https://game-name.vercel.app links and rejects others', () => {
+  const valid1 = validateVercelGameUrl('https://no-escape-in-the-game.vercel.app');
+  assert.equal(valid1.valid, true);
+  assert.equal(valid1.normalizedUrl, 'https://no-escape-in-the-game.vercel.app');
+
+  const validWithPath = validateVercelGameUrl('https://Pixel-Quest.vercel.app/?level=2');
+  assert.equal(validWithPath.valid, true);
+  assert.equal(validWithPath.normalizedUrl, 'https://pixel-quest.vercel.app?level=2');
+
+  assert.equal(validateVercelGameUrl('').valid, false);
+  assert.equal(validateVercelGameUrl('http://my-game.vercel.app').valid, false);
+  assert.equal(validateVercelGameUrl('https://my-game.itch.io').valid, false);
+  assert.equal(validateVercelGameUrl('https://sub.my-game.vercel.app').valid, false);
+  assert.equal(validateVercelGameUrl('https://vercel.app').valid, false);
+  assert.equal(validateVercelGameUrl('my-game.vercel.app').valid, false);
+});
+
+test('resolveMentionedTargets extracts @all and matched usernames case-insensitively while ignoring self', () => {
+  const directory = [
+    { uid: 'u1', displayName: 'Jaystarbliss' },
+    { uid: 'u2', displayName: 'Adaeze Okafor' },
+    { uid: 'u3', displayName: 'Munachimso' },
+  ];
+
+  const result = resolveMentionedTargets(
+    'Hey @jaystarbliss and @Adaeze Okafor check out this build! Cc @all',
+    directory,
+    'u3'
+  );
+  assert.equal(result.mentionAll, true);
+  assert.deepEqual(result.mentionedUids.sort(), ['u1', 'u2']);
+
+  // Mentioning self is excluded
+  const selfOnly = resolveMentionedTargets('Ping @Munachimso', directory, 'u3');
+  assert.equal(selfOnly.mentionAll, false);
+  assert.deepEqual(selfOnly.mentionedUids, []);
+});
+
+test('computeChannelUnreadState tracks unread and @mention badges per channel across all channels', () => {
+  const activityMap = {
+    'general-chat': {
+      channelId: 'general-chat',
+      lastMessageAtMillis: 5_000,
+      lastMessageAuthorId: 'u2',
+      lastMentionedUids: [],
+      lastMentionAll: false,
+    },
+    'custom-showcase': {
+      channelId: 'custom-showcase',
+      lastMessageAtMillis: 8_000,
+      lastMessageAuthorId: 'u2',
+      lastMentionedUids: ['u1'],
+      lastMentionAll: false,
+    },
+    announcements: {
+      channelId: 'announcements',
+      lastMessageAtMillis: 9_000,
+      lastMessageAuthorId: 'u2',
+      lastMentionedUids: [],
+      lastMentionAll: true,
+    },
+    games: {
+      channelId: 'games',
+      lastMessageAtMillis: 10_000,
+      lastMessageAuthorId: 'u1',
+      lastMentionedUids: ['u2'],
+      lastMentionAll: false,
+    },
+  };
+
+  const lastSeenMap = {
+    'general-chat': 6_000, // already seen
+    'custom-showcase': 4_000, // unread + direct @mention
+    announcements: 3_000, // unread + @all mention
+    games: 1_000,
+  };
+
+  assert.deepEqual(
+    computeChannelUnreadState('general-chat', activityMap, lastSeenMap, 'u1', 'random'),
+    { hasUnread: false, hasMention: false }
+  );
+  assert.deepEqual(
+    computeChannelUnreadState('custom-showcase', activityMap, lastSeenMap, 'u1', 'general-chat'),
+    { hasUnread: true, hasMention: true }
+  );
+  assert.deepEqual(
+    computeChannelUnreadState('announcements', activityMap, lastSeenMap, 'u1', 'general-chat'),
+    { hasUnread: true, hasMention: true }
+  );
+  // Own message never triggers unread badge
+  assert.deepEqual(
+    computeChannelUnreadState('games', activityMap, lastSeenMap, 'u1', 'general-chat'),
+    { hasUnread: false, hasMention: false }
+  );
+  // Active channel currently being viewed never shows unread badge
+  assert.deepEqual(
+    computeChannelUnreadState('custom-showcase', activityMap, lastSeenMap, 'u1', 'custom-showcase'),
+    { hasUnread: false, hasMention: false }
+  );
+});

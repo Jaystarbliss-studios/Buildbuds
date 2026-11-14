@@ -355,10 +355,28 @@ export interface ComposerKeyDownInput {
 
 export type ComposerKeyDownAction = 'send' | 'newline' | 'cancel' | 'noop';
 
+export interface FocusShortcutInput {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  shiftKey?: boolean;
+  altKey?: boolean;
+}
+
+/**
+ * Returns true when the user presses Ctrl+K (or Cmd+K on macOS) without Shift/Alt
+ * so the app focuses directly into the active chat or comment input box.
+ */
+export function isFocusComposerShortcut(input: FocusShortcutInput): boolean {
+  if (!input.key) return false;
+  if (input.shiftKey || input.altKey) return false;
+  return Boolean((input.ctrlKey || input.metaKey) && input.key.toLowerCase() === 'k');
+}
+
 /**
  * Evaluates keyboard shortcuts inside chat, thread reply, edit, and comment textareas:
- * - Plain `Enter` (or `Shift+Enter`): returns `'newline'` so the textarea inserts a new line naturally.
- * - `Ctrl+Enter` (or `Cmd+Enter` on macOS): returns `'send'` so the message is sent immediately.
+ * - `Shift+Enter`: returns `'newline'` so the textarea inserts a new line naturally.
+ * - `Enter` (or `Ctrl+Enter` / `Cmd+Enter` on macOS): returns `'send'` so the message is sent immediately.
  * - `Escape`: returns `'cancel'`.
  */
 export function evaluateChatComposerKeyDown(
@@ -367,10 +385,10 @@ export function evaluateChatComposerKeyDown(
   if (input.isComposing) return 'noop';
   if (input.key === 'Escape') return 'cancel';
   if (input.key === 'Enter') {
-    if (input.ctrlKey || input.metaKey) {
-      return 'send';
+    if (input.shiftKey) {
+      return 'newline';
     }
-    return 'newline';
+    return 'send';
   }
   return 'noop';
 }
@@ -394,3 +412,99 @@ export function shouldShowScrollToBottomButton(
   return distanceFromBottom > thresholdPx;
 }
 
+export interface MentionResolutionTarget {
+  uid: string;
+  displayName: string;
+}
+
+export interface ResolvedMentionTargets {
+  mentionAll: boolean;
+  mentionedUids: string[];
+  mentionedNames: string[];
+}
+
+/**
+ * Extracts all `@all` and `@Username` targets referenced inside text,
+ * matching known directory display names case-insensitively and ignoring self.
+ */
+export function resolveMentionedTargets(
+  text: string,
+  users: MentionResolutionTarget[],
+  excludeUid?: string | null
+): ResolvedMentionTargets {
+  if (!text || !text.includes('@')) {
+    return { mentionAll: false, mentionedUids: [], mentionedNames: [] };
+  }
+
+  const lower = text.toLowerCase();
+  const mentionAll = /(?:^|\s)@all(?:\b|\s|$|[!?,.:;])/i.test(lower);
+
+  const uidSet = new Set<string>();
+  const nameSet = new Set<string>();
+
+  for (const user of users) {
+    if (!user.uid || (excludeUid && user.uid === excludeUid)) continue;
+    const cleanName = (user.displayName || '').trim();
+    if (!cleanName) continue;
+    const escaped = cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tokenRegex = new RegExp(`(?:^|\\s)@${escaped}(?=\\b|\\s|$|[!?,.:;])`, 'i');
+    if (tokenRegex.test(text)) {
+      uidSet.add(user.uid);
+      nameSet.add(cleanName);
+    }
+  }
+
+  return {
+    mentionAll,
+    mentionedUids: Array.from(uidSet),
+    mentionedNames: Array.from(nameSet),
+  };
+}
+
+export interface ChannelActivitySummary {
+  channelId: string;
+  lastMessageAtMillis: number;
+  lastMessageAuthorId: string;
+  lastMentionedUids?: string[];
+  lastMentionAll?: boolean;
+}
+
+/**
+ * Computes unread & `@mention` badge state for a sidebar channel using lightweight
+ * channel activity summaries and the user's persisted per-channel `lastSeenMillis` map.
+ */
+export function computeChannelUnreadState(
+  channelId: string,
+  activityMap: Record<string, ChannelActivitySummary | undefined>,
+  lastSeenMap: Record<string, number | undefined>,
+  currentUserUid?: string | null,
+  activeChannelId?: string | null
+): { hasUnread: boolean; hasMention: boolean } {
+  if (activeChannelId && activeChannelId === channelId) {
+    return { hasUnread: false, hasMention: false };
+  }
+  const activity = activityMap[channelId];
+  if (!activity || !activity.lastMessageAtMillis) {
+    return { hasUnread: false, hasMention: false };
+  }
+  if (currentUserUid && activity.lastMessageAuthorId === currentUserUid) {
+    return { hasUnread: false, hasMention: false };
+  }
+
+  const lastSeen = Number(lastSeenMap[channelId] || 0);
+  if (activity.lastMessageAtMillis <= lastSeen) {
+    return { hasUnread: false, hasMention: false };
+  }
+
+  const isMentionedDirectly = Boolean(
+    currentUserUid &&
+      Array.isArray(activity.lastMentionedUids) &&
+      activity.lastMentionedUids.includes(currentUserUid)
+  );
+  const hasMention = Boolean(activity.lastMentionAll || isMentionedDirectly);
+
+  return {
+    hasUnread: true,
+    hasMention,
+  };
+}

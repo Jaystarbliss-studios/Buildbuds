@@ -22,10 +22,13 @@ import {
   ADMIN_EMAIL,
   getStudentAccessState,
   isSuperAdminUser,
+  isApprovedStudentMember,
 } from '../firebase.ts';
 import {
+  ChannelActivityDoc,
   CloudinaryMediaItem,
   CommunityMembership,
+  CreatorFollowDoc,
   DEFAULT_PUBLIC_CATEGORIES,
   EmailNotificationDeliveryStatus,
   PublicCategory,
@@ -47,7 +50,8 @@ import {
   ChallengeSkillLevel,
   ChallengeResourceLink,
 } from '../types/community.ts';
-import { filterProfanity } from './moderation.ts';
+import { filterProfanity, validateVercelGameUrl } from './moderation.ts';
+import { resolveMentionedTargets } from './messageGrouping.ts';
 import { INITIAL_PUBLIC_COMMUNITY_POSTS } from '../data/publicCommunitySeeds.ts';
 
 export const ALLOWED_IMAGE_MIME_TYPES = [
@@ -396,11 +400,34 @@ export async function savePublicPost(params: {
   const isAdmin =
     currentUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() ||
     params.authorProfile.role === 'admin';
+  const isModeratorOrAdmin = isAdmin || params.authorProfile.role === 'moderator';
 
+  const cleanGameUrl = params.gameUrl?.trim() || '';
+  const isGameCategory = params.categoryId === 'games' || Boolean(cleanGameUrl);
+  if (isGameCategory) {
+    if (!accessState.isApprovedForHub) {
+      throw new Error('Only verified and approved Private Student Hub members can post games.');
+    }
+    if (params.desiredStatus !== 'draft') {
+      const gameCheck = validateVercelGameUrl(cleanGameUrl);
+      if (!gameCheck.valid) {
+        throw new Error(gameCheck.error || 'Games must use a valid https://game-name.vercel.app link.');
+      }
+    }
+  }
+
+  // Mandatory Cloudinary image requirement for all non-draft submissions
+  if (params.desiredStatus !== 'draft' && (!params.media || params.media.length < 1)) {
+    throw new Error(
+      'Every post requires at least 1 uploaded image hosted on Cloudinary before submission.'
+    );
+  }
+
+  // Mandatory Moderator pre-approval for ALL non-moderator / non-admin submissions
   let finalStatus: PublicPostStatus = 'published';
   if (params.desiredStatus === 'draft') {
     finalStatus = 'draft';
-  } else if (params.requireReview && !isAdmin) {
+  } else if (!isModeratorOrAdmin) {
     finalStatus = 'pending_review';
   } else {
     finalStatus = 'published';
@@ -437,13 +464,27 @@ export async function savePublicPost(params: {
       tags: cleanTags,
       media: attachedMedia,
       websiteUrl: params.websiteUrl?.trim() || '',
-      gameUrl: params.gameUrl?.trim() || '',
+      gameUrl: cleanGameUrl,
       githubUrl: params.githubUrl?.trim() || '',
       status: finalStatus,
       updatedAt: nowIso,
     };
     await setDoc(postRef, updatedPost, { merge: true });
     clearPostDraftLocally(currentUser.uid);
+    if (finalStatus === 'pending_review') {
+      void notifyModeratorsOfPendingPost(updatedPost, params.authorProfile);
+    } else if (finalStatus === 'published' && existingData.status !== 'published') {
+      void notifyFollowersOfPublishedPost(updatedPost);
+      void dispatchMentionNotifications({
+        text: `${updatedPost.title}\n${updatedPost.body}`,
+        senderUid: currentUser.uid,
+        senderName: params.authorProfile.displayName,
+        senderAvatar: params.authorProfile.avatarUrl,
+        sourceType: 'public_post',
+        postId: updatedPost.id,
+        contextTitle: updatedPost.title,
+      });
+    }
     return updatedPost;
   }
 
@@ -457,7 +498,7 @@ export async function savePublicPost(params: {
     tags: cleanTags,
     media: attachedMedia,
     websiteUrl: params.websiteUrl?.trim() || '',
-    gameUrl: params.gameUrl?.trim() || '',
+    gameUrl: cleanGameUrl,
     githubUrl: params.githubUrl?.trim() || '',
     authorId: currentUser.uid,
     authorName: params.authorProfile.displayName,
@@ -475,6 +516,22 @@ export async function savePublicPost(params: {
 
   await setDoc(postRef, newPost);
   clearPostDraftLocally(currentUser.uid);
+
+  if (finalStatus === 'pending_review') {
+    void notifyModeratorsOfPendingPost(newPost, params.authorProfile);
+  } else if (finalStatus === 'published') {
+    void notifyFollowersOfPublishedPost(newPost);
+    void dispatchMentionNotifications({
+      text: `${newPost.title}\n${newPost.body}`,
+      senderUid: currentUser.uid,
+      senderName: params.authorProfile.displayName,
+      senderAvatar: params.authorProfile.avatarUrl,
+      sourceType: 'public_post',
+      postId: newPost.id,
+      contextTitle: newPost.title,
+    });
+  }
+
   return newPost;
 }
 
@@ -537,7 +594,7 @@ export async function togglePublicPostReaction(
   const postRef = doc(db, 'publicPosts', postId);
   const reactionRef = doc(db, 'publicPosts', postId, 'reactions', currentUser.uid);
 
-  return runTransaction(db, async (tx) => {
+  const txResult = await runTransaction(db, async (tx) => {
     const postSnap = await tx.get(postRef);
     const reactionSnap = await tx.get(reactionRef);
 
@@ -591,8 +648,29 @@ export async function togglePublicPostReaction(
       });
     }
 
-    return { added, updatedTypes };
+    return { added, updatedTypes, authorId: postData.authorId, postTitle: postData.title };
   });
+
+  if (
+    txResult.added &&
+    txResult.authorId &&
+    txResult.authorId !== currentUser.uid &&
+    !txResult.authorId.startsWith('team-') &&
+    !txResult.authorId.startsWith('seed-')
+  ) {
+    void sendUserInboxNotification(txResult.authorId, {
+      type: 'post_reaction',
+      title: `${currentUser.displayName || 'A builder'} reacted to your post`,
+      message: `Your post "${txResult.postTitle.slice(0, 80)}" received a new reaction.`,
+      actionUrl: `/community/posts/${postId}`,
+      actionLabel: 'View Post',
+      senderId: currentUser.uid,
+      senderName: currentUser.displayName || 'Builder',
+      postId,
+    });
+  }
+
+  return { added: txResult.added, updatedTypes: txResult.updatedTypes };
 }
 
 /**
@@ -635,6 +713,9 @@ export async function addPublicPostComment(params: {
     updatedAt: nowIso,
   };
 
+  let postAuthorId = '';
+  let postTitle = '';
+
   await runTransaction(db, async (tx) => {
     const postSnap = await tx.get(postRef);
     let postData: PublicPost;
@@ -647,6 +728,9 @@ export async function addPublicPostComment(params: {
       }
       postData = { ...seedMatch };
     }
+    postAuthorId = postData.authorId;
+    postTitle = postData.title;
+
     tx.set(commentRef, newComment);
     if (postSnap.exists()) {
       tx.update(postRef, {
@@ -660,6 +744,36 @@ export async function addPublicPostComment(params: {
         updatedAt: nowIso,
       });
     }
+  });
+
+  if (
+    postAuthorId &&
+    postAuthorId !== currentUser.uid &&
+    !postAuthorId.startsWith('team-') &&
+    !postAuthorId.startsWith('seed-')
+  ) {
+    void sendUserInboxNotification(postAuthorId, {
+      type: 'post_comment',
+      title: `${params.authorProfile.displayName} commented on "${postTitle.slice(0, 60)}"`,
+      message: filtered.slice(0, 220),
+      actionUrl: `/community/posts/${params.postId}`,
+      actionLabel: 'View Discussion',
+      senderId: currentUser.uid,
+      senderName: params.authorProfile.displayName,
+      senderAvatar: params.authorProfile.avatarUrl,
+      postId: params.postId,
+    });
+  }
+
+  void dispatchMentionNotifications({
+    text: filtered,
+    senderUid: currentUser.uid,
+    senderName: params.authorProfile.displayName,
+    senderAvatar: params.authorProfile.avatarUrl,
+    sourceType: 'public_comment',
+    postId: params.postId,
+    contextTitle: postTitle,
+    excludeUids: postAuthorId ? [postAuthorId] : [],
   });
 
   return newComment;
@@ -928,6 +1042,8 @@ export async function adminApproveStudentAccess(params: {
         schoolName: params.targetRequest.schoolName,
         gradeLevel: params.targetRequest.gradeLevel,
         accountType: 'student',
+        isApprovedStudent: true,
+        studentAccessStatus: 'approved',
         updatedAt: nowIso,
       },
       { merge: true }
@@ -1168,6 +1284,7 @@ export async function adminUpdateStudentAccessDecision(params: {
       {
         accountType: 'public',
         isApprovedStudent: false,
+        studentAccessStatus: params.newStatus,
         updatedAt: nowIso,
       },
       { merge: true }
@@ -1495,6 +1612,7 @@ export async function adminRevokeStudentHubAccess(
     {
       accountType: 'public',
       isApprovedStudent: false,
+      studentAccessStatus: 'rejected',
       updatedAt: nowIso,
     },
     { merge: true }
@@ -1826,6 +1944,441 @@ export async function markNotificationAsRead(uid: string, notifId: string): Prom
     await updateDoc(notifRef, { read: true });
   } catch {
     // Non-fatal
+  }
+}
+
+export async function markAllNotificationsAsRead(
+  uid: string,
+  notifications: UserNotificationItem[]
+): Promise<void> {
+  const unread = notifications.filter((n) => !n.read);
+  if (unread.length === 0) return;
+  await Promise.all(
+    unread.map((n) =>
+      updateDoc(doc(db, 'userNotifications', uid, 'items', n.id), { read: true }).catch(() => {})
+    )
+  );
+}
+
+/**
+ * Low-level safe helper for dispatching an in-app notification to a user's Inbox (`userNotifications/{uid}/items`).
+ */
+export async function sendUserInboxNotification(
+  targetUid: string,
+  payload: Omit<UserNotificationItem, 'id' | 'uid' | 'read' | 'createdAt'>
+): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !targetUid || targetUid === currentUser.uid) return;
+  if (targetUid.startsWith('seed-') || targetUid.startsWith('team-')) return;
+
+  try {
+    const notifRef = doc(collection(db, 'userNotifications', targetUid, 'items'));
+    const notif: UserNotificationItem = {
+      id: notifRef.id,
+      uid: targetUid,
+      type: payload.type,
+      title: String(payload.title || 'New Build Buds Update').slice(0, 195),
+      message: String(payload.message || '').slice(0, 990),
+      actionUrl: payload.actionUrl || '/community',
+      actionLabel: payload.actionLabel || 'Open',
+      senderId: payload.senderId || currentUser.uid,
+      senderName: payload.senderName || currentUser.displayName || 'Builder',
+      senderAvatar: payload.senderAvatar || '',
+      channelId: payload.channelId || '',
+      postId: payload.postId || '',
+      read: false,
+      createdAt: new Date().toISOString(),
+    };
+    await setDoc(notifRef, notif);
+  } catch {
+    // Non-blocking notification delivery
+  }
+}
+
+// ===============================================================
+// Creator Follow System (`creatorFollows/{followerUid}_{creatorUid}`)
+// ===============================================================
+
+export function creatorFollowDocId(followerUid: string, creatorUid: string): string {
+  return `${followerUid}_${creatorUid}`;
+}
+
+export async function followCreator(params: {
+  creatorUid: string;
+  creatorName: string;
+  followerProfile: BuilderProfile;
+}): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Please sign in with Google to follow creators.');
+  }
+  if (!params.creatorUid || params.creatorUid === currentUser.uid) return;
+
+  const followId = creatorFollowDocId(currentUser.uid, params.creatorUid);
+  const followDoc: CreatorFollowDoc = {
+    id: followId,
+    followerUid: currentUser.uid,
+    creatorUid: params.creatorUid,
+    followerName: params.followerProfile.displayName,
+    creatorName: params.creatorName,
+    createdAt: new Date().toISOString(),
+  };
+
+  await setDoc(doc(db, 'creatorFollows', followId), followDoc);
+
+  void sendUserInboxNotification(params.creatorUid, {
+    type: 'new_follower',
+    title: `${params.followerProfile.displayName} started following you`,
+    message: 'They will now receive Inbox updates whenever your new creations are published!',
+    actionUrl: '/community',
+    actionLabel: 'Explore Community',
+    senderId: currentUser.uid,
+    senderName: params.followerProfile.displayName,
+    senderAvatar: params.followerProfile.avatarUrl,
+  });
+}
+
+export async function unfollowCreator(creatorUid: string): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !creatorUid) return;
+  const followId = creatorFollowDocId(currentUser.uid, creatorUid);
+  await deleteDoc(doc(db, 'creatorFollows', followId));
+}
+
+export function subscribeToMyFollowing(
+  followerUid: string,
+  callback: (followedCreatorUids: string[]) => void
+): () => void {
+  const q = query(
+    collection(db, 'creatorFollows'),
+    where('followerUid', '==', followerUid),
+    limit(200)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      callback(snap.docs.map((d) => (d.data() as CreatorFollowDoc).creatorUid).filter(Boolean));
+    },
+    () => callback([])
+  );
+}
+
+export async function getCreatorFollowerCount(creatorUid: string): Promise<number> {
+  if (!creatorUid || creatorUid.startsWith('seed-') || creatorUid.startsWith('team-')) {
+    return 0;
+  }
+  try {
+    const q = query(
+      collection(db, 'creatorFollows'),
+      where('creatorUid', '==', creatorUid),
+      limit(200)
+    );
+    const snap = await getDocs(q);
+    return snap.size;
+  } catch {
+    return 0;
+  }
+}
+
+// ===============================================================
+// Channel Activity & Cross-Platform @Mention / Follower / Mod Dispatchers
+// ===============================================================
+
+export async function updateChannelActivitySnapshot(params: {
+  channelId: string;
+  streamId: string;
+  messageId: string;
+  authorId: string;
+  authorName: string;
+  text: string;
+  mentionedUids: string[];
+  mentionAll: boolean;
+}): Promise<void> {
+  if (!params.channelId) return;
+  try {
+    const activityDoc: ChannelActivityDoc = {
+      channelId: params.channelId,
+      streamId: params.streamId || params.channelId,
+      lastMessageId: params.messageId,
+      lastMessageAtMillis: Date.now(),
+      lastMessageAuthorId: params.authorId,
+      lastMessageAuthorName: params.authorName,
+      lastMessagePreview: params.text.trim().slice(0, 140),
+      lastMentionedUids: params.mentionedUids.slice(0, 40),
+      lastMentionAll: params.mentionAll,
+      updatedAt: new Date().toISOString(),
+    };
+    await setDoc(doc(db, 'channelActivity', params.channelId), activityDoc, { merge: true });
+  } catch {
+    // Non-blocking activity summary write
+  }
+}
+
+export async function dispatchMentionNotifications(params: {
+  text: string;
+  senderUid: string;
+  senderName: string;
+  senderAvatar?: string;
+  sourceType: 'hub_channel' | 'hub_thread' | 'public_post' | 'public_comment';
+  channelId?: string;
+  channelName?: string;
+  postId?: string;
+  contextTitle?: string;
+  excludeUids?: string[];
+}): Promise<{ mentionedUids: string[]; mentionAll: boolean }> {
+  const cleanText = params.text.trim();
+  if (!cleanText || !cleanText.includes('@')) {
+    return { mentionedUids: [], mentionAll: false };
+  }
+
+  try {
+    const usersSnap = await getDocs(query(collection(db, 'users'), limit(150)));
+    const allUsers = usersSnap.docs.map((d) => d.data() as BuilderProfile);
+
+    const { mentionedUids, mentionAll } = resolveMentionedTargets(
+      cleanText,
+      allUsers,
+      params.senderUid
+    );
+
+    const excludeSet = new Set(params.excludeUids || []);
+    let targetProfiles: BuilderProfile[] = [];
+
+    if (mentionAll) {
+      const isHubSource = params.sourceType === 'hub_channel' || params.sourceType === 'hub_thread';
+      targetProfiles = allUsers.filter(
+        (u) =>
+          u.uid !== params.senderUid &&
+          !excludeSet.has(u.uid) &&
+          u.status !== 'banned' &&
+          (!isHubSource || isApprovedStudentMember({ profile: u }))
+      );
+    } else {
+      targetProfiles = allUsers.filter(
+        (u) => mentionedUids.includes(u.uid) && !excludeSet.has(u.uid) && u.status !== 'banned'
+      );
+    }
+
+    const actionUrl =
+      params.sourceType === 'hub_channel' || params.sourceType === 'hub_thread'
+        ? `/hub?channel=${encodeURIComponent(params.channelId || 'general-chat')}`
+        : params.postId
+        ? `/community/posts/${params.postId}`
+        : '/community';
+
+    const title =
+      params.sourceType === 'hub_channel' || params.sourceType === 'hub_thread'
+        ? `${params.senderName} tagged ${mentionAll ? '@all' : 'you'} in #${params.channelName || params.channelId || 'hub'}`
+        : `${params.senderName} tagged ${mentionAll ? '@all' : 'you'} on "${(params.contextTitle || 'a post').slice(0, 50)}"`;
+
+    await Promise.all(
+      targetProfiles.slice(0, 60).map((u) =>
+        sendUserInboxNotification(u.uid, {
+          type: 'mention',
+          title,
+          message: cleanText.slice(0, 240),
+          actionUrl,
+          actionLabel:
+            params.sourceType === 'hub_channel' || params.sourceType === 'hub_thread'
+              ? `Open #${params.channelName || params.channelId || 'chat'}`
+              : 'View Post',
+          senderId: params.senderUid,
+          senderName: params.senderName,
+          senderAvatar: params.senderAvatar,
+          channelId: params.channelId,
+          postId: params.postId,
+        })
+      )
+    );
+
+    return {
+      mentionedUids: targetProfiles.map((u) => u.uid),
+      mentionAll,
+    };
+  } catch {
+    return { mentionedUids: [], mentionAll: false };
+  }
+}
+
+export async function notifyModeratorsOfPendingPost(
+  post: PublicPost,
+  authorProfile: BuilderProfile
+): Promise<void> {
+  try {
+    const usersSnap = await getDocs(
+      query(collection(db, 'users'), where('role', 'in', ['moderator', 'admin']), limit(40))
+    );
+    const modUids = new Set<string>();
+    usersSnap.docs.forEach((d) => {
+      const u = d.data() as BuilderProfile;
+      if (u.uid && u.uid !== post.authorId) modUids.add(u.uid);
+    });
+
+    await Promise.all(
+      Array.from(modUids).map((uid) =>
+        sendUserInboxNotification(uid, {
+          type: 'post_pending_review',
+          title: `New post awaits Moderator review`,
+          message: `${authorProfile.displayName} submitted "${post.title.slice(0, 90)}" (${post.categoryName}).`,
+          actionUrl: '/community?tab=review',
+          actionLabel: 'Review Queue',
+          senderId: post.authorId,
+          senderName: authorProfile.displayName,
+          senderAvatar: authorProfile.avatarUrl,
+          postId: post.id,
+        })
+      )
+    );
+  } catch {
+    // Non-blocking
+  }
+}
+
+export async function notifyModeratorsAndAdminsOfReport(params: {
+  reporterUid: string;
+  reporterName: string;
+  channelId: string;
+  targetSummary: string;
+  reason: string;
+  channelModeratorIds?: string[];
+}): Promise<void> {
+  try {
+    const usersSnap = await getDocs(
+      query(collection(db, 'users'), where('role', 'in', ['moderator', 'admin']), limit(40))
+    );
+    const recipientUids = new Set<string>(params.channelModeratorIds || []);
+    usersSnap.docs.forEach((d) => {
+      const u = d.data() as BuilderProfile;
+      if (u.uid) recipientUids.add(u.uid);
+    });
+    recipientUids.delete(params.reporterUid);
+
+    const isPublic = params.channelId.startsWith('publicPosts/');
+    const baseChannelId = params.channelId.split('__group__')[0];
+    const actionUrl = isPublic
+      ? `/${params.channelId.replace('publicPosts/', 'community/posts/')}`
+      : `/hub?channel=${encodeURIComponent(baseChannelId)}`;
+
+    await Promise.all(
+      Array.from(recipientUids).map((uid) =>
+        sendUserInboxNotification(uid, {
+          type: 'moderation_report',
+          title: `🚩 Flagged report by ${params.reporterName}`,
+          message: `${params.targetSummary} — "${params.reason.slice(0, 140)}"`,
+          actionUrl,
+          actionLabel: isPublic ? 'Open Post' : 'Open Hub Reports',
+          senderId: params.reporterUid,
+          senderName: params.reporterName,
+          channelId: isPublic ? undefined : baseChannelId,
+        })
+      )
+    );
+  } catch {
+    // Non-blocking
+  }
+}
+
+export async function notifyFollowersOfPublishedPost(post: PublicPost): Promise<void> {
+  if (!post.authorId || post.status !== 'published') return;
+  try {
+    const followsSnap = await getDocs(
+      query(
+        collection(db, 'creatorFollows'),
+        where('creatorUid', '==', post.authorId),
+        limit(100)
+      )
+    );
+    const followers = followsSnap.docs
+      .map((d) => d.data() as CreatorFollowDoc)
+      .filter((f) => f.followerUid && f.followerUid !== post.authorId);
+
+    await Promise.all(
+      followers.map((f) =>
+        sendUserInboxNotification(f.followerUid, {
+          type: 'followed_creator_post',
+          title: `${post.authorName} published a new ${post.categoryName} post!`,
+          message: `"${post.title.slice(0, 120)}" — ${post.summary.slice(0, 120)}`,
+          actionUrl: `/community/posts/${post.id}`,
+          actionLabel: 'Read Post',
+          senderId: post.authorId,
+          senderName: post.authorName,
+          senderAvatar: post.authorAvatar,
+          postId: post.id,
+        })
+      )
+    );
+  } catch {
+    // Non-blocking
+  }
+}
+
+/**
+ * Moderator / Admin Action: Approve, hide, or remove a submitted PublicPost.
+ * Approving a pending post automatically publishes it and notifies both the author and all followers!
+ */
+export async function moderatePublicPostStatus(params: {
+  post: PublicPost;
+  newStatus: 'published' | 'hidden' | 'removed';
+  reason?: string;
+}): Promise<void> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Moderator authentication required.');
+  }
+
+  const nowIso = new Date().toISOString();
+  await updateDoc(doc(db, 'publicPosts', params.post.id), {
+    status: params.newStatus,
+    updatedAt: nowIso,
+  });
+
+  const approved = params.newStatus === 'published';
+
+  if (params.post.authorId && params.post.authorId !== currentUser.uid) {
+    void sendUserInboxNotification(params.post.authorId, {
+      type: 'post_moderated',
+      title: approved
+        ? `Your post "${params.post.title.slice(0, 65)}" was approved!`
+        : `Post status update: "${params.post.title.slice(0, 65)}"`,
+      message: approved
+        ? 'A moderator reviewed and published your creation to the Public Community!'
+        : params.reason?.trim() || 'Your post was not approved for public listing at this time.',
+      actionUrl: `/community/posts/${params.post.id}`,
+      actionLabel: approved ? 'View Live Post' : 'View Details',
+      senderId: currentUser.uid,
+      senderName: currentUser.displayName || 'Moderator',
+      postId: params.post.id,
+    });
+  }
+
+  if (approved && params.post.status !== 'published') {
+    const publishedPost: PublicPost = { ...params.post, status: 'published', updatedAt: nowIso };
+    void notifyFollowersOfPublishedPost(publishedPost);
+    void dispatchMentionNotifications({
+      text: `${publishedPost.title}\n${publishedPost.body}`,
+      senderUid: publishedPost.authorId,
+      senderName: publishedPost.authorName,
+      senderAvatar: publishedPost.authorAvatar,
+      sourceType: 'public_post',
+      postId: publishedPost.id,
+      contextTitle: publishedPost.title,
+    });
+  }
+
+  try {
+    await addDoc(collection(db, 'adminAuditLogs'), {
+      action: 'moderate_post',
+      targetUid: params.post.authorId,
+      targetEmail: 'creator',
+      targetName: params.post.title.slice(0, 80),
+      adminUid: currentUser.uid,
+      adminEmail: currentUser.email || 'moderator',
+      verifiedAgainstOfficialRecords: true,
+      reason: params.reason?.trim() || `Changed status to ${params.newStatus}`,
+      createdAt: nowIso,
+    } satisfies AdminAuditLog);
+  } catch {
+    // Non-blocking audit log
   }
 }
 

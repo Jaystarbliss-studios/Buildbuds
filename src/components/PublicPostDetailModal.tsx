@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   ExternalLink,
@@ -18,6 +18,8 @@ import {
   EyeOff,
   CheckCircle2,
   Send,
+  UserPlus,
+  UserCheck,
 } from 'lucide-react';
 import {
   db,
@@ -33,7 +35,10 @@ import {
   User,
   isSuperAdminUser,
 } from '../firebase.ts';
-import { evaluateChatComposerKeyDown } from '../utils/messageGrouping.ts';
+import {
+  evaluateChatComposerKeyDown,
+  isFocusComposerShortcut,
+} from '../utils/messageGrouping.ts';
 import {
   PublicPost,
   PublicComment,
@@ -46,6 +51,8 @@ import {
   addPublicPostComment,
   updatePublicPostComment,
   deleteOrRemovePublicComment,
+  moderatePublicPostStatus,
+  notifyModeratorsAndAdminsOfReport,
 } from '../utils/communityService.ts';
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 import {
@@ -63,12 +70,24 @@ interface PublicPostDetailModalProps {
   builderProfile: BuilderProfile | null;
   userReactions: PublicReactionType[];
   isBookmarked: boolean;
+  isFollowingAuthor?: boolean;
+  onToggleFollowAuthor?: (
+    creatorUid: string,
+    creatorName: string,
+    currentlyFollowing: boolean
+  ) => Promise<void> | void;
   onClose: () => void;
   onRequireAuth: (actionDescription: string) => void;
   onToggleBookmark: (postId: string) => void;
   onEditPost?: (post: PublicPost) => void;
   onPostUpdated?: (updated: PublicPost) => void;
   onPostDeleted?: (postId: string) => void;
+  onSelectMemberProfile?: (info: {
+    uid: string;
+    displayName: string;
+    avatarUrl?: string;
+    role?: string;
+  }) => void;
 }
 
 export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
@@ -77,12 +96,15 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   builderProfile,
   userReactions,
   isBookmarked,
+  isFollowingAuthor = false,
+  onToggleFollowAuthor,
   onClose,
   onRequireAuth,
   onToggleBookmark,
   onEditPost,
   onPostUpdated,
   onPostDeleted,
+  onSelectMemberProfile,
 }) => {
   const { isDark } = useTheme();
   const [comments, setComments] = useState<PublicComment[]>([]);
@@ -96,8 +118,10 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
+  const newCommentTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
+  const isModeratorOrAdmin = isAdmin || builderProfile?.role === 'moderator';
   const isOwner = Boolean(currentUser && post && currentUser.uid === post.authorId);
   const directoryUsers = useMentionableUsers();
   const verifiedUserIds = React.useMemo(() => {
@@ -145,6 +169,26 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
 
     return () => unsub();
   }, [post?.id]);
+
+  useEffect(() => {
+    if (!post) return;
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (
+        isFocusComposerShortcut({
+          key: e.key,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+        })
+      ) {
+        e.preventDefault();
+        newCommentTextareaRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [post]);
 
   if (!post) return null;
 
@@ -242,14 +286,29 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
       onRequireAuth('report content to moderators');
       return;
     }
+    const reporterName =
+      builderProfile?.displayName || currentUser.displayName || 'Community Member';
+    const reason = `Reported public ${targetType} in "${post.title}"`;
     try {
       await addDoc(collection(db, 'reports'), {
         messageId: `${targetType}:${targetId}`,
         channelId: `publicPosts/${post.id}`,
         reporterId: currentUser.uid,
-        reason: `Reported public ${targetType} in "${post.title}"`,
+        reporterName,
+        reportedUserId: post.authorId || '',
+        reportedUserName: post.authorName || '',
+        messageSnippet: post.title.slice(0, 140),
+        reason,
         status: 'open',
         createdAt: new Date().toISOString(),
+        createdAtMillis: Date.now(),
+      });
+      void notifyModeratorsAndAdminsOfReport({
+        reporterUid: currentUser.uid,
+        reporterName,
+        channelId: `publicPosts/${post.id}`,
+        targetSummary: `Public ${targetType} on "${post.title.slice(0, 60)}"`,
+        reason,
       });
       setFeedbackBanner('Thank you! Your report has been sent to our moderation team.');
     } catch {
@@ -267,20 +326,20 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   const handleAdminModerateStatus = async (
     newStatus: 'published' | 'hidden' | 'removed'
   ) => {
-    if (!isAdmin) return;
+    if (!isModeratorOrAdmin) return;
     try {
-      const postRef = doc(db, 'publicPosts', post.id);
+      await moderatePublicPostStatus({ post, newStatus });
       const updated = {
         ...post,
         status: newStatus,
         updatedAt: new Date().toISOString(),
       };
-      await updateDoc(postRef, {
-        status: newStatus,
-        updatedAt: updated.updatedAt,
-      });
       onPostUpdated?.(updated);
-      setFeedbackBanner(`Post status updated to "${newStatus}".`);
+      setFeedbackBanner(
+        newStatus === 'published'
+          ? 'Post approved and published! Author and followers have been notified.'
+          : `Post status updated to "${newStatus}".`
+      );
     } catch (err) {
       setFeedbackBanner(err instanceof Error ? err.message : 'Moderation update failed.');
     }
@@ -309,7 +368,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
   };
 
   const handleDeleteEntirePost = async () => {
-    if (!isOwner && !isAdmin) return;
+    if (!isOwner && !isModeratorOrAdmin) return;
     try {
       await deleteDoc(doc(db, 'publicPosts', post.id));
       onPostDeleted?.(post.id);
@@ -385,7 +444,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 <span>Edit</span>
               </button>
             )}
-            {(isOwner || isAdmin) && !post.id.startsWith('seed-') && (
+            {(isOwner || isModeratorOrAdmin) && !post.id.startsWith('seed-') && (
               <button
                 type="button"
                 onClick={handleDeleteEntirePost}
@@ -410,22 +469,24 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
           </div>
         </div>
 
-        {/* Admin Moderation Bar */}
-        {isAdmin && !post.id.startsWith('seed-') && (
+        {/* Moderator & Admin Moderation Bar */}
+        {isModeratorOrAdmin && !post.id.startsWith('seed-') && (
           <div className="bg-slate-900 text-white px-5 sm:px-8 py-3 border-b-2 border-black flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2 font-black text-[#FFF025]">
               <ShieldAlert className="w-4 h-4" />
-              <span>Admin Moderation Controls:</span>
+              <span>{isAdmin ? 'Admin' : 'Moderator'} Review Controls:</span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleAdminToggleFeatured}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF025] text-black font-black cursor-pointer"
-              >
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleAdminToggleFeatured}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FFF025] text-black font-black cursor-pointer"
+                >
                 <Star className="w-3.5 h-3.5" />
                 <span>{post.isFeatured ? 'Unpin Featured' : 'Pin Featured'}</span>
               </button>
+              )}
               <button
                 type="button"
                 onClick={() => handleAdminModerateStatus('published')}
@@ -450,13 +511,15 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Remove</span>
               </button>
-              <button
-                type="button"
-                onClick={handleAdminDisableAuthorPublishing}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold cursor-pointer"
-              >
-                <span>Disable Author Publishing</span>
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleAdminDisableAuthorPublishing}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/15 hover:bg-white/25 text-white font-bold cursor-pointer"
+                >
+                  <span>Disable Author Publishing</span>
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -489,7 +552,19 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 isDark ? 'border-white/15' : 'border-black/10'
               }`}
             >
-              <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  onSelectMemberProfile?.({
+                    uid: post.authorId,
+                    displayName: post.authorName,
+                    avatarUrl: post.authorAvatar,
+                    role: post.authorRole,
+                  })
+                }
+                title={`View ${post.authorName}'s profile`}
+                className="flex items-center gap-3 text-left group cursor-pointer rounded-xl p-1 -m-1 hover:bg-black/5 transition-colors"
+              >
                 <VerifiedAvatarFrame
                   src={resolveBuilderAvatarUrl(post.authorAvatar, post.authorId)}
                   alt={post.authorName}
@@ -504,7 +579,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <span
-                      className={`font-black text-sm ${
+                      className={`font-black text-sm group-hover:underline ${
                         post.authorRole === 'admin' ||
                         post.authorRole === 'moderator' ||
                         verifiedUserIds.has(post.authorId)
@@ -533,10 +608,46 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                     })}
                   </div>
                 </div>
-              </div>
+              </button>
 
-              {/* Share / Bookmark / Report Actions */}
-              <div className="flex items-center gap-2">
+              {/* Follow / Share / Bookmark / Report Actions */}
+              <div className="flex flex-wrap items-center gap-2">
+                {onToggleFollowAuthor &&
+                  !isOwner &&
+                  post.authorId &&
+                  !post.authorId.startsWith('seed-') &&
+                  !post.authorId.startsWith('team-') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!currentUser) {
+                          onRequireAuth(`follow ${post.authorName}`);
+                          return;
+                        }
+                        onToggleFollowAuthor(post.authorId, post.authorName, isFollowingAuthor);
+                      }}
+                      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-black text-xs font-black cursor-pointer transition-colors ${
+                        isFollowingAuthor
+                          ? isDark
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+                            : 'bg-emerald-100 text-emerald-900'
+                          : 'bg-[#B11469] hover:bg-[#931057] text-white'
+                      }`}
+                    >
+                      {isFollowingAuthor ? (
+                        <>
+                          <UserCheck className="w-3.5 h-3.5" />
+                          <span>Following</span>
+                        </>
+                      ) : (
+                        <>
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Follow</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -771,6 +882,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                     variant={isDark ? 'dark' : 'light'}
                   />
                   <textarea
+                    ref={newCommentTextareaRef}
                     rows={3}
                     value={newCommentText}
                     onChange={(e) => setNewCommentText(e.target.value)}
@@ -787,7 +899,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                         handleAddTopLevelComment(e as unknown as React.FormEvent);
                       }
                     }}
-                    placeholder="Share constructive feedback (Enter = new line, Ctrl+Enter = post, type @ to tag)..."
+                    placeholder="Share constructive feedback (Enter = post, Shift+Enter = new line, Ctrl+K = focus, type @ to tag)..."
                     className={`w-full px-4 py-3 text-sm rounded-2xl border-2 border-black focus:outline-none focus:ring-2 focus:ring-[#FFF025] ${
                       isDark
                         ? 'bg-[#1b1b2f] text-white placeholder:text-slate-400'
@@ -797,12 +909,12 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className={`text-[11px] font-mono ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
-                    Enter = new line • Ctrl + Enter = post comment
+                    Enter = post comment • Shift + Enter = new line • Ctrl + K = focus
                   </span>
                   <button
                     type="submit"
                     disabled={isSubmittingComment || !newCommentText.trim()}
-                    title="Post Comment (Ctrl + Enter)"
+                    title="Post Comment (Enter)"
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer disabled:opacity-50"
                   >
                     <Send className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -855,7 +967,19 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onSelectMemberProfile?.({
+                              uid: comment.authorId,
+                              displayName: comment.authorName,
+                              avatarUrl: comment.authorAvatar,
+                              role: comment.authorRole,
+                            })
+                          }
+                          title={`View ${comment.authorName}'s profile`}
+                          className="flex items-center gap-2.5 text-left group cursor-pointer rounded-xl p-1 -m-1 hover:bg-black/5 transition-colors"
+                        >
                           <VerifiedAvatarFrame
                             src={resolveBuilderAvatarUrl(comment.authorAvatar, comment.authorId)}
                             alt={comment.authorName}
@@ -870,7 +994,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span
-                                className={`text-xs font-black ${
+                                className={`text-xs font-black group-hover:underline ${
                                   comment.authorRole === 'admin' ||
                                   comment.authorRole === 'moderator' ||
                                   verifiedUserIds.has(comment.authorId)
@@ -903,7 +1027,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                               {new Date(comment.createdAt).toLocaleString()}
                             </div>
                           </div>
-                        </div>
+                        </button>
 
                         <div className="flex items-center gap-1">
                           <button
@@ -1051,7 +1175,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                   handleAddReply(comment.id);
                                 }
                               }}
-                              placeholder={`Reply to ${comment.authorName} (Enter = new line, Ctrl+Enter = send)...`}
+                              placeholder={`Reply to ${comment.authorName} (Enter = send, Shift+Enter = new line)...`}
                               className={`w-full px-3 py-2 text-xs rounded-xl border-2 border-black ${
                                 isDark ? 'bg-[#121222] text-white' : 'bg-slate-50 text-black'
                               }`}
@@ -1095,7 +1219,19 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-2">
-                                  <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onSelectMemberProfile?.({
+                                        uid: reply.authorId,
+                                        displayName: reply.authorName,
+                                        avatarUrl: reply.authorAvatar,
+                                        role: reply.authorRole,
+                                      })
+                                    }
+                                    title={`View ${reply.authorName}'s profile`}
+                                    className="flex items-center gap-2 text-left group cursor-pointer rounded-lg p-0.5 -m-0.5 hover:bg-black/5 transition-colors"
+                                  >
                                     <VerifiedAvatarFrame
                                       src={resolveBuilderAvatarUrl(
                                         reply.authorAvatar,
@@ -1111,7 +1247,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                       ringPaddingClass="p-[1.5px]"
                                     />
                                     <span
-                                      className={`text-xs font-black ${
+                                      className={`text-xs font-black group-hover:underline ${
                                         reply.authorRole === 'admin' ||
                                         reply.authorRole === 'moderator' ||
                                         verifiedUserIds.has(reply.authorId)
@@ -1128,7 +1264,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
                                     >
                                       {new Date(reply.createdAt).toLocaleString()}
                                     </span>
-                                  </div>
+                                  </button>
                                   {canManageReply && (
                                     <button
                                       type="button"

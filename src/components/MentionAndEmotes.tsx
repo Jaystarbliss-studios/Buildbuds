@@ -57,22 +57,31 @@ export const VerifiedAvatarFrame: React.FC<VerifiedAvatarFrameProps> = ({
 };
 
 // ============================================================================
-// 2. 3D-STYLE ANIMATED EMOTE PACK (Fresh, Smooth, Glossy 3D SVGs + Burst Effect)
+// 2. WHATSAPP-STYLE REACTION SYSTEM (Clean, Crisp Emoji Glyphs + Sleek Pills)
 // ============================================================================
+export const WHATSAPP_QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'] as const;
+
 export type EmoteKey =
   | '👍'
-  | '👎'
   | '❤️'
+  | '😂'
+  | '😮'
+  | '😢'
+  | '🙏'
+  | '👎'
   | '🔥'
   | '🚀'
   | '😭'
   | '🎉'
   | '💯'
+  | '👏'
+  | '✨'
   | 'like'
   | 'love'
   | 'fire'
   | 'rocket'
   | 'clap'
+  | 'sparkle'
   | 'star';
 
 export const normalizeEmoteKey = (raw: string): string => {
@@ -86,7 +95,9 @@ export const normalizeEmoteKey = (raw: string): string => {
     case 'rocket':
       return '🚀';
     case 'clap':
-      return '🎉';
+      return '👏';
+    case 'sparkle':
+      return '✨';
     case 'star':
       return '💯';
     default:
@@ -96,405 +107,276 @@ export const normalizeEmoteKey = (raw: string): string => {
 
 export const EMOTE_3D_META: Record<
   string,
-  { label: string; glowColor: string; particleColors: [string, string] }
+  { label: string }
 > = {
-  '👍': {
-    label: 'Thumbs Up',
-    glowColor: 'rgba(255, 214, 10, 0.55)',
-    particleColors: ['#FFF025', '#FF9F0A'],
-  },
-  '👎': {
-    label: 'Thumbs Down',
-    glowColor: 'rgba(255, 159, 10, 0.45)',
-    particleColors: ['#FF9F0A', '#FF453A'],
-  },
-  '❤️': {
-    label: 'Love It',
-    glowColor: 'rgba(255, 45, 85, 0.65)',
-    particleColors: ['#FF2D55', '#FF85A1'],
-  },
-  '🔥': {
-    label: 'Pure Fire',
-    glowColor: 'rgba(255, 107, 0, 0.65)',
-    particleColors: ['#FF7A00', '#FFF025'],
-  },
-  '🚀': {
-    label: 'Blast Off',
-    glowColor: 'rgba(56, 189, 248, 0.65)',
-    particleColors: ['#38BDF8', '#B11469'],
-  },
-  '😭': {
-    label: 'Crying Laughing',
-    glowColor: 'rgba(59, 130, 246, 0.6)',
-    particleColors: ['#60A5FA', '#FFF025'],
-  },
-  '🎉': {
-    label: 'Celebrate',
-    glowColor: 'rgba(177, 20, 105, 0.65)',
-    particleColors: ['#B11469', '#FFF025'],
-  },
-  '💯': {
-    label: '100% Stellar',
-    glowColor: 'rgba(255, 240, 37, 0.65)',
-    particleColors: ['#FFF025', '#FF2D55'],
-  },
+  '👍': { label: 'Like' },
+  '❤️': { label: 'Love' },
+  '😂': { label: 'Haha' },
+  '😮': { label: 'Wow' },
+  '😢': { label: 'Sad' },
+  '🙏': { label: 'Thanks' },
+  '👎': { label: 'Dislike' },
+  '🔥': { label: 'Fire' },
+  '🚀': { label: 'Rocket' },
+  '😭': { label: 'Cry' },
+  '🎉': { label: 'Celebrate' },
+  '👏': { label: 'Applaud' },
+  '✨': { label: 'Sparkle' },
+  '💯': { label: '100%' },
 };
 
 export const Emote3DIcon: React.FC<{
   emote: string;
   size?: number;
   className?: string;
-}> = ({ emote, size = 20, className = '' }) => {
+}> = ({ emote, size = 18, className = '' }) => {
   const key = normalizeEmoteKey(emote);
   const uid = React.useId().replace(/:/g, '');
+  const label = EMOTE_3D_META[key]?.label || key;
 
-  switch (key) {
-    case '👍':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_4px_rgba(0,0,0,0.38)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`gold3d-${uid}`} cx="32%" cy="25%" r="72%">
-              <stop offset="0%" stopColor="#FFF9A6" />
-              <stop offset="45%" stopColor="#FFD60A" />
-              <stop offset="85%" stopColor="#E68A00" />
-              <stop offset="100%" stopColor="#9E5400" />
-            </radialGradient>
-            <linearGradient id={`cuff3d-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#38BDF8" />
-              <stop offset="100%" stopColor="#1D4ED8" />
-            </linearGradient>
-          </defs>
-          {/* 3D Cuff */}
-          <rect
-            x="4"
-            y="16"
-            width="8"
-            height="15"
-            rx="3.5"
-            fill={`url(#cuff3d-${uid})`}
-            stroke="#0F172A"
-            strokeWidth="1.2"
-          />
-          {/* 3D Sculpted Hand & Thumb */}
-          <path
-            d="M12 17.5C13.8 14.5 16.5 9.8 17.2 6.2C17.6 4.2 20.5 4 21.3 6C22.1 8 21.4 11.8 20.8 14H28.5C30.8 14 32.3 16.2 31.5 18.3C32.4 19.4 32.2 21.3 31 22.3C31.7 23.4 31.3 25.1 29.9 26C30.3 27.3 29.4 29.2 27.5 29.5H15.5C13.5 29.5 12 28.2 12 26.2V17.5Z"
-            fill={`url(#gold3d-${uid})`}
-            stroke="#5C3200"
-            strokeWidth="1.2"
-            strokeLinejoin="round"
-          />
-          {/* Glossy Specular Highlight */}
-          <ellipse
-            cx="19"
-            cy="9"
-            rx="1.2"
-            ry="2.6"
-            transform="rotate(-12 19 9)"
-            fill="white"
-            fillOpacity="0.7"
-          />
-          <ellipse cx="24" cy="16.5" rx="4.2" ry="1.3" fill="white" fillOpacity="0.6" />
-        </svg>
-      );
-
-    case '👎':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_4px_rgba(0,0,0,0.38)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`goldDown-${uid}`} cx="32%" cy="25%" r="75%">
-              <stop offset="0%" stopColor="#FFF699" />
-              <stop offset="48%" stopColor="#FFC700" />
-              <stop offset="100%" stopColor="#A85800" />
-            </radialGradient>
-            <linearGradient id={`cuffDown-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#F43F5E" />
-              <stop offset="100%" stopColor="#9F1239" />
-            </linearGradient>
-          </defs>
-          <g transform="matrix(1 0 0 -1 0 36)">
-            <rect
-              x="4"
-              y="16"
-              width="8"
-              height="15"
-              rx="3.5"
-              fill={`url(#cuffDown-${uid})`}
-              stroke="#4C0519"
-              strokeWidth="1.2"
-            />
-            <path
-              d="M12 17.5C13.8 14.5 16.5 9.8 17.2 6.2C17.6 4.2 20.5 4 21.3 6C22.1 8 21.4 11.8 20.8 14H28.5C30.8 14 32.3 16.2 31.5 18.3C32.4 19.4 32.2 21.3 31 22.3C31.7 23.4 31.3 25.1 29.9 26C30.3 27.3 29.4 29.2 27.5 29.5H15.5C13.5 29.5 12 28.2 12 26.2V17.5Z"
-              fill={`url(#goldDown-${uid})`}
-              stroke="#5C3200"
-              strokeWidth="1.2"
-              strokeLinejoin="round"
-            />
-            <ellipse cx="24" cy="16.5" rx="4" ry="1.2" fill="white" fillOpacity="0.55" />
-          </g>
-        </svg>
-      );
-
-    case '❤️':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_5px_rgba(244,63,94,0.45)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`heart3d-${uid}`} cx="32%" cy="24%" r="74%">
-              <stop offset="0%" stopColor="#FF9EBB" />
-              <stop offset="35%" stopColor="#FF2D55" />
-              <stop offset="80%" stopColor="#C80036" />
-              <stop offset="100%" stopColor="#6E001C" />
-            </radialGradient>
-          </defs>
-          <path
-            d="M18 31.5C18 31.5 4.5 23.2 4.5 13C4.5 8.1 8.4 4.5 12.8 4.5C15.5 4.5 17.2 5.9 18 7.5C18.8 5.9 20.5 4.5 23.2 4.5C27.6 4.5 31.5 8.1 31.5 13C31.5 23.2 18 31.5 18 31.5Z"
-            fill={`url(#heart3d-${uid})`}
-          />
-          <ellipse
-            cx="11.5"
-            cy="10.2"
-            rx="3.4"
-            ry="2"
-            transform="rotate(-28 11.5 10.2)"
-            fill="white"
-            fillOpacity="0.72"
-          />
-          <circle cx="25.5" cy="9.8" r="1.4" fill="white" fillOpacity="0.45" />
-        </svg>
-      );
-
-    case '🔥':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_5px_rgba(255,122,0,0.5)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`fireOuter-${uid}`} cx="50%" cy="68%" r="68%">
-              <stop offset="0%" stopColor="#FFF025" />
-              <stop offset="45%" stopColor="#FF7A00" />
-              <stop offset="82%" stopColor="#E11D48" />
-              <stop offset="100%" stopColor="#881337" />
-            </radialGradient>
-            <radialGradient id={`fireCore-${uid}`} cx="50%" cy="75%" r="55%">
-              <stop offset="0%" stopColor="#FFFFFF" />
-              <stop offset="55%" stopColor="#FFF025" />
-              <stop offset="100%" stopColor="#FF9500" />
-            </radialGradient>
-          </defs>
-          <path
-            d="M19.5 3C19.5 3 28.5 10.2 28.5 19.5C28.5 26.8 23.8 32.5 18 32.5C12.2 32.5 7.5 26.8 7.5 19.5C7.5 14.2 10.6 10.2 12.5 8.5C12.5 8.5 11.8 12.2 14.2 13.5C13.8 9.2 16.5 5.2 19.5 3Z"
-            fill={`url(#fireOuter-${uid})`}
-          />
-          <path
-            d="M18.2 14.5C18.2 14.5 23.5 18.8 23.5 24C23.5 28.2 21 31 18 31C15 31 12.5 28.2 12.5 24C12.5 20.5 15.2 17.5 18.2 14.5Z"
-            fill={`url(#fireCore-${uid})`}
-          />
-          <ellipse cx="16.2" cy="24.5" rx="1.6" ry="2.8" fill="white" fillOpacity="0.75" />
-        </svg>
-      );
-
-    case '🚀':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_5px_rgba(56,189,248,0.45)] ${className}`}
-        >
-          <defs>
-            <linearGradient id={`rocketBody-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#FFFFFF" />
-              <stop offset="55%" stopColor="#E2E8F0" />
-              <stop offset="100%" stopColor="#64748B" />
-            </linearGradient>
-            <linearGradient id={`rocketFins-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#FF2D55" />
-              <stop offset="100%" stopColor="#B11469" />
-            </linearGradient>
-          </defs>
-          {/* Exhaust Plume */}
-          <path
-            d="M11 25C8.5 27.5 6 31.5 6 31.5C6 31.5 10 29.5 12.5 27L11 25Z"
-            fill="#FFF025"
-            stroke="#FF7A00"
-            strokeWidth="1.4"
-          />
-          {/* Fins */}
-          <path d="M10 17L5 21L10.5 23.5L10 17Z" fill={`url(#rocketFins-${uid})`} />
-          <path d="M19 26L15 31L12.5 25.5L19 26Z" fill={`url(#rocketFins-${uid})`} />
-          {/* 3D Hull */}
-          <path
-            d="M30.5 5.5C24.5 5.5 16.5 9.8 11.5 16.8L19.2 24.5C26.2 19.5 30.5 11.5 30.5 5.5Z"
-            fill={`url(#rocketBody-${uid})`}
-            stroke="#1E293B"
-            strokeWidth="1.1"
-          />
-          {/* Porthole Window */}
-          <circle cx="21.5" cy="14.5" r="3.4" fill="#38BDF8" stroke="#0F172A" strokeWidth="1.2" />
-          <ellipse cx="20.5" cy="13.5" rx="1.2" ry="0.8" fill="white" fillOpacity="0.85" />
-        </svg>
-      );
-
-    case '😭':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_4px_rgba(0,0,0,0.38)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`face3d-${uid}`} cx="35%" cy="25%" r="70%">
-              <stop offset="0%" stopColor="#FFF9A6" />
-              <stop offset="50%" stopColor="#FFD60A" />
-              <stop offset="100%" stopColor="#C15D00" />
-            </radialGradient>
-            <linearGradient id={`tear3d-${uid}`} x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#7DD3FC" />
-              <stop offset="100%" stopColor="#0284C7" />
-            </linearGradient>
-          </defs>
-          <circle cx="18" cy="18" r="14" fill={`url(#face3d-${uid})`} />
-          <ellipse cx="13.5" cy="10" rx="4.5" ry="2.2" fill="white" fillOpacity="0.6" />
-          {/* Streams of 3D Tears */}
-          <rect x="8.5" y="15.5" width="3.8" height="13" rx="1.9" fill={`url(#tear3d-${uid})`} />
-          <rect x="23.7" y="15.5" width="3.8" height="13" rx="1.9" fill={`url(#tear3d-${uid})`} />
-          {/* Eyes */}
-          <path
-            d="M9.5 14.5C11 13 13 13 14.5 14.5"
-            stroke="#451A03"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-          <path
-            d="M21.5 14.5C23 13 25 13 26.5 14.5"
-            stroke="#451A03"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-          {/* Open Wailing Mouth */}
-          <path
-            d="M13 21.5C13 19.5 23 19.5 23 21.5C23 25.5 20.8 27.5 18 27.5C15.2 27.5 13 25.5 13 21.5Z"
-            fill="#451A03"
-          />
-          <path d="M14.5 21H21.5" stroke="white" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      );
-
-    case '🎉':
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_4px_rgba(177,20,105,0.45)] ${className}`}
-        >
-          <defs>
-            <linearGradient id={`cone3d-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#FFF025" />
-              <stop offset="55%" stopColor="#FF9F0A" />
-              <stop offset="100%" stopColor="#B11469" />
-            </linearGradient>
-          </defs>
-          <path
-            d="M6 30L14 11L25 22L6 30Z"
-            fill={`url(#cone3d-${uid})`}
-            stroke="#451A03"
-            strokeWidth="1.2"
-            strokeLinejoin="round"
-          />
-          {/* Confetti Ribbons & 3D Dots */}
-          <circle cx="24" cy="9" r="2.5" fill="#FF2D55" />
-          <circle cx="17" cy="6.5" r="2" fill="#38BDF8" />
-          <circle cx="29.5" cy="15.5" r="2.3" fill="#FFF025" />
-          <path
-            d="M20 13C22 10 25 10 27 7"
-            stroke="#10B981"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-          <path
-            d="M23 18C26 17 28 19 31 18"
-            stroke="#B11469"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-        </svg>
-      );
-
-    case '💯':
-    default:
-      return (
-        <svg
-          width={size}
-          height={size}
-          viewBox="0 0 36 36"
-          fill="none"
-          className={`emote-3d-svg drop-shadow-[0_3px_5px_rgba(255,45,85,0.45)] ${className}`}
-        >
-          <defs>
-            <radialGradient id={`badge3d-${uid}`} cx="30%" cy="25%" r="75%">
-              <stop offset="0%" stopColor="#FFF9A6" />
-              <stop offset="45%" stopColor="#FFF025" />
-              <stop offset="85%" stopColor="#FF7A00" />
-              <stop offset="100%" stopColor="#B11469" />
-            </radialGradient>
-          </defs>
-          <rect
-            x="3"
-            y="6"
-            width="30"
-            height="24"
-            rx="8"
-            fill={`url(#badge3d-${uid})`}
-            stroke="#1E1B4B"
-            strokeWidth="1.4"
-          />
-          <text
-            x="18"
-            y="21.5"
-            textAnchor="middle"
-            fill="#B11469"
-            fontSize="13"
-            fontWeight="900"
-            fontFamily="Inter, sans-serif"
+  const renderSvgArtwork = () => {
+    switch (key) {
+      case '👍':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <radialGradient id={`g-skin-${uid}`} cx="35%" cy="28%" r="75%">
+                <stop offset="0%" stopColor="#FFE875" />
+                <stop offset="55%" stopColor="#FFC83D" />
+                <stop offset="100%" stopColor="#E5890A" />
+              </radialGradient>
+              <linearGradient id={`g-cuff-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#58A6FF" />
+                <stop offset="100%" stopColor="#1E54B7" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.5px rgba(0,0,0,0.35))">
+              <path
+                d="M11.5 16.5C12.8 14.5 16 10.6 16.7 6.8C17.1 4.4 18.6 3.2 20.1 3.5C21.8 3.9 22.3 6.1 21.8 8.9C21.4 11 20.6 12.7 20.1 13.7H27.8C29.8 13.7 31.3 15.1 31.3 16.9C31.3 18 30.8 18.9 30 19.5C30.8 20.1 31.2 21.1 31 22.2C30.8 23.3 30 24.1 29.1 24.5C29.6 25.2 29.7 26.2 29.3 27.1C28.8 28.2 27.6 28.9 26.2 29H15.8C13.5 29 11.7 27.9 11 26.4V16.5H11.5Z"
+                fill={`url(#g-skin-${uid})`}
+              />
+              <path
+                d="M17.3 7.5C17.8 5.4 19 4.5 19.8 4.9C19 6.8 18.3 9.2 17.5 11.5"
+                stroke="#FFF7C2"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                fill="none"
+                opacity="0.7"
+              />
+              <path
+                d="M21 19H29.6M21.5 23.6H28.8M22 27.6H26.4"
+                stroke="#D47400"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                opacity="0.45"
+              />
+              <rect x="4.5" y="16" width="7.2" height="14" rx="2.6" fill={`url(#g-cuff-${uid})`} />
+              <circle cx="8" cy="26.8" r="1.2" fill="#DCEBFF" opacity="0.85" />
+            </g>
+          </svg>
+        );
+      case '❤️':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <radialGradient id={`g-heart-${uid}`} cx="34%" cy="28%" r="76%">
+                <stop offset="0%" stopColor="#FF7A90" />
+                <stop offset="40%" stopColor="#F82849" />
+                <stop offset="100%" stopColor="#A60422" />
+              </radialGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.8px rgba(0,0,0,0.38))">
+              <path
+                d="M18 31.6C17.3 31.6 4.2 22.8 4.2 12.6C4.2 7.8 8 4.2 12.5 4.2C15.1 4.2 17.1 5.5 18 7.1C18.9 5.5 20.9 4.2 23.5 4.2C28 4.2 31.8 7.8 31.8 12.6C31.8 22.8 18.7 31.6 18 31.6Z"
+                fill={`url(#g-heart-${uid})`}
+              />
+              <ellipse
+                cx="11.2"
+                cy="10.4"
+                rx="3.6"
+                ry="2.1"
+                transform="rotate(-32 11.2 10.4)"
+                fill="#FFFFFF"
+                opacity="0.48"
+              />
+            </g>
+          </svg>
+        );
+      case '😂':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <radialGradient id={`g-face-${uid}`} cx="35%" cy="26%" r="75%">
+                <stop offset="0%" stopColor="#FFF08A" />
+                <stop offset="60%" stopColor="#FFC933" />
+                <stop offset="100%" stopColor="#E68A00" />
+              </radialGradient>
+              <linearGradient id={`g-tear-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#A6EAFF" />
+                <stop offset="100%" stopColor="#2692F2" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <circle cx="18" cy="18" r="14.5" fill={`url(#g-face-${uid})`} />
+              <ellipse cx="13" cy="8.5" rx="6.5" ry="3" fill="#FFFBE0" opacity="0.45" />
+              <path d="M9.5 15.2C10.5 13.5 13.5 13.5 14.5 15.2" stroke="#573100" strokeWidth="2.1" strokeLinecap="round" fill="none" />
+              <path d="M21.5 15.2C22.5 13.5 25.5 13.5 26.5 15.2" stroke="#573100" strokeWidth="2.1" strokeLinecap="round" fill="none" />
+              <path d="M9.5 19.3C9.5 25.4 13.3 28.4 18 28.4C22.7 28.4 26.5 25.4 26.5 19.3H9.5Z" fill="#61290C" />
+              <path d="M10.4 19.3H25.6C25.3 21 24.4 21.8 23.2 21.8H12.8C11.6 21.8 10.7 21 10.4 19.3Z" fill="#FFFFFF" />
+              <path d="M13.2 26C14.5 24.4 21.5 24.4 22.8 26C21.5 27.6 19.8 28.2 18 28.2C16.2 28.2 14.5 27.6 13.2 26Z" fill="#FF5D78" />
+              <path d="M7.5 17.5C4.5 18 2.8 20.6 3.7 22.8C4.6 25 7.4 24.6 8.3 22.5C9 20.8 8.4 18.7 7.5 17.5Z" fill={`url(#g-tear-${uid})`} />
+              <path d="M28.5 17.5C31.5 18 33.2 20.6 32.3 22.8C31.4 25 28.6 24.6 27.7 22.5C27 20.8 27.6 18.7 28.5 17.5Z" fill={`url(#g-tear-${uid})`} />
+            </g>
+          </svg>
+        );
+      case '😮':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <radialGradient id={`g-wow-${uid}`} cx="35%" cy="26%" r="75%">
+                <stop offset="0%" stopColor="#FFF08A" />
+                <stop offset="60%" stopColor="#FFC933" />
+                <stop offset="100%" stopColor="#E68A00" />
+              </radialGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <circle cx="18" cy="18" r="14.5" fill={`url(#g-wow-${uid})`} />
+              <ellipse cx="13" cy="8.5" rx="6" ry="2.8" fill="#FFFBE0" opacity="0.45" />
+              <ellipse cx="12.5" cy="14" rx="2.1" ry="2.8" fill="#4A2700" />
+              <ellipse cx="23.5" cy="14" rx="2.1" ry="2.8" fill="#4A2700" />
+              <circle cx="11.9" cy="13.2" r="0.7" fill="#FFFFFF" opacity="0.7" />
+              <circle cx="22.9" cy="13.2" r="0.7" fill="#FFFFFF" opacity="0.7" />
+              <ellipse cx="18" cy="24.2" rx="3.9" ry="4.9" fill="#5A2208" />
+              <ellipse cx="18" cy="26.5" rx="2.3" ry="1.4" fill="#E84E68" opacity="0.75" />
+            </g>
+          </svg>
+        );
+      case '😢':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <radialGradient id={`g-sad-${uid}`} cx="35%" cy="26%" r="75%">
+                <stop offset="0%" stopColor="#FFF08A" />
+                <stop offset="60%" stopColor="#FFC933" />
+                <stop offset="100%" stopColor="#E68A00" />
+              </radialGradient>
+              <linearGradient id={`g-drop-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#A6EAFF" />
+                <stop offset="100%" stopColor="#2692F2" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <circle cx="18" cy="18" r="14.5" fill={`url(#g-sad-${uid})`} />
+              <ellipse cx="13" cy="8.5" rx="6" ry="2.8" fill="#FFFBE0" opacity="0.42" />
+              <path d="M9.2 12.8C10.5 11.4 12.8 11.2 14.3 12" stroke="#703E00" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+              <path d="M26.8 12.8C25.5 11.4 23.2 11.2 21.7 12" stroke="#703E00" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+              <circle cx="12.4" cy="16.2" r="2.2" fill="#4A2700" />
+              <circle cx="23.6" cy="16.2" r="2.2" fill="#4A2700" />
+              <path d="M13 24.8C14.7 22.3 21.3 22.3 23 24.8" stroke="#5A2F00" strokeWidth="2.1" strokeLinecap="round" fill="none" />
+              <path d="M26 19C26 19 29.5 23.5 29.5 26C29.5 28 28 29.5 26 29.5C24 29.5 22.5 28 22.5 26C22.5 23.5 26 19 26 19Z" fill={`url(#g-drop-${uid})`} />
+            </g>
+          </svg>
+        );
+      case '🙏':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <linearGradient id={`g-pray-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFE875" />
+                <stop offset="65%" stopColor="#FFC83D" />
+                <stop offset="100%" stopColor="#E08508" />
+              </linearGradient>
+              <linearGradient id={`g-slv-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#46D6C8" />
+                <stop offset="100%" stopColor="#0E7C7B" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <path d="M18 4.8L12.2 17.5L12.6 27.5H17.8V4.8H18Z" fill={`url(#g-pray-${uid})`} />
+              <path d="M18 4.8L23.8 17.5L23.4 27.5H18.2V4.8H18Z" fill={`url(#g-pray-${uid})`} />
+              <line x1="18" y1="5.2" x2="18" y2="27.2" stroke="#C86D00" strokeWidth="1.2" opacity="0.6" />
+              <path d="M7.5 29.8L11.2 22L16.5 24.5L13.5 31.8H7.5V29.8Z" fill={`url(#g-slv-${uid})`} />
+              <path d="M28.5 29.8L24.8 22L19.5 24.5L22.5 31.8H28.5V29.8Z" fill={`url(#g-slv-${uid})`} />
+              <path d="M10.5 6L9 3M18 3.2V1.2M25.5 6L27 3" stroke="#7AE4FF" strokeWidth="1.7" strokeLinecap="round" />
+            </g>
+          </svg>
+        );
+      case '🔥':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <linearGradient id={`g-fire1-${uid}`} x1="50%" y1="0%" x2="50%" y2="100%">
+                <stop offset="0%" stopColor="#FF9E1B" />
+                <stop offset="55%" stopColor="#FF4B1F" />
+                <stop offset="100%" stopColor="#B81600" />
+              </linearGradient>
+              <linearGradient id={`g-fire2-${uid}`} x1="50%" y1="0%" x2="50%" y2="100%">
+                <stop offset="0%" stopColor="#FFF475" />
+                <stop offset="100%" stopColor="#FFB300" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <path
+                d="M19.8 3.2C20.5 7.9 16.5 10.6 15.8 14.3C14.1 12.7 13.7 10.4 13.9 8.6C9.6 11.4 7.2 16.4 7.2 21.1C7.2 27.6 12.1 32.5 18.4 32.5C24.9 32.5 29.2 27.7 29.2 21.4C29.2 14.3 24.5 8.1 19.8 3.2Z"
+                fill={`url(#g-fire1-${uid})`}
+              />
+              <path
+                d="M18.4 16.5C18.8 19.6 16.5 21.4 15.9 23.4C14.8 22.3 14.5 20.8 14.6 19.8C12.3 21.3 11.3 24.1 11.3 26.6C11.3 29.8 14.4 32.3 18.2 32.3C22.2 32.3 24.8 29.7 24.8 26.1C24.8 22.1 21.6 18.8 18.4 16.5Z"
+                fill={`url(#g-fire2-${uid})`}
+              />
+            </g>
+          </svg>
+        );
+      case '🚀':
+        return (
+          <svg viewBox="0 0 36 36" width={size} height={size} className="overflow-visible">
+            <defs>
+              <linearGradient id={`g-rbody-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="65%" stopColor="#D7E1EC" />
+                <stop offset="100%" stopColor="#94A3B8" />
+              </linearGradient>
+              <linearGradient id={`g-rnose-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FF5F7E" />
+                <stop offset="100%" stopColor="#C10F39" />
+              </linearGradient>
+            </defs>
+            <g filter="drop-shadow(0 1.5px 1.6px rgba(0,0,0,0.36))">
+              <path d="M9.5 23.5L4.5 26.2L7.3 19.5L13 18.2L9.5 23.5Z" fill={`url(#g-rnose-${uid})`} />
+              <path d="M12.5 26.5L9.8 31.5L16.5 28.7L17.8 23L12.5 26.5Z" fill={`url(#g-rnose-${uid})`} />
+              <path d="M30.8 5.2C23.5 5.4 17.3 9.2 12.6 15.6L20.4 23.4C26.8 18.7 30.6 12.5 30.8 5.2Z" fill={`url(#g-rbody-${uid})`} />
+              <path d="M30.8 5.2C27.5 5.3 24.5 6.3 21.9 7.9L28.1 14.1C29.7 11.5 30.7 8.5 30.8 5.2Z" fill={`url(#g-rnose-${uid})`} />
+              <circle cx="21.5" cy="14.5" r="3" fill="#38BDF8" stroke="#1E3A8A" strokeWidth="1.2" />
+              <path d="M7.8 24.5C5.2 26.4 4.2 30.2 5.4 31.4C6.6 32.6 10.2 31.2 12 28.5L7.8 24.5Z" fill="#FFB300" />
+            </g>
+          </svg>
+        );
+      default:
+        return (
+          <span
+            style={{
+              fontSize: `${size}px`,
+              lineHeight: 1,
+              fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
+            }}
+            className="inline-flex items-center justify-center leading-none select-none drop-shadow-[0_1.5px_2px_rgba(0,0,0,0.45)]"
           >
-            100
-          </text>
-          <path
-            d="M8 25.5C13 24 23 24 28 25.5"
-            stroke="#B11469"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
-          <ellipse cx="11" cy="9.5" rx="5" ry="1.3" fill="white" fillOpacity="0.65" />
-        </svg>
-      );
-  }
+            {key}
+          </span>
+        );
+    }
+  };
+
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      style={{ width: `${size}px`, height: `${size}px` }}
+      className={`inline-flex items-center justify-center shrink-0 select-none ${className}`}
+    >
+      {renderSvgArtwork()}
+    </span>
+  );
 };
 
 export interface AnimatedEmoteButtonProps {
@@ -518,7 +400,7 @@ export const AnimatedEmoteButton: React.FC<AnimatedEmoteButtonProps> = ({
 }) => {
   const [isPopping, setIsPopping] = useState(false);
   const key = normalizeEmoteKey(emote);
-  const meta = EMOTE_3D_META[key] || EMOTE_3D_META['👍'];
+  const meta = EMOTE_3D_META[key] || { label: key };
 
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
@@ -531,7 +413,7 @@ export const AnimatedEmoteButton: React.FC<AnimatedEmoteButtonProps> = ({
 
   useEffect(() => {
     if (!isPopping) return;
-    const t = window.setTimeout(() => setIsPopping(false), 600);
+    const t = window.setTimeout(() => setIsPopping(false), 320);
     return () => window.clearTimeout(t);
   }, [isPopping]);
 
@@ -540,56 +422,27 @@ export const AnimatedEmoteButton: React.FC<AnimatedEmoteButtonProps> = ({
       type="button"
       onClick={handleClick}
       title={title || meta.label}
-      style={
-        active
-          ? {
-              boxShadow: `0 0 12px ${meta.glowColor}`,
-            }
-          : undefined
-      }
-      className={`relative inline-flex items-center gap-1.5 rounded-full font-extrabold transition-all cursor-pointer select-none emote-3d-hover active:scale-90 ${
-        size === 'md' ? 'px-3 py-1.5 text-xs' : 'px-2.5 py-1 text-[11px]'
+      className={`relative inline-flex items-center gap-1 rounded-full font-semibold transition-all cursor-pointer select-none active:scale-95 ${
+        size === 'md' ? 'px-2.5 py-1 text-xs' : 'px-2 py-0.5 text-[11px]'
       } ${
         variant === 'dark'
           ? active
-            ? 'bg-gradient-to-r from-[#FFF025]/25 via-[#FF7A00]/20 to-[#B11469]/25 border-2 border-[#FFF025] text-[#FFF025]'
-            : 'bg-white/[0.07] hover:bg-white/[0.14] border border-white/15 text-white/85'
+            ? 'bg-[#2a3942] border border-[#00a884]/70 text-[#e9edef] shadow-xs'
+            : 'bg-[#202c33] hover:bg-[#2a3942] border border-white/10 text-[#d1d7db]'
           : active
-          ? 'bg-[#FFF025] border-2 border-black text-black brand-shadow-sm'
-          : 'bg-white hover:bg-slate-100 border-2 border-black text-slate-800'
+          ? 'bg-amber-100 border border-black text-black'
+          : 'bg-slate-100 hover:bg-slate-200 border border-black/20 text-slate-800'
       }`}
     >
-      <span className={`inline-flex items-center justify-center ${isPopping ? 'animate-emote-3d-pop' : ''}`}>
-        <Emote3DIcon emote={key} size={size === 'md' ? 19 : 16} />
+      <span
+        className={`inline-flex items-center justify-center transition-transform duration-200 ${
+          isPopping ? 'scale-125' : ''
+        }`}
+      >
+        <Emote3DIcon emote={key} size={size === 'md' ? 16 : 14} />
       </span>
       {typeof count === 'number' && count > 0 && (
-        <span className="tabular-nums font-black">{count}</span>
-      )}
-
-      {/* Floating 3D Sparkle Burst when Clicked */}
-      {isPopping && (
-        <span className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-visible">
-          {[
-            { tx: '-16px', ty: '-20px', color: meta.particleColors[0] },
-            { tx: '16px', ty: '-20px', color: meta.particleColors[1] },
-            { tx: '0px', ty: '-26px', color: '#FFF025' },
-            { tx: '-20px', ty: '-6px', color: meta.particleColors[1] },
-            { tx: '20px', ty: '-6px', color: meta.particleColors[0] },
-          ].map((p, idx) => (
-            <span
-              key={idx}
-              style={
-                {
-                  '--tx': p.tx,
-                  '--ty': p.ty,
-                  backgroundColor: p.color,
-                  animation: 'emoteBurstParticle 0.55s ease-out forwards',
-                } as React.CSSProperties
-              }
-              className="absolute w-2 h-2 rounded-full shadow-sm"
-            />
-          ))}
-        </span>
+        <span className="tabular-nums font-bold text-[11px] opacity-90">{count}</span>
       )}
     </button>
   );

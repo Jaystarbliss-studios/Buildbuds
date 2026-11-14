@@ -347,7 +347,17 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
   const pendingCount = requests.filter((r) => r.status === 'pending').length;
   const unapprovedRegisteredUsers = allUsers.filter((u) => {
     const m = membershipsMap[u.uid];
-    return u.role !== 'admin' && u.role !== 'moderator' && m?.status !== 'approved';
+    const req = requests.find((r) => r.uid === u.uid);
+    const isRejected =
+      m?.status === 'revoked' ||
+      u.studentAccessStatus === 'rejected' ||
+      req?.status === 'rejected';
+    return (
+      u.role !== 'admin' &&
+      u.role !== 'moderator' &&
+      m?.status !== 'approved' &&
+      !isRejected
+    );
   });
 
   return (
@@ -590,14 +600,24 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                             </div>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          disabled={isProcessing}
-                          onClick={() => handleMigrateSingleUser(u)}
-                          className="px-3 py-1.5 rounded-lg border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black shrink-0 cursor-pointer"
-                        >
-                          Approve
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            disabled={isProcessing}
+                            onClick={() => handleMigrateSingleUser(u)}
+                            className="px-2.5 py-1.5 rounded-lg border border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-bold cursor-pointer"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isProcessing}
+                            onClick={() => handleRevokeSingleUser(u)}
+                            className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-rose-50 text-rose-700 text-[11px] font-bold cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

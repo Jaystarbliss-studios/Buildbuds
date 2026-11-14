@@ -211,10 +211,31 @@ service cloud.firestore {
 
     // ===============================================================
     // In-App User Notifications (/userNotifications/{userId}/items/{notificationId})
+    // Allows signed-in users to deliver mention, follow, comment, reaction, and moderation alerts
+    // while restricting reads/updates/deletes strictly to the inbox owner or admins.
     // ===============================================================
     match /userNotifications/{userId}/items/{notificationId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) ||
+        isAdmin() ||
+        isGlobalModeratorUser() ||
+        (isAuthenticated() &&
+          isNotBanned() &&
+          request.resource.data.uid == userId &&
+          request.resource.data.read == false &&
+          request.resource.data.type in [
+            'mention',
+            'followed_creator_post',
+            'post_comment',
+            'post_reaction',
+            'new_follower',
+            'post_pending_review',
+            'moderation_report',
+            'hub_message'
+          ] &&
+          request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.title is string && request.resource.data.title.size() <= 200 &&
+          request.resource.data.message is string && request.resource.data.message.size() <= 1000);
       allow update: if (isOwner(userId) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])) ||
         isAdmin();
@@ -225,18 +246,48 @@ service cloud.firestore {
     // Admin Audit Logs (/adminAuditLogs/{logId})
     // ===============================================================
     match /adminAuditLogs/{logId} {
-      allow read, create: if isAdmin();
+      allow read, create: if isAdmin() || isGlobalModeratorUser();
       allow update, delete: if false;
     }
 
     // ===============================================================
+    // Creator Follows (/creatorFollows/{followId})
+    // ===============================================================
+    match /creatorFollows/{followId} {
+      allow read: if true;
+      allow create: if isAuthenticated() &&
+        isNotBanned() &&
+        request.resource.data.followerUid == request.auth.uid &&
+        request.resource.data.creatorUid is string &&
+        request.resource.data.creatorUid.size() >= 1 &&
+        request.resource.data.creatorUid != request.auth.uid &&
+        followId == request.auth.uid + '_' + request.resource.data.creatorUid;
+      allow delete: if isAuthenticated() &&
+        resource.data.followerUid == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Hub Channel Unread & Mention Activity Summaries (/channelActivity/{channelId})
+    // ===============================================================
+    match /channelActivity/{channelId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isApprovedStudent() &&
+        isActiveUser() &&
+        request.resource.data.channelId is string &&
+        request.resource.data.lastMessageAuthorId == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
+    // ===============================================================
     // Public Community Posts (/publicPosts/{postId})
-    // Only Verified & Approved Student Hub Members (isApprovedStudent) or Admins can publish!
+    // Only Verified & Approved Student Hub Members (isApprovedStudent) or Admins/Moderators can publish!
+    // Non-admin/mod posts require Moderator approval (`pending_review` -> `published`).
     // ===============================================================
     match /publicPosts/{postId} {
       allow read: if resource.data.status == 'published' ||
         (isAuthenticated() && resource.data.authorId == request.auth.uid) ||
-        isAdmin();
+        isAdmin() ||
+        isGlobalModeratorUser();
 
       allow create: if isAuthenticated() &&
         isNotBanned() &&
@@ -246,8 +297,9 @@ service cloud.firestore {
             request.resource.data.authorId == request.auth.uid &&
             request.resource.data.title is string && request.resource.data.title.size() >= 1 && request.resource.data.title.size() <= 200 &&
             request.resource.data.body is string && request.resource.data.body.size() >= 1 && request.resource.data.body.size() <= 20000 &&
-            request.resource.data.status in ['draft', 'pending_review', 'published'] &&
-            (request.resource.data.get('isFeatured', false) == false || isAdmin())) ||
+            (request.resource.data.status in ['draft', 'pending_review'] ||
+              (request.resource.data.status == 'published' && (isAdmin() || isGlobalModeratorUser()))) &&
+            (request.resource.data.get('isFeatured', false) == false || isAdmin() || isGlobalModeratorUser())) ||
           // Allow first-time transaction initialization of official seed posts when reacting/commenting
           (postId.matches('^seed-.*') && request.resource.data.status == 'published') ||
           isAdmin()
@@ -258,15 +310,21 @@ service cloud.firestore {
         isApprovedStudent() &&
         resource.data.authorId == request.auth.uid &&
         request.resource.data.authorId == resource.data.authorId &&
-        request.resource.data.status in ['draft', 'pending_review', 'published'] &&
-        (request.resource.data.get('isFeatured', false) == resource.data.get('isFeatured', false) || isAdmin())) ||
+        (request.resource.data.status in ['draft', 'pending_review'] ||
+          (request.resource.data.status == 'published' && (isAdmin() || isGlobalModeratorUser()))) &&
+        (request.resource.data.get('isFeatured', false) == resource.data.get('isFeatured', false) || isAdmin() || isGlobalModeratorUser())) ||
+        // Allow Moderators & Admins to review, approve, hide, remove, or feature any post
+        (isGlobalModeratorUser() &&
+          request.resource.data.authorId == resource.data.authorId) ||
         // Allow authenticated users to update reactionCounts, totalReactions, commentCount, updatedAt
         (isAuthenticated() &&
           isNotBanned() &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactionCounts', 'totalReactions', 'commentCount', 'updatedAt'])) ||
         isAdmin();
 
-      allow delete: if (isAuthenticated() && isApprovedStudent() && resource.data.authorId == request.auth.uid) || isAdmin();
+      allow delete: if (isAuthenticated() && isApprovedStudent() && resource.data.authorId == request.auth.uid) ||
+        isAdmin() ||
+        isGlobalModeratorUser();
 
       // Nested Public Comments (/publicPosts/{postId}/comments/{commentId})
       match /comments/{commentId} {
@@ -527,7 +585,9 @@ service cloud.firestore {
     // Moderation Reports (/reports/{reportId})
     // ===============================================================
     match /reports/{reportId} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() ||
+        isGlobalModeratorUser() ||
+        isChannelModerator(resource.data.channelId);
       allow create: if isAuthenticated() &&
         isNotBanned() &&
         request.resource.data.reporterId == request.auth.uid &&
@@ -537,7 +597,9 @@ service cloud.firestore {
         request.resource.data.reason.size() >= 1 &&
         request.resource.data.reason.size() <= 500 &&
         request.resource.data.status == 'open';
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAdmin() ||
+        isGlobalModeratorUser() ||
+        isChannelModerator(resource.data.channelId);
     }
   }
 }

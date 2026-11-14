@@ -214,6 +214,12 @@ test('Hardened firestore.rules separates Public Community from Private Student H
   assert.ok(rulesText.includes('match /communityMemberships/{userId}'));
   assert.ok(rulesText.includes('match /studentAccessAdminNotes/{userId}'));
   assert.ok(rulesText.includes('match /adminAuditLogs/{logId}'));
+  assert.ok(rulesText.includes('match /creatorFollows/{followId}'));
+  assert.ok(rulesText.includes('match /channelActivity/{channelId}'));
+  assert.ok(rulesText.includes('isChannelModerator(resource.data.channelId)'));
+  assert.ok(rulesText.includes('isGlobalModeratorUser()'));
+  assert.ok(rulesText.includes("'pending_review'"));
+  assert.ok(rulesText.includes("'moderation_report'"));
   // Ensure newly registered accounts with a schoolName are NOT automatically granted Student Hub access without Admin approval
   assert.ok(!rulesText.includes("get('schoolName', '') != ''"));
 });
@@ -250,7 +256,3 @@ test('computeSinglePostReactionTransition enforces strictly 1 reaction per user 
   assert.equal(step3.reactionCounts.rocket, 1);
   assert.equal(step3.totalReactions, 3);
 });
-
-
-
-

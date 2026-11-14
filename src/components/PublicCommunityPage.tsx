@@ -85,6 +85,10 @@ import {
   saveCommunityChallenge,
   updateCommunityChallengeStatus,
   deleteCommunityChallenge,
+  subscribeToMyFollowing,
+  followCreator,
+  unfollowCreator,
+  moderatePublicPostStatus,
 } from '../utils/communityService.ts';
 import { resolveBuilderAvatarUrl } from '../utils/avatars.ts';
 import { PublicPostComposer } from './PublicPostComposer.tsx';
@@ -94,6 +98,12 @@ import {
   AnimatedEmoteButton,
   useMentionableUsers,
 } from './MentionAndEmotes.tsx';
+import { triggerHapticFeedback } from '../utils/haptics.ts';
+import { MemberProfileModal } from './MemberProfileModal.tsx';
+import {
+  buildPublicMemberProfileSummary,
+  type PublicMemberProfileSummary,
+} from '../utils/memberProfile.ts';
 
 export type PublicCommunityTab =
   | 'all'
@@ -101,7 +111,8 @@ export type PublicCommunityTab =
   | 'updates'
   | 'challenges'
   | 'saved'
-  | 'my-posts';
+  | 'my-posts'
+  | 'review';
 
 interface PublicCommunityPageProps {
   currentUser: User | null;
@@ -111,6 +122,9 @@ interface PublicCommunityPageProps {
   isAuthChecking?: boolean;
   initialTab?: PublicCommunityTab;
   initialPostId?: string | null;
+  notifications?: UserNotificationItem[];
+  onOpenInbox?: () => void;
+  onSelectNotification?: (notif: UserNotificationItem) => void;
   onNavigate: (path: string) => void;
   onRequireAuth: (
     actionDescription: string,
@@ -129,6 +143,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   isAuthChecking = false,
   initialTab = 'all',
   initialPostId = null,
+  notifications: liftedNotifications,
+  onOpenInbox,
+  onSelectNotification,
   onNavigate,
   onRequireAuth,
   onSignOut,
@@ -139,7 +156,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const [firestorePosts, setFirestorePosts] = useState<PublicPost[]>([]);
   const [categories, setCategories] = useState<PublicCategory[]>(DEFAULT_PUBLIC_CATEGORIES);
   const [publicConfig, setPublicConfig] = useState<PublicCommunityConfig>({
-    requireReviewForNewPosts: false,
+    requireReviewForNewPosts: true,
     featuredBannerHeadline: 'Discover What Young Minds Are Building',
     featuredBannerSubtext:
       'Explore games, websites, creative experiments, and tutorials shared by young builders across schools.',
@@ -158,14 +175,19 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const [userReactionsMap, setUserReactionsMap] = useState<Record<string, PublicReactionType[]>>(
     {}
   );
-  const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
+  const [internalNotifications, setInternalNotifications] = useState<UserNotificationItem[]>([]);
+  const notifications = liftedNotifications ?? internalNotifications;
+  const [followedCreatorUids, setFollowedCreatorUids] = useState<string[]>([]);
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [moderatingPostId, setModeratingPostId] = useState<string | null>(null);
 
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<PublicPost | null>(null);
   const [selectedPostId, setSelectedPostId] = useState<string | null>(initialPostId);
   const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
+  const [viewingMemberProfile, setViewingMemberProfile] =
+    useState<PublicMemberProfileSummary | null>(null);
 
   // Challenges state (real Firestore collection `communityChallenges`)
   const [challenges, setChallenges] = useState<CommunityChallenge[]>([]);
@@ -215,6 +237,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
+  const isModeratorOrAdmin = isAdmin || builderProfile?.role === 'moderator';
   const directoryUsers = useMentionableUsers();
   const verifiedUserIds = useMemo(() => {
     const s = new Set<string>();
@@ -336,10 +359,11 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     };
   }, []);
 
-  // Subscribe to signed-in user's notifications (bounded to latest 15)
+  // Subscribe to signed-in user's notifications only when not already lifted from App
   useEffect(() => {
+    if (liftedNotifications !== undefined) return;
     if (!currentUser) {
-      setNotifications([]);
+      setInternalNotifications([]);
       return;
     }
     const q = query(
@@ -352,11 +376,22 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
       (snap) => {
         const items: UserNotificationItem[] = [];
         snap.forEach((d) => items.push({ ...(d.data() as UserNotificationItem), id: d.id }));
-        setNotifications(items);
+        setInternalNotifications(items);
       },
       () => {}
     );
     return () => unsub();
+  }, [currentUser?.uid, liftedNotifications]);
+
+  // Subscribe to creators the current user is following
+  useEffect(() => {
+    if (!currentUser) {
+      setFollowedCreatorUids([]);
+      return;
+    }
+    return subscribeToMyFollowing(currentUser.uid, (uids) => {
+      setFollowedCreatorUids(uids);
+    });
   }, [currentUser?.uid]);
 
   // Merge Firestore posts with initial seed posts
@@ -437,12 +472,20 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     };
   }, [currentUser?.uid, allMergedPosts.length]);
 
+  const pendingReviewPosts = useMemo(
+    () => allMergedPosts.filter((p) => p.status === 'pending_review'),
+    [allMergedPosts]
+  );
+
   const visiblePosts = useMemo(() => {
     return allMergedPosts.filter((post) => {
       const isMyPost = Boolean(currentUser && post.authorId === currentUser.uid);
-      if (post.status !== 'published') {
-        if (!isMyPost && !isAdmin) return false;
-        if (post.status === 'removed' && !isAdmin) return false;
+      if (activeTab === 'review') {
+        if (!isModeratorOrAdmin) return false;
+        if (post.status !== 'pending_review') return false;
+      } else if (post.status !== 'published') {
+        if (!isMyPost && !isModeratorOrAdmin) return false;
+        if (post.status === 'removed' && !isModeratorOrAdmin) return false;
       }
 
       // If the user explicitly selected a category in the Category Filter Dropdown,
@@ -505,7 +548,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   }, [
     allMergedPosts,
     currentUser,
-    isAdmin,
+    isModeratorOrAdmin,
     activeTab,
     selectedCategoryId,
     searchQuery,
@@ -626,6 +669,35 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     }
   };
 
+  const handleOpenMemberProfile = (info: {
+    uid: string;
+    displayName: string;
+    avatarUrl?: string;
+    role?: string;
+  }) => {
+    const dirMatch = directoryUsers.find((u) => u.uid === info.uid);
+    const selfMatch =
+      currentUser && builderProfile && currentUser.uid === info.uid ? builderProfile : null;
+    setViewingMemberProfile(
+      buildPublicMemberProfileSummary({
+        uid: info.uid,
+        displayName: selfMatch?.displayName || dirMatch?.displayName || info.displayName,
+        avatarUrl: selfMatch?.avatarUrl || dirMatch?.avatarUrl || info.avatarUrl,
+        avatarColor: selfMatch?.avatarColor || dirMatch?.avatarColor,
+        role: selfMatch?.role || dirMatch?.role || info.role,
+        isVerifiedStudent:
+          Boolean(dirMatch?.isVerifiedStudent) || verifiedUserIds.has(info.uid),
+        schoolName: selfMatch?.schoolName || dirMatch?.schoolName,
+        gradeLevel: selfMatch?.gradeLevel,
+        primaryInterest: selfMatch?.primaryInterest,
+        createdAt: selfMatch?.createdAt,
+        isApprovedStudent: selfMatch?.isApprovedStudent,
+        studentAccessStatus: selfMatch?.studentAccessStatus,
+        accountType: selfMatch?.accountType,
+      })
+    );
+  };
+
   const handleCreatePostClick = () => {
     if (!canPublish) return;
     setEditingPost(null);
@@ -640,6 +712,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     if (reactingPostIdsRef.current.has(postId)) {
       return;
     }
+    triggerHapticFeedback('light');
     reactingPostIdsRef.current.add(postId);
 
     const targetPost = allMergedPosts.find((p) => p.id === postId);
@@ -730,6 +803,11 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   };
 
   const handleMarkNotificationRead = async (notif: UserNotificationItem) => {
+    if (onSelectNotification) {
+      setIsNotifOpen(false);
+      onSelectNotification(notif);
+      return;
+    }
     if (!currentUser) return;
     try {
       await updateDoc(doc(db, 'userNotifications', currentUser.uid, 'items', notif.id), {
@@ -741,6 +819,41 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
     if (notif.actionUrl) {
       setIsNotifOpen(false);
       onNavigate(notif.actionUrl);
+    }
+  };
+
+  const handleToggleFollowCreator = async (
+    creatorUid: string,
+    creatorName: string,
+    currentlyFollowing: boolean
+  ) => {
+    if (!currentUser || !builderProfile) {
+      onRequireAuth(`follow ${creatorName}`);
+      return;
+    }
+    if (currentlyFollowing) {
+      await unfollowCreator(creatorUid);
+    } else {
+      await followCreator({
+        creatorUid,
+        creatorName,
+        followerProfile: builderProfile,
+      });
+    }
+  };
+
+  const handleModeratorDecision = async (
+    post: PublicPost,
+    decision: 'published' | 'hidden'
+  ) => {
+    if (!isModeratorOrAdmin) return;
+    setModeratingPostId(post.id);
+    try {
+      await moderatePublicPostStatus({ post, newStatus: decision });
+    } catch (err) {
+      console.warn('Moderator decision error:', err);
+    } finally {
+      setModeratingPostId(null);
     }
   };
 
@@ -1024,10 +1137,35 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 <Trophy className="w-3.5 h-3.5 text-[#C15D00] shrink-0" />
                 <span>Challenges</span>
               </button>
+
+              {isModeratorOrAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('review');
+                    onNavigate('/community?tab=review');
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all flex items-center gap-1.5 ${
+                    activeTab === 'review'
+                      ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
+                      : isDark
+                      ? 'border-transparent text-emerald-300 hover:bg-white/10'
+                      : 'border-transparent text-emerald-800 hover:bg-emerald-50'
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>Review Queue</span>
+                  {pendingReviewPosts.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-[#B11469] text-white text-[10px] font-black">
+                      {pendingReviewPosts.length}
+                    </span>
+                  )}
+                </button>
+              )}
             </nav>
           </div>
 
-          {/* Right: Search + Icon-Only Plus Button (Role-Gated) + UserAccountMenu (contains Notifications & Appearance) */}
+          {/* Right: Search + Inbox Bell + Plus Button (Role-Gated) + UserAccountMenu */}
           <div className="flex items-center gap-2 shrink-0">
             <div className="relative hidden md:block">
               <Search
@@ -1049,6 +1187,27 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 }`}
               />
             </div>
+
+            {currentUser && onOpenInbox && (
+              <button
+                type="button"
+                onClick={onOpenInbox}
+                title="Open Inbox Center"
+                aria-label="Open Inbox Center"
+                className={`relative w-9 h-9 rounded-xl border-2 border-black flex items-center justify-center cursor-pointer transition-colors shrink-0 ${
+                  isDark
+                    ? 'bg-[#171726] hover:bg-[#232338] text-white'
+                    : 'bg-white hover:bg-slate-100 text-black'
+                }`}
+              >
+                <Bell className="w-4 h-4" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#B11469] text-white text-[10px] font-black border border-black flex items-center justify-center">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             {/* Role-Based Publishing Permission: Clean icon-only "+" button for Approved Student Hub Members & Admins */}
             {canPublish && (
@@ -1072,6 +1231,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
               isAuthChecking={isAuthChecking}
               notifications={notifications}
               onSelectNotification={handleMarkNotificationRead}
+              onOpenInbox={onOpenInbox}
               onSignInClick={() =>
                 onRequireAuth('sign in to your Build Buds account', undefined, 'signin')
               }
@@ -1207,6 +1367,19 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   className="py-2 px-3 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black text-left"
                 >
                   + Share Creation
+                </button>
+              )}
+              {isModeratorOrAdmin && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileNavOpen(false);
+                    setActiveTab('review');
+                    onNavigate('/community?tab=review');
+                  }}
+                  className="py-2 px-3 rounded-xl border-2 border-black bg-emerald-400 text-black text-xs font-black text-left"
+                >
+                  🛡️ Review Queue ({pendingReviewPosts.length})
                 </button>
               )}
               {isAdmin && (
@@ -1443,7 +1616,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filteredChallenges.map((chal) => {
                   const statusBadge =
                     chal.challengeStatus === 'active'
@@ -1455,23 +1628,23 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   return (
                     <article
                       key={chal.id}
-                      className={`rounded-3xl border-3 border-black brand-shadow p-6 sm:p-7 flex flex-col justify-between gap-5 transition-transform hover:-translate-y-0.5 ${
+                      className={`rounded-2xl border-3 border-black brand-shadow p-4 sm:p-5 flex flex-col justify-between gap-3 transition-transform hover:-translate-y-0.5 ${
                         isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
                       }`}
                     >
-                      <div className="space-y-4">
+                      <div className="space-y-2.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span
-                              className={`px-3 py-1 rounded-xl border-2 border-black text-xs font-black uppercase ${statusBadge.bg}`}
+                              className={`px-2.5 py-0.5 rounded-lg border-2 border-black text-[11px] font-black uppercase ${statusBadge.bg}`}
                             >
                               {statusBadge.label}
                             </span>
-                            <span className="px-3 py-1 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black">
+                            <span className="px-2.5 py-0.5 rounded-lg border-2 border-black bg-[#B11469] text-white text-[11px] font-black">
                               {chal.category}
                             </span>
                             {chal.publishStatus !== 'published' && (
-                              <span className="px-2.5 py-1 rounded-xl border-2 border-black bg-amber-300 text-black text-[11px] font-black uppercase">
+                              <span className="px-2 py-0.5 rounded-lg border-2 border-black bg-amber-300 text-black text-[10px] font-black uppercase">
                                 {chal.publishStatus}
                               </span>
                             )}
@@ -1483,7 +1656,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                 type="button"
                                 onClick={() => openEditChallengeModal(chal)}
                                 title="Edit challenge"
-                                className={`p-2 rounded-xl border-2 border-black cursor-pointer ${
+                                className={`p-1.5 rounded-xl border-2 border-black cursor-pointer ${
                                   isDark
                                     ? 'bg-[#1b1b2f] hover:bg-[#FFF025] hover:text-black text-white'
                                     : 'bg-slate-100 hover:bg-[#FFF025] text-black'
@@ -1495,7 +1668,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                 type="button"
                                 onClick={() => handleDeleteChallenge(chal.id)}
                                 title="Delete challenge"
-                                className="p-2 rounded-xl border-2 border-black bg-rose-100 hover:bg-rose-600 text-rose-700 hover:text-white cursor-pointer"
+                                className="p-1.5 rounded-xl border-2 border-black bg-rose-100 hover:bg-rose-600 text-rose-700 hover:text-white cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1506,12 +1679,12 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                         <div>
                           <h3
                             onClick={() => setSelectedChallenge(chal)}
-                            className="font-chewy text-2xl sm:text-3xl cursor-pointer hover:text-[#FFF025] transition-colors leading-snug"
+                            className="font-chewy text-xl sm:text-2xl cursor-pointer hover:text-[#FFF025] transition-colors leading-snug"
                           >
                             {chal.title}
                           </h3>
                           <p
-                            className={`mt-2 text-sm font-medium leading-relaxed line-clamp-3 ${
+                            className={`mt-1 text-xs sm:text-sm font-medium leading-relaxed line-clamp-2 ${
                               isDark ? 'text-slate-300' : 'text-slate-700'
                             }`}
                           >
@@ -1519,16 +1692,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                           </p>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
                           <span
-                            className={`px-2.5 py-1 rounded-lg border border-black/30 ${
+                            className={`px-2 py-0.5 rounded-md border border-black/30 ${
                               isDark ? 'bg-white/10 text-slate-200' : 'bg-slate-100 text-slate-800'
                             }`}
                           >
                             👥 {chal.learnerGroup}
                           </span>
                           <span
-                            className={`px-2.5 py-1 rounded-lg border border-black/30 ${
+                            className={`px-2 py-0.5 rounded-md border border-black/30 ${
                               isDark ? 'bg-white/10 text-slate-200' : 'bg-slate-100 text-slate-800'
                             }`}
                           >
@@ -1536,7 +1709,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                           </span>
                           {chal.programme && (
                             <span
-                              className={`px-2.5 py-1 rounded-lg border border-black/30 ${
+                              className={`px-2 py-0.5 rounded-md border border-black/30 ${
                                 isDark
                                   ? 'bg-white/10 text-slate-200'
                                   : 'bg-slate-100 text-slate-800'
@@ -1549,16 +1722,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       </div>
 
                       <div
-                        className={`pt-4 border-t-2 flex flex-wrap items-center justify-between gap-3 ${
+                        className={`pt-2.5 border-t-2 flex flex-wrap items-center justify-between gap-2.5 ${
                           isDark ? 'border-white/10' : 'border-black/10'
                         }`}
                       >
                         <div
-                          className={`flex items-center gap-1.5 text-xs font-bold ${
+                          className={`flex items-center gap-1.5 text-[11px] font-bold ${
                             isDark ? 'text-slate-300' : 'text-slate-600'
                           }`}
                         >
-                          <Calendar className="w-4 h-4 text-[#C15D00]" />
+                          <Calendar className="w-3.5 h-3.5 text-[#C15D00]" />
                           <span>
                             {chal.deadline
                               ? `Deadline: ${new Date(chal.deadline).toLocaleDateString()}`
@@ -1569,7 +1742,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                         <button
                           type="button"
                           onClick={() => setSelectedChallenge(chal)}
-                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer"
                         >
                           <span>View Challenge</span>
                           <ArrowRight className="w-3.5 h-3.5" />
@@ -1589,17 +1762,17 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
             {/* SECTION 1 — TOP FEATURED COMMUNITY CONTENT BANNER */}
             <section aria-label="Featured Community Content">
               <div
-                className={`rounded-3xl border-3 border-black brand-shadow overflow-hidden ${
+                className={`rounded-2xl border-3 border-black brand-shadow overflow-hidden ${
                   isDark ? 'bg-[#121222]' : 'bg-[#FFFDF5]'
                 }`}
               >
-                <div className="bg-[#FFF025] border-b-3 border-black px-5 sm:px-7 py-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="bg-[#FFF025] border-b-3 border-black px-4 sm:px-5 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-2">
                   <div>
-                    <div className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-black/80">
-                      <FolderGit2 className="w-3.5 h-3.5" />
+                    <div className="inline-flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-black/80">
+                      <FolderGit2 className="w-3 h-3" />
                       <span>Build Buds Public Community Showcase</span>
                     </div>
-                    <h1 className="font-chewy text-2xl sm:text-4xl text-black mt-0.5 leading-tight">
+                    <h1 className="font-chewy text-xl sm:text-2xl text-black mt-0.5 leading-tight">
                       {bannerHeadlineText}
                     </h1>
                   </div>
@@ -1610,9 +1783,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       <button
                         type="button"
                         onClick={() => onNavigate('/admin/student-access')}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-black bg-[#B11469] hover:bg-[#920f56] text-white text-xs sm:text-sm font-black cursor-pointer brand-shadow-sm whitespace-nowrap"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#B11469] hover:bg-[#920f56] text-white text-xs font-black cursor-pointer brand-shadow-sm whitespace-nowrap"
                       >
-                        <ShieldCheck className="w-4 h-4 stroke-[2.5]" />
+                        <ShieldCheck className="w-3.5 h-3.5 stroke-[2.5]" />
                         <span>Manage Access Requests</span>
                       </button>
                     )}
@@ -1620,9 +1793,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       <button
                         type="button"
                         onClick={handleCreatePostClick}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs sm:text-sm font-black cursor-pointer whitespace-nowrap"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-black hover:bg-slate-900 text-[#FFF025] text-xs font-black cursor-pointer whitespace-nowrap"
                       >
-                        <Plus className="w-4 h-4 stroke-[2.5]" />
+                        <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                         <span>Publish Your Creation</span>
                       </button>
                     )}
@@ -1630,14 +1803,14 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 </div>
 
                 {featuredBannerPost && (
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 p-5 sm:p-7 items-center">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 p-3.5 sm:p-4 items-center">
                     {/* Featured Visual Preview */}
-                    <div className="lg:col-span-6">
+                    <div className="lg:col-span-5">
                       {featuredBannerPost.media?.[0]?.secureUrl &&
                       !brokenImages[featuredBannerPost.media[0].secureUrl] ? (
                         <div
                           onClick={() => handleOpenPostDetail(featuredBannerPost.id)}
-                          className="rounded-2xl border-3 border-black overflow-hidden aspect-video bg-slate-900 cursor-pointer group"
+                          className="rounded-xl border-2 border-black overflow-hidden aspect-[16/9] max-h-44 bg-slate-900 cursor-pointer group"
                         >
                           <img
                             src={getCloudinaryResponsiveUrl(
@@ -1657,12 +1830,12 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       ) : (
                         <div
                           onClick={() => handleOpenPostDetail(featuredBannerPost.id)}
-                          className="rounded-2xl border-3 border-black aspect-video bg-[#B11469] text-white p-7 flex flex-col justify-between cursor-pointer"
+                          className="rounded-xl border-2 border-black aspect-[16/9] max-h-44 bg-[#B11469] text-white p-4 flex flex-col justify-between cursor-pointer"
                         >
-                          <span className="text-xs font-black uppercase tracking-wider text-[#FFF025]">
+                          <span className="text-[11px] font-black uppercase tracking-wider text-[#FFF025]">
                             {featuredBannerPost.categoryName}
                           </span>
-                          <div className="font-chewy text-3xl leading-tight">
+                          <div className="font-chewy text-xl sm:text-2xl leading-tight line-clamp-2">
                             {featuredBannerPost.title}
                           </div>
                         </div>
@@ -1670,8 +1843,8 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                     </div>
 
                     {/* Featured Details */}
-                    <div className="lg:col-span-6 space-y-3.5">
-                      <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider">
+                    <div className="lg:col-span-7 space-y-2">
+                      <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wider">
                         <span className={isDark ? 'text-[#FFF025]' : 'text-[#B11469]'}>
                           Featured Highlight
                         </span>
@@ -1683,7 +1856,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
                       <h2
                         onClick={() => handleOpenPostDetail(featuredBannerPost.id)}
-                        className={`font-chewy text-2xl sm:text-3xl cursor-pointer leading-tight transition-colors ${
+                        className={`font-chewy text-xl sm:text-2xl cursor-pointer leading-tight transition-colors ${
                           isDark
                             ? 'text-white hover:text-[#FFF025]'
                             : 'text-black hover:text-[#B11469]'
@@ -1693,15 +1866,28 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                       </h2>
 
                       <p
-                        className={`text-sm sm:text-base font-medium leading-relaxed line-clamp-3 ${
+                        className={`text-xs sm:text-sm font-medium leading-relaxed line-clamp-2 ${
                           isDark ? 'text-slate-300' : 'text-slate-700'
                         }`}
                       >
                         {featuredBannerPost.summary || featuredBannerPost.body}
                       </p>
 
-                      <div className="flex flex-wrap items-center justify-between gap-4 pt-2">
-                        <div className="flex items-center gap-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenMemberProfile({
+                              uid: featuredBannerPost.authorId,
+                              displayName: featuredBannerPost.authorName,
+                              avatarUrl: featuredBannerPost.authorAvatar,
+                              role: featuredBannerPost.authorRole,
+                            });
+                          }}
+                          title={`View ${featuredBannerPost.authorName}'s profile`}
+                          className="flex items-center gap-2 text-left group cursor-pointer rounded-lg p-1 -m-1 hover:bg-black/5 transition-colors"
+                        >
                           <VerifiedAvatarFrame
                             src={resolveBuilderAvatarUrl(
                               featuredBannerPost.authorAvatar,
@@ -1713,12 +1899,12 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               featuredBannerPost.authorRole === 'moderator' ||
                               verifiedUserIds.has(featuredBannerPost.authorId)
                             }
-                            sizeClass="w-9 h-9"
-                            ringPaddingClass="p-[2.5px]"
+                            sizeClass="w-7 h-7"
+                            ringPaddingClass="p-[2px]"
                           />
                           <div>
                             <div
-                              className={`text-xs font-black ${
+                              className={`text-xs font-black group-hover:underline ${
                                 featuredBannerPost.authorRole === 'admin' ||
                                 featuredBannerPost.authorRole === 'moderator' ||
                                 verifiedUserIds.has(featuredBannerPost.authorId)
@@ -1731,22 +1917,22 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               {featuredBannerPost.authorName}
                             </div>
                             <div
-                              className={`text-[11px] ${
+                              className={`text-[10px] ${
                                 isDark ? 'text-slate-400' : 'text-slate-600'
                               }`}
                             >
                               {new Date(featuredBannerPost.createdAt).toLocaleDateString()}
                             </div>
                           </div>
-                        </div>
+                        </button>
 
                         <button
                           type="button"
                           onClick={() => handleOpenPostDetail(featuredBannerPost.id)}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs sm:text-sm font-black brand-shadow-sm cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black brand-shadow-sm cursor-pointer"
                         >
                           <span>Read Post</span>
-                          <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                          <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
                         </button>
                       </div>
                     </div>
@@ -1975,27 +2161,46 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
             </section>
 
             {/* SECTION 3 & SECTION 4 — CENTRAL FEED + RIGHT DISCOVERY SIDEBAR */}
+            {isModeratorOrAdmin && pendingReviewPosts.length > 0 && activeTab !== 'review' && (
+              <div className="p-4 rounded-2xl border-3 border-black bg-[#FFF025] text-black flex flex-wrap items-center justify-between gap-3 brand-shadow-sm">
+                <div className="flex items-center gap-2.5 text-xs sm:text-sm font-black">
+                  <ShieldCheck className="w-5 h-5 text-[#B11469] shrink-0" />
+                  <span>
+                    {pendingReviewPosts.length} new student post
+                    {pendingReviewPosts.length === 1 ? ' awaits' : 's await'} Moderator approval before publishing.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('review')}
+                  className="px-4 py-2 rounded-xl border-2 border-black bg-black text-[#FFF025] text-xs font-black cursor-pointer"
+                >
+                  Open Review Queue →
+                </button>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
               {/* Central Community Discovery Feed (8 Columns on Desktop) */}
-              <section className="lg:col-span-8 space-y-6" aria-label="Community Feed">
+              <section className="lg:col-span-8 space-y-3.5" aria-label="Community Feed">
                 {sortedPosts.length === 0 ? (
                   <div
-                    className={`p-10 rounded-3xl border-3 border-black text-center space-y-4 ${
+                    className={`p-8 rounded-2xl border-3 border-black text-center space-y-3 ${
                       isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
                     }`}
                   >
-                    <div className="font-chewy text-2xl">
+                    <div className="font-chewy text-xl">
                       No posts match this filter yet
                     </div>
                     <p
-                      className={`text-sm max-w-md mx-auto ${
+                      className={`text-xs sm:text-sm max-w-md mx-auto ${
                         isDark ? 'text-slate-300' : 'text-slate-600'
                       }`}
                     >
                       Try clearing your search or selecting &ldquo;All Categories&rdquo; from the
                       dropdown filter to explore all published creations.
                     </p>
-                    <div className="flex flex-wrap items-center justify-center gap-3">
+                    <div className="flex flex-wrap items-center justify-center gap-2.5">
                       {(selectedCategoryId !== 'all' || searchQuery.trim() !== '') && (
                         <button
                           type="button"
@@ -2004,7 +2209,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                             setSearchQuery('');
                             setActiveTab('all');
                           }}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black brand-shadow-sm cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black brand-shadow-sm cursor-pointer"
                         >
                           <span>Show All Categories</span>
                         </button>
@@ -2014,9 +2219,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                         <button
                           type="button"
                           onClick={handleCreatePostClick}
-                          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl border-2 border-black bg-black text-[#FFF025] text-xs font-black brand-shadow-sm cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border-2 border-black bg-black text-[#FFF025] text-xs font-black brand-shadow-sm cursor-pointer"
                         >
-                          <Plus className="w-4 h-4" />
+                          <Plus className="w-3.5 h-3.5" />
                           <span>Create First Post</span>
                         </button>
                       )}
@@ -2033,15 +2238,15 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                     return (
                       <article
                         key={post.id}
-                        className={`rounded-3xl border-3 border-black brand-shadow overflow-hidden transition-transform hover:-translate-y-0.5 ${
+                        className={`rounded-2xl border-3 border-black brand-shadow overflow-hidden transition-transform hover:-translate-y-0.5 ${
                           isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
                         }`}
                       >
-                        {/* Cover Image / Multi-Image Strip */}
+                        {/* Cover Image / Multi-Image Strip (~45% shorter for sleeker cards) */}
                         {postMedia.length > 0 && (
                           <div
                             onClick={() => handleOpenPostDetail(post.id)}
-                            className="relative border-b-3 border-black bg-slate-950 aspect-[16/9] max-h-80 overflow-hidden cursor-pointer group"
+                            className="relative border-b-2 border-black bg-slate-950 h-40 sm:h-44 overflow-hidden cursor-pointer group"
                           >
                             <img
                               src={getCloudinaryResponsiveUrl(postMedia[0].secureUrl, 'feed')}
@@ -2055,19 +2260,19 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             />
                             {postMedia.length > 1 && (
-                              <span className="absolute bottom-3 right-3 px-2.5 py-1 rounded-xl border-2 border-black bg-black/85 text-[#FFF025] text-xs font-black flex items-center gap-1">
-                                <Layers className="w-3.5 h-3.5" />
-                                <span>+{postMedia.length - 1} more</span>
+                              <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-lg border border-black bg-black/85 text-[#FFF025] text-[11px] font-black flex items-center gap-1">
+                                <Layers className="w-3 h-3" />
+                                <span>+{postMedia.length - 1}</span>
                               </span>
                             )}
                           </div>
                         )}
 
-                        <div className="p-5 sm:p-7 space-y-4">
+                        <div className="p-3.5 sm:p-4 space-y-2.5">
                           {/* Category, Status & Bookmark Row */}
                           <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-wrap text-xs font-black uppercase tracking-wider">
-                              <span className="px-2.5 py-0.5 rounded-lg border-2 border-black bg-[#FFF025] text-black">
+                            <div className="flex items-center gap-1.5 flex-wrap text-[11px] font-black uppercase tracking-wider">
+                              <span className="px-2 py-0.5 rounded-md border border-black bg-[#FFF025] text-black">
                                 {post.categoryName}
                               </span>
                               {post.isFeatured && (
@@ -2086,7 +2291,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               type="button"
                               onClick={() => handleToggleBookmark(post.id)}
                               aria-label={isPostBookmarked ? 'Remove bookmark' : 'Bookmark post'}
-                              className={`p-2 rounded-xl border-2 border-black cursor-pointer transition-colors shrink-0 ${
+                              className={`p-1.5 rounded-lg border border-black cursor-pointer transition-colors shrink-0 ${
                                 isPostBookmarked
                                   ? 'bg-[#FFF025] text-black'
                                   : isDark
@@ -2095,16 +2300,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               }`}
                             >
                               <Bookmark
-                                className={`w-4 h-4 ${isPostBookmarked ? 'fill-black' : ''}`}
+                                className={`w-3.5 h-3.5 ${isPostBookmarked ? 'fill-black' : ''}`}
                               />
                             </button>
                           </div>
 
-                          {/* Title & Excerpt */}
+                          {/* Title & Compact Excerpt */}
                           <div>
                             <h3
                               onClick={() => handleOpenPostDetail(post.id)}
-                              className={`font-chewy text-2xl sm:text-3xl cursor-pointer leading-snug transition-colors ${
+                              className={`font-chewy text-lg sm:text-xl cursor-pointer leading-snug transition-colors ${
                                 isDark
                                   ? 'text-white hover:text-[#FFF025]'
                                   : 'text-black hover:text-[#B11469]'
@@ -2113,7 +2318,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               {post.title}
                             </h3>
                             <p
-                              className={`mt-2 text-sm sm:text-base font-medium leading-relaxed line-clamp-3 ${
+                              className={`mt-1 text-xs sm:text-sm font-medium leading-snug line-clamp-2 ${
                                 isDark ? 'text-slate-300' : 'text-slate-700'
                               }`}
                             >
@@ -2123,17 +2328,17 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
                           {/* Quick External Creation Links */}
                           {(post.gameUrl || post.websiteUrl || post.githubUrl) && (
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               {post.gameUrl && (
                                 <a
                                   href={post.gameUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] text-black text-xs font-black whitespace-nowrap"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-black bg-[#FFF025] text-black text-[11px] font-black whitespace-nowrap"
                                 >
-                                  <Gamepad2 className="w-3.5 h-3.5" />
+                                  <Gamepad2 className="w-3 h-3" />
                                   <span>Play Game</span>
-                                  <ExternalLink className="w-3 h-3" />
+                                  <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               )}
                               {post.websiteUrl && (
@@ -2141,11 +2346,11 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   href={post.websiteUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black bg-[#B11469] text-white text-xs font-black whitespace-nowrap"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-black bg-[#B11469] text-white text-[11px] font-black whitespace-nowrap"
                                 >
-                                  <Globe className="w-3.5 h-3.5" />
+                                  <Globe className="w-3 h-3" />
                                   <span>Live Website</span>
-                                  <ExternalLink className="w-3 h-3" />
+                                  <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               )}
                               {post.githubUrl && (
@@ -2153,29 +2358,29 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   href={post.githubUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black whitespace-nowrap ${
+                                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-black text-[11px] font-black whitespace-nowrap ${
                                     isDark
                                       ? 'bg-[#1b1b2f] text-white'
                                       : 'bg-slate-100 text-black'
                                   }`}
                                 >
-                                  <Code2 className="w-3.5 h-3.5" />
-                                  <span>Source Code</span>
-                                  <ExternalLink className="w-3 h-3" />
+                                  <Code2 className="w-3 h-3" />
+                                  <span>Source</span>
+                                  <ExternalLink className="w-2.5 h-2.5" />
                                 </a>
                               )}
                             </div>
                           )}
 
-                          {/* Tags */}
+                          {/* Tags (Compact) */}
                           {post.tags && post.tags.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {post.tags.map((tag) => (
+                            <div className="flex flex-wrap items-center gap-1">
+                              {post.tags.slice(0, 4).map((tag) => (
                                 <button
                                   key={tag}
                                   type="button"
                                   onClick={() => setSearchQuery(tag)}
-                                  className={`px-2 py-0.5 rounded-md border text-[11px] font-bold cursor-pointer transition-colors ${
+                                  className={`px-1.5 py-0.5 rounded border text-[10px] font-bold cursor-pointer transition-colors ${
                                     isDark
                                       ? 'border-white/15 bg-white/5 hover:bg-[#FFF025] hover:text-black text-slate-300'
                                       : 'border-black/20 bg-slate-50 hover:bg-[#FFF025]/40 text-slate-700'
@@ -2187,13 +2392,26 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                             </div>
                           )}
 
-                          {/* Footer: Creator Info + Real Reactions + Comments + Read CTA */}
+                          {/* Compact Footer: Creator Info + WhatsApp-Style Reactions + Comments + Read CTA */}
                           <div
-                            className={`pt-4 border-t-2 flex flex-wrap items-center justify-between gap-4 ${
+                            className={`pt-2.5 border-t flex flex-wrap items-center justify-between gap-2.5 ${
                               isDark ? 'border-white/10' : 'border-black/10'
                             }`}
                           >
-                            <div className="flex items-center gap-2.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenMemberProfile({
+                                  uid: post.authorId,
+                                  displayName: post.authorName,
+                                  avatarUrl: post.authorAvatar,
+                                  role: post.authorRole,
+                                });
+                              }}
+                              title={`View ${post.authorName}'s profile`}
+                              className="flex items-center gap-2 text-left group cursor-pointer rounded-lg p-1 -m-1 hover:bg-black/5 transition-colors"
+                            >
                               <VerifiedAvatarFrame
                                 src={resolveBuilderAvatarUrl(post.authorAvatar, post.authorId)}
                                 alt={post.authorName}
@@ -2202,12 +2420,12 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   post.authorRole === 'moderator' ||
                                   verifiedUserIds.has(post.authorId)
                                 }
-                                sizeClass="w-9 h-9"
-                                ringPaddingClass="p-[2.5px]"
+                                sizeClass="w-7 h-7"
+                                ringPaddingClass="p-[2px]"
                               />
                               <div>
                                 <div
-                                  className={`text-xs font-black ${
+                                  className={`text-[11px] font-black leading-tight group-hover:underline ${
                                     post.authorRole === 'admin' ||
                                     post.authorRole === 'moderator' ||
                                     verifiedUserIds.has(post.authorId)
@@ -2220,16 +2438,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                   {post.authorName}
                                 </div>
                                 <div
-                                  className={`text-[11px] ${
+                                  className={`text-[10px] ${
                                     isDark ? 'text-slate-400' : 'text-slate-500'
                                   }`}
                                 >
                                   {new Date(post.createdAt).toLocaleDateString()}
                                 </div>
                               </div>
-                            </div>
+                            </button>
 
-                            <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               {PUBLIC_REACTION_OPTIONS.slice(0, 3).map((opt) => {
                                 const count = post.reactionCounts?.[opt.type] || 0;
                                 const active = myPostReactions.includes(opt.type);
@@ -2240,7 +2458,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                                     count={count}
                                     active={active}
                                     title={opt.label}
-                                    size="md"
+                                    size="sm"
                                     variant={isDark ? 'dark' : 'light'}
                                     onClick={() => handleQuickReact(post.id, opt.type)}
                                   />
@@ -2250,26 +2468,53 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleOpenPostDetail(post.id)}
-                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border-2 border-black text-xs font-black cursor-pointer whitespace-nowrap ${
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-black text-[11px] font-black cursor-pointer whitespace-nowrap ${
                                   isDark
                                     ? 'bg-[#1b1b2f] hover:bg-white/10 text-white'
                                     : 'bg-white hover:bg-slate-100 text-black'
                                 }`}
                               >
-                                <MessageSquare className="w-3.5 h-3.5 text-[#B11469]" />
+                                <MessageSquare className="w-3 h-3 text-[#B11469]" />
                                 <span>{post.commentCount || 0}</span>
                               </button>
 
                               <button
                                 type="button"
                                 onClick={() => handleOpenPostDetail(post.id)}
-                                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl border-2 border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-xs font-black cursor-pointer whitespace-nowrap"
+                                className="inline-flex items-center gap-1 px-3 py-1 rounded-lg border border-black bg-[#FFF025] hover:bg-[#ffe500] text-black text-[11px] font-black cursor-pointer whitespace-nowrap"
                               >
                                 <span>Read Post</span>
-                                <ArrowRight className="w-3.5 h-3.5" />
+                                <ArrowRight className="w-3 h-3" />
                               </button>
                             </div>
                           </div>
+
+                          {/* One-Click Moderator Approval Controls on Pending Posts */}
+                          {isModeratorOrAdmin && post.status === 'pending_review' && (
+                            <div className="pt-2.5 mt-2 border-t border-black/15 dark:border-white/15 flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-[11px] font-black text-amber-500">
+                                ⏳ Pending Moderator Review
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={moderatingPostId === post.id}
+                                  onClick={() => handleModeratorDecision(post, 'hidden')}
+                                  className="px-3 py-1 rounded-lg border border-black bg-rose-100 hover:bg-rose-200 text-rose-800 text-[11px] font-black cursor-pointer disabled:opacity-50"
+                                >
+                                  Reject
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={moderatingPostId === post.id}
+                                  onClick={() => handleModeratorDecision(post, 'published')}
+                                  className="px-3.5 py-1 rounded-lg border border-black bg-emerald-400 hover:bg-emerald-300 text-black text-[11px] font-black cursor-pointer disabled:opacity-50"
+                                >
+                                  {moderatingPostId === post.id ? 'Updating...' : 'Approve & Publish'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </article>
                     );
@@ -2456,6 +2701,10 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
         isBookmarked={
           selectedDetailPost ? bookmarkedIds.includes(selectedDetailPost.id) : false
         }
+        isFollowingAuthor={
+          selectedDetailPost ? followedCreatorUids.includes(selectedDetailPost.authorId) : false
+        }
+        onToggleFollowAuthor={handleToggleFollowCreator}
         onClose={handleClosePostDetail}
         onRequireAuth={(desc) => onRequireAuth(desc)}
         onToggleBookmark={handleToggleBookmark}
@@ -2469,6 +2718,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
             : undefined
         }
         onPostDeleted={() => handleClosePostDetail()}
+        onSelectMemberProfile={handleOpenMemberProfile}
       />
 
       {/* Challenge Detail Modal */}
@@ -3322,6 +3572,29 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* Clickable Member Profile Modal */}
+      <MemberProfileModal
+        member={viewingMemberProfile}
+        onClose={() => setViewingMemberProfile(null)}
+        currentUserUid={currentUser?.uid}
+        isFollowing={
+          viewingMemberProfile
+            ? followedCreatorUids.includes(viewingMemberProfile.uid)
+            : false
+        }
+        onToggleFollow={handleToggleFollowCreator}
+        publicPostsCount={
+          viewingMemberProfile
+            ? allMergedPosts.filter(
+                (p) =>
+                  p.authorId === viewingMemberProfile.uid &&
+                  p.status === 'published'
+              ).length
+            : undefined
+        }
+        variant={isDark ? 'dark' : 'light'}
+      />
     </div>
   );
 };
