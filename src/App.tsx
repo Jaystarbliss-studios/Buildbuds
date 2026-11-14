@@ -101,19 +101,17 @@ function BuildBudsApp() {
   useEffect(() => {
     const q = query(
       collection(db, 'publicPosts'),
-      orderBy('createdAt', 'desc'),
-      limit(12)
+      where('status', '==', 'published')
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const liveItems: ProjectItem[] = snap.docs
-          .filter((docSnap) => {
-            const p = docSnap.data() as PublicPost;
-            return !p.status || p.status === 'published';
-          })
-          .map((docSnap) => {
-            const p = docSnap.data() as PublicPost;
+        const rawDocs = snap.docs.map((docSnap) => ({
+          ...(docSnap.data() as PublicPost),
+          id: docSnap.id,
+        }));
+        rawDocs.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        const liveItems: ProjectItem[] = rawDocs.slice(0, 12).map((p) => {
             const cat =
               p.categoryId === 'games'
                 ? 'games'
@@ -121,7 +119,7 @@ function BuildBudsApp() {
                 ? 'websites'
                 : 'experiments';
           return {
-            id: docSnap.id,
+            id: p.id,
             title: p.title,
             tagline: p.summary || p.title,
             description: p.body,

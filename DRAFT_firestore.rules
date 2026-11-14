@@ -371,7 +371,7 @@ service cloud.firestore {
     // Private Student Hub Chat Messages (/messages/{messageId})
     // ===============================================================
     match /messages/{messageId} {
-      allow read: if isApprovedStudent() && isNotBanned();
+      allow read: if (isApprovedStudent() && isNotBanned()) || isAdmin() || isChannelModerator(resource.data.channelId);
 
       allow create: if isApprovedStudent() &&
         isActiveUser() &&

@@ -44,6 +44,7 @@ import {
   collection,
   onSnapshot,
   query,
+  where,
   orderBy,
   limit,
   BuilderProfile,
@@ -303,17 +304,18 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
     const postsQuery = query(
       collection(db, 'publicPosts'),
-      orderBy('createdAt', 'desc'),
-      limit(20)
+      where('status', '==', 'published')
     );
     const unsubPosts = onSnapshot(
       postsQuery,
       (snap) => {
         const list: PublicPost[] = [];
         snap.forEach((docSnap) => {
-          list.push({ ...(docSnap.data() as PublicPost), id: docSnap.id });
+          const p = docSnap.data() as PublicPost;
+          list.push({ ...p, id: docSnap.id });
         });
-        setFirestorePosts(list);
+        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        setFirestorePosts(list.slice(0, 20));
       },
       () => {
         // Fallback to seed posts if unauthenticated query encounters transient network error

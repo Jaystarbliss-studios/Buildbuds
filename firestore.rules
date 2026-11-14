@@ -486,7 +486,10 @@ service cloud.firestore {
     // Private Student Hub Chat Messages (/messages/{messageId})
     // ===============================================================
     match /messages/{messageId} {
-      allow read: if isAuthenticated();
+      allow read: if (isApprovedStudent() && isActiveUser() && isNotBanned()) ||
+        isAdmin() ||
+        isChannelModerator(resource.data.channelId) ||
+        isGlobalModeratorUser();
 
       allow create: if (isApprovedStudent() &&
         isActiveUser() &&
@@ -550,7 +553,9 @@ service cloud.firestore {
 
       // Nested Thread Replies
       match /threadReplies/{replyId} {
-        allow read: if isAuthenticated();
+        allow read: if (isApprovedStudent() && isActiveUser() && isNotBanned()) ||
+          isAdmin() ||
+          isGlobalModeratorUser();
 
         allow create: if isApprovedStudent() &&
           isActiveUser() &&
