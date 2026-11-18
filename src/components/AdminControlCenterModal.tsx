@@ -20,6 +20,9 @@ import {
   GraduationCap,
   Star,
   EyeOff,
+  Lightbulb,
+  RotateCw,
+  Award,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -32,8 +35,12 @@ import {
 } from 'recharts';
 import {
   db,
+  doc,
+  getDoc,
+  getDocs,
   collection,
   query,
+  where,
   orderBy,
   limit,
   onSnapshot,
@@ -44,12 +51,22 @@ import {
   UserAccountStatus,
 } from '../firebase.ts';
 import {
+  resolveReportInspectMessageId,
+  resolveReportTargetUserId,
+  groupOpenReportCountByUserId,
+} from '../utils/messageGrouping.ts';
+import {
   StudentAccessRequest,
   PublicPost,
   DEFAULT_REGISTERED_SCHOOLS,
   SUPPORT_CONTACT_EMAIL,
   SUPPORT_WHATSAPP_DISPLAY,
   SUPPORT_WHATSAPP_URL,
+  type FeedbackSubmission,
+  type FeedbackStatus,
+  type ContributionEvent,
+  FEEDBACK_CATEGORY_LABELS,
+  FEEDBACK_STATUS_LABELS,
 } from '../types/community.ts';
 import {
   subscribeToRegisteredSchools,
@@ -61,18 +78,28 @@ import {
   ensureValidExternalHref,
   normalizeRegisteredSchoolsList,
   isPlaceholderSchoolName,
+  subscribeToAllFeedbackSubmissions,
+  subscribeToFeedbackAdminNote,
+  adminUpdateFeedbackSubmission,
+  subscribeToContributionEvents,
+  adminReverseContributionEvent,
 } from '../utils/communityService.ts';
 import { VerifiedAvatarFrame } from './MentionAndEmotes.tsx';
 
 export interface AdminReportRecord {
   id: string;
   messageId: string;
+  referencedMessageId?: string;
+  referencedChannelId?: string;
   channelId: string;
+  streamId?: string;
   reporterId: string;
   reporterName?: string;
   reportedUserId?: string;
   reportedUserName?: string;
   messageSnippet?: string;
+  messageText?: string;
+  messageLinkUrl?: string;
   reason: string;
   status: 'open' | 'resolved';
   createdAtMillis: number;
@@ -102,6 +129,7 @@ export type AdminCenterTab =
   | 'access'
   | 'schools'
   | 'reports'
+  | 'feedback'
   | 'channels'
   | 'users'
   | 'global'
@@ -125,7 +153,9 @@ interface AdminControlCenterModalProps {
     channelId: string,
     messageId: string,
     authorName?: string,
-    snippet?: string
+    snippet?: string,
+    streamId?: string,
+    reportId?: string
   ) => void;
   knownMessages: AdminMessageLookup[];
 
@@ -299,6 +329,35 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
   const [newSchoolInput, setNewSchoolInput] = useState('');
   const [isSavingSchool, setIsSavingSchool] = useState(false);
 
+  // Feedback & Contribution Ledger Moderation state
+  const [feedbackSubmissions, setFeedbackSubmissions] = useState<FeedbackSubmission[]>([]);
+  const [feedbackFilterStatus, setFeedbackFilterStatus] = useState<'all' | FeedbackStatus>('all');
+  const [feedbackSubView, setFeedbackSubView] = useState<'suggestions' | 'ledger'>('suggestions');
+  const [editingFeedbackId, setEditingFeedbackId] = useState<string | null>(null);
+  const [feedbackStatusDraft, setFeedbackStatusDraft] = useState<FeedbackStatus>('under_review');
+  const [feedbackResponseDraft, setFeedbackResponseDraft] = useState('');
+  const [feedbackInternalNotesDraft, setFeedbackInternalNotesDraft] = useState('');
+  const [feedbackBonusDraft, setFeedbackBonusDraft] = useState(false);
+  const [isSavingFeedback, setIsSavingFeedback] = useState(false);
+  const [contributionEvents, setContributionEvents] = useState<ContributionEvent[]>([]);
+  const [reversingEventId, setReversingEventId] = useState<string | null>(null);
+  const [reverseReasonInput, setReverseReasonInput] = useState('');
+  const [isReversingEvent, setIsReversingEvent] = useState(false);
+
+  const [fetchedReportMessagesById, setFetchedReportMessagesById] = useState<
+    Record<string, AdminMessageLookup>
+  >({});
+  const [deletedReportMessageIds, setDeletedReportMessageIds] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [recentMessagesByAuthorId, setRecentMessagesByAuthorId] = useState<
+    Record<string, Array<AdminMessageLookup & { createdAtMillis: number }>>
+  >({});
+  const [fetchedAuthorMessageIds, setFetchedAuthorMessageIds] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [reportUserFilter, setReportUserFilter] = useState<string | null>(null);
+
   const normalizedTab: Exclude<AdminCenterTab, 'groups'> =
     activeTab === 'groups' ? 'reports' : activeTab;
 
@@ -311,7 +370,7 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
     return () => window.removeEventListener('keydown', handleKey);
   }, [isOpen, onClose]);
 
-  // Real-time subscription to publicPosts and registeredSchools when modal is open
+  // Real-time subscription to publicPosts, registeredSchools, feedback, and ledger when modal is open
   useEffect(() => {
     if (!isOpen) return;
 
@@ -336,11 +395,32 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
       () => {}
     );
 
+    const unsubFeedback =
+      isSuperAdmin || isGlobalModerator
+        ? subscribeToAllFeedbackSubmissions(setFeedbackSubmissions)
+        : () => {};
+    const unsubLedger =
+      isSuperAdmin || isGlobalModerator
+        ? subscribeToContributionEvents({ limitCount: 60 }, setContributionEvents)
+        : () => {};
+
     return () => {
       unsubSchools();
       unsubPosts();
+      unsubFeedback();
+      unsubLedger();
     };
-  }, [isOpen]);
+  }, [isOpen, isSuperAdmin, isGlobalModerator]);
+
+  useEffect(() => {
+    if (!isOpen || !editingFeedbackId) {
+      setFeedbackInternalNotesDraft('');
+      return;
+    }
+    return subscribeToFeedbackAdminNote(editingFeedbackId, (note) => {
+      setFeedbackInternalNotesDraft(note?.internalNotes || '');
+    });
+  }, [isOpen, editingFeedbackId]);
 
   const userLookup = useMemo(() => {
     const map = new Map<string, BuilderProfile>();
@@ -350,9 +430,130 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
 
   const messageLookup = useMemo(() => {
     const map = new Map<string, AdminMessageLookup>();
+    Object.values(fetchedReportMessagesById).forEach((m) => map.set(m.id, m));
     knownMessages.forEach((m) => map.set(m.id, m));
     return map;
-  }, [knownMessages]);
+  }, [knownMessages, fetchedReportMessagesById]);
+
+  const filteredReports = useMemo(() => {
+    return reports.filter((r) => {
+      if (reportFilter === 'open' && r.status !== 'open') return false;
+      if (reportFilter === 'resolved' && r.status !== 'resolved') return false;
+      if (reportUserFilter && resolveReportTargetUserId(r) !== reportUserFilter) return false;
+      return true;
+    });
+  }, [reports, reportFilter, reportUserFilter]);
+
+  const openFlagCountByUserId = useMemo(
+    () => groupOpenReportCountByUserId(reports),
+    [reports]
+  );
+
+  // Fetch missing flagged messages & recent messages by flagged members when reviewing Reports
+  useEffect(() => {
+    if (!isOpen || normalizedTab !== 'reports') return;
+
+    const missingMsgIds = Array.from(
+      new Set(
+        filteredReports
+          .map((r) => resolveReportInspectMessageId(r))
+          .filter((id): id is string => Boolean(id))
+          .filter((id) => !messageLookup.has(id) && !deletedReportMessageIds[id])
+      )
+    ).slice(0, 25);
+
+    const missingAuthorUids = Array.from(
+      new Set(
+        filteredReports
+          .map((r) => resolveReportTargetUserId(r))
+          .filter((uid) => Boolean(uid) && !fetchedAuthorMessageIds[uid])
+      )
+    ).slice(0, 12);
+
+    if (missingMsgIds.length === 0 && missingAuthorUids.length === 0) return;
+    let cancelled = false;
+
+    if (missingMsgIds.length > 0) {
+      Promise.all(
+        missingMsgIds.map(async (msgId) => {
+          try {
+            const snap = await getDoc(doc(db, 'messages', msgId));
+            if (cancelled) return;
+            if (snap.exists()) {
+              const d = snap.data();
+              setFetchedReportMessagesById((prev) => ({
+                ...prev,
+                [msgId]: {
+                  id: snap.id,
+                  channelId: String(d.channelId || 'general-chat'),
+                  authorId: String(d.authorId || ''),
+                  authorName: String(d.authorName || 'Builder'),
+                  text: String(d.text || ''),
+                  linkTitle: d.linkTitle ? String(d.linkTitle) : undefined,
+                  linkUrl: d.linkUrl ? String(d.linkUrl) : undefined,
+                },
+              }));
+            } else {
+              setDeletedReportMessageIds((prev) => ({ ...prev, [msgId]: true }));
+            }
+          } catch {
+            // Ignore single fetch error
+          }
+        })
+      );
+    }
+
+    if (missingAuthorUids.length > 0) {
+      Promise.all(
+        missingAuthorUids.map(async (uid) => {
+          try {
+            const snap = await getDocs(
+              query(collection(db, 'messages'), where('authorId', '==', uid), limit(15))
+            );
+            if (cancelled) return;
+            const authored: Array<AdminMessageLookup & { createdAtMillis: number }> = [];
+            snap.forEach((docSnap) => {
+              const d = docSnap.data();
+              const millis =
+                typeof d.createdAtMillis === 'number'
+                  ? d.createdAtMillis
+                  : d.createdAt?.toMillis
+                    ? d.createdAt.toMillis()
+                    : 0;
+              authored.push({
+                id: docSnap.id,
+                channelId: String(d.channelId || 'general-chat'),
+                authorId: String(d.authorId || uid),
+                authorName: String(d.authorName || 'Builder'),
+                text: String(d.text || d.linkTitle || d.linkUrl || ''),
+                linkTitle: d.linkTitle ? String(d.linkTitle) : undefined,
+                linkUrl: d.linkUrl ? String(d.linkUrl) : undefined,
+                createdAtMillis: millis,
+              });
+            });
+            authored.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+            setRecentMessagesByAuthorId((prev) => ({ ...prev, [uid]: authored.slice(0, 6) }));
+            setFetchedAuthorMessageIds((prev) => ({ ...prev, [uid]: true }));
+          } catch {
+            if (!cancelled) {
+              setFetchedAuthorMessageIds((prev) => ({ ...prev, [uid]: true }));
+            }
+          }
+        })
+      );
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isOpen,
+    normalizedTab,
+    filteredReports,
+    messageLookup,
+    deletedReportMessageIds,
+    fetchedAuthorMessageIds,
+  ]);
 
   const moderatedChannels = useMemo(() => {
     return allChannels.filter(
@@ -385,14 +586,6 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
       moderatorIds: [],
       kickedUserIds: [],
     };
-
-  const filteredReports = useMemo(() => {
-    return reports.filter((r) => {
-      if (reportFilter === 'open') return r.status === 'open';
-      if (reportFilter === 'resolved') return r.status === 'resolved';
-      return true;
-    });
-  }, [reports, reportFilter]);
 
   const resolvedReportsCount = useMemo(
     () => reports.filter((r) => r.status === 'resolved').length,
@@ -599,6 +792,77 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
     }
   };
 
+  const pendingFeedbackCount = useMemo(
+    () =>
+      feedbackSubmissions.filter(
+        (f) => f.status === 'received' || f.status === 'under_review'
+      ).length,
+    [feedbackSubmissions]
+  );
+
+  const filteredFeedbackSubmissions = useMemo(() => {
+    if (feedbackFilterStatus === 'all') return feedbackSubmissions;
+    return feedbackSubmissions.filter((f) => f.status === feedbackFilterStatus);
+  }, [feedbackSubmissions, feedbackFilterStatus]);
+
+  const handleOpenFeedbackReview = (sub: FeedbackSubmission) => {
+    if (editingFeedbackId === sub.id) {
+      setEditingFeedbackId(null);
+      return;
+    }
+    setEditingFeedbackId(sub.id);
+    setFeedbackStatusDraft(sub.status);
+    setFeedbackResponseDraft(sub.moderatorResponse || '');
+    setFeedbackBonusDraft(Boolean(sub.bonusPointAwarded || sub.isUseful));
+  };
+
+  const handleSaveFeedbackReview = async (sub: FeedbackSubmission) => {
+    setIsSavingFeedback(true);
+    setAdminFeedback(null);
+    try {
+      const res = await adminUpdateFeedbackSubmission({
+        submission: sub,
+        status: feedbackStatusDraft,
+        awardUsefulBonus: feedbackBonusDraft && !sub.bonusPointAwarded,
+        moderatorResponse: feedbackResponseDraft,
+        internalNotes: feedbackInternalNotesDraft,
+      });
+      setAdminFeedback(
+        res.bonusAwarded
+          ? `Updated "${sub.title}" and awarded +2 bonus pts.`
+          : `Updated feedback status for "${sub.title}".`
+      );
+      setEditingFeedbackId(null);
+    } catch (err) {
+      setAdminFeedback(
+        err instanceof Error ? err.message : 'Could not update feedback submission.'
+      );
+    } finally {
+      setIsSavingFeedback(false);
+    }
+  };
+
+  const handleConfirmReverseEvent = async (eventId: string) => {
+    setIsReversingEvent(true);
+    setAdminFeedback(null);
+    try {
+      const res = await adminReverseContributionEvent(eventId, reverseReasonInput);
+      setReversingEventId(null);
+      setReverseReasonInput('');
+      setAdminFeedback(
+        res.reversed
+          ? `Reversed contribution event (${res.pointsDeducted || 0} pts deducted).`
+          : 'Contribution event was already reversed.'
+      );
+    } catch (err) {
+      setAdminFeedback(
+        err instanceof Error ? err.message : 'Failed to reverse contribution points.'
+      );
+    } finally {
+      setIsReversingEvent(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const navItems: Array<{
@@ -651,6 +915,15 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
       count: openReportsCount,
       highlightCount: openReportsCount > 0,
       visible: true,
+    },
+    {
+      id: 'feedback',
+      label: 'Feedback & Ledger',
+      mobileLabel: 'Feedback',
+      icon: Lightbulb,
+      count: pendingFeedbackCount,
+      highlightCount: pendingFeedbackCount > 0,
+      visible: isSuperAdmin || isGlobalModerator,
     },
     {
       id: 'channels',
@@ -1738,6 +2011,24 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                   </div>
                 </div>
 
+                {reportUserFilter && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[#FFF025]/35 bg-[#FFF025]/10 text-xs">
+                    <span className="text-white/90">
+                      Showing reports for{' '}
+                      <strong>
+                        @{userLookup.get(reportUserFilter)?.displayName || reportUserFilter}
+                      </strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setReportUserFilter(null)}
+                      className="text-[#FFF025] font-semibold hover:underline cursor-pointer"
+                    >
+                      Show all reports
+                    </button>
+                  </div>
+                )}
+
                 {filteredReports.length === 0 ? (
                   <div className="py-12 px-4 border border-white/10 rounded-lg bg-[#13161e] text-center space-y-1.5">
                     <div className="text-sm font-medium text-white/80">
@@ -1755,12 +2046,17 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                   <div className="divide-y divide-white/[0.08] border border-white/10 rounded-lg bg-[#13161e]">
                     {filteredReports.map((rep) => {
                       const isUserReport = rep.messageId.startsWith('user-');
-                      const targetUid = isUserReport
-                        ? rep.reportedUserId || rep.messageId.replace(/^user-/, '')
-                        : rep.reportedUserId;
-                      const matchedMsg = !isUserReport
-                        ? messageLookup.get(rep.messageId)
+                      const isPublicReport = rep.channelId.startsWith('publicPosts/');
+                      const targetUid = resolveReportTargetUserId(rep);
+                      const inspectMsgId = !isPublicReport
+                        ? resolveReportInspectMessageId(rep)
+                        : null;
+                      const matchedMsg = inspectMsgId
+                        ? messageLookup.get(inspectMsgId)
                         : undefined;
+                      const isOriginalDeleted = Boolean(
+                        inspectMsgId && deletedReportMessageIds[inspectMsgId]
+                      );
                       const matchedTargetUser = targetUid
                         ? userLookup.get(targetUid)
                         : undefined;
@@ -1775,23 +2071,66 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                         '';
                       const resolvedReporterName =
                         rep.reporterName || matchedReporter?.displayName || '';
-                      const resolvedSnippet =
-                        rep.messageSnippet ||
+                      const rawSnippetIsPlaceholder =
+                        isUserReport &&
+                        !rep.referencedMessageId &&
+                        !rep.messageText &&
+                        (rep.messageSnippet || '').startsWith('Flagged profile:');
+                      const resolvedFullMessage =
                         matchedMsg?.text ||
+                        rep.messageText ||
+                        (rawSnippetIsPlaceholder ? '' : rep.messageSnippet) ||
                         matchedMsg?.linkTitle ||
                         matchedMsg?.linkUrl ||
                         '';
+                      const resolvedLinkUrl = matchedMsg?.linkUrl || rep.messageLinkUrl || '';
+                      const jumpChannelId =
+                        matchedMsg?.channelId ||
+                        rep.referencedChannelId ||
+                        rep.streamId ||
+                        rep.channelId;
+                      const authorRecentMsgs = (
+                        (targetUid && recentMessagesByAuthorId[targetUid]) ||
+                        knownMessages
+                          .filter((m) => m.authorId && m.authorId === targetUid)
+                          .map((m) => ({ ...m, createdAtMillis: 0 }))
+                      )
+                        .filter((m) => !inspectMsgId || m.id !== inspectMsgId)
+                        .slice(0, 4);
+                      const canJumpToSpecificMsg = Boolean(isPublicReport || inspectMsgId);
+
+                      const handleOpenFlaggedTarget = () => {
+                        if (isPublicReport) {
+                          const postId = rep.channelId.replace('publicPosts/', '');
+                          onClose();
+                          window.history.pushState({}, '', `/community/posts/${postId}`);
+                          window.dispatchEvent(new PopStateEvent('popstate'));
+                          return;
+                        }
+                        onJumpToReportedMessage(
+                          jumpChannelId,
+                          inspectMsgId || '',
+                          resolvedTargetName,
+                          resolvedFullMessage,
+                          rep.streamId || rep.referencedChannelId || matchedMsg?.channelId,
+                          rep.id
+                        );
+                      };
 
                       return (
                         <div key={rep.id} className="p-4 space-y-3">
                           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <div className="flex flex-wrap items-center gap-2 min-w-0 text-white/60">
                               <span className="font-medium text-white">
-                                {isUserReport ? 'Flagged Member' : 'Flagged Message'}
+                                {isUserReport
+                                  ? 'Flagged Member'
+                                  : isPublicReport
+                                    ? 'Flagged Public Post'
+                                    : 'Flagged Message'}
                               </span>
                               <span aria-hidden="true">·</span>
                               <span className="font-mono text-white/75">
-                                #{rep.channelId}
+                                #{(jumpChannelId || rep.channelId).split('__group__')[0]}
                               </span>
                               {resolvedTargetName && (
                                 <>
@@ -1817,57 +2156,144 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                               </span>
                             </div>
 
-                            <span
-                              className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded ${
-                                rep.status === 'open'
-                                  ? 'bg-[#FFF025] text-black font-semibold'
-                                  : 'border border-white/15 text-white/60'
-                              }`}
-                            >
-                              {rep.status === 'open' ? 'Open' : 'Resolved'}
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              {isOriginalDeleted && (
+                                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded border border-white/15 text-white/55">
+                                  Deleted
+                                </span>
+                              )}
+                              <span
+                                className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded ${
+                                  rep.status === 'open'
+                                    ? 'bg-[#FFF025] text-black font-semibold'
+                                    : 'border border-white/15 text-white/60'
+                                }`}
+                              >
+                                {rep.status === 'open' ? 'Open' : 'Resolved'}
+                              </span>
+                            </div>
                           </div>
 
-                          {resolvedSnippet ? (
-                            <div className="px-3 py-2 rounded-md bg-[#0d0f14] border border-white/[0.07] text-xs text-white/85 leading-relaxed whitespace-pre-wrap break-words">
-                              {resolvedSnippet}
+                          {/* Reason Box (always prominent so admin immediately sees WHY it was flagged) */}
+                          <div className="px-3 py-2 rounded-md bg-white/[0.04] border border-white/10 text-xs text-white/85 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="text-[10px] font-mono uppercase tracking-wider text-[#FFF025] mr-2">
+                                Why Flagged
+                              </span>
+                              <span>{rep.reason}</span>
                             </div>
-                          ) : (
-                            <div className="px-3 py-2 rounded-md bg-[#0d0f14] border border-white/[0.07] text-xs text-white/45 italic">
-                              Message preview unavailable — use Jump to Message to view in channel.
+                            {resolvedReporterName && (
+                              <span className="text-[11px] text-white/50">
+                                Reported by {resolvedReporterName}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Exact Flagged or Attached Message Preview */}
+                          {canJumpToSpecificMsg ? (
+                            <button
+                              type="button"
+                              onClick={handleOpenFlaggedTarget}
+                              title="Click to jump directly to this flagged message"
+                              className="w-full text-left px-3 py-2.5 rounded-md bg-[#0d0f14] hover:bg-[#171b24] border border-white/[0.09] hover:border-[#FFF025]/50 transition-colors cursor-pointer group space-y-1.5"
+                            >
+                              <div className="text-[10px] font-mono uppercase tracking-wider text-white/45">
+                                {isUserReport
+                                  ? 'Attached Flagged Message'
+                                  : isPublicReport
+                                    ? 'Flagged Showcase Post'
+                                    : 'Flagged Message Content'}
+                              </div>
+                              <div className="text-xs text-white/90 leading-relaxed whitespace-pre-wrap break-words">
+                                {resolvedFullMessage || 'Flagged message content'}
+                              </div>
+                              {resolvedLinkUrl && (
+                                <div className="text-[11px] font-mono text-white/50 truncate">
+                                  {resolvedLinkUrl}
+                                </div>
+                              )}
+                              <div className="flex items-center justify-between text-[11px] text-[#FFF025]/85 group-hover:text-[#FFF025] font-medium pt-0.5">
+                                <span>
+                                  {isPublicReport
+                                    ? 'Click to open flagged showcase post'
+                                    : isOriginalDeleted
+                                      ? 'Original message was deleted · Click to open channel'
+                                      : 'Click to scroll directly to this message'}
+                                </span>
+                                <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
+                              </div>
+                            </button>
+                          ) : resolvedFullMessage ? (
+                            <div className="px-3 py-2 rounded-md bg-[#0d0f14] border border-white/[0.07] text-xs text-white/85 leading-relaxed whitespace-pre-wrap break-words">
+                              {resolvedFullMessage}
+                            </div>
+                          ) : null}
+
+                          {/* Recent Messages Authored by Flagged Member (so Admin sees context even on profile flags) */}
+                          {isUserReport && targetUid && (
+                            <div className="p-3 rounded-md bg-[#0d0f14] border border-white/[0.08] space-y-2">
+                              <div className="flex items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wider text-white/55">
+                                <span>
+                                  Recent Messages by @{resolvedTargetName || 'Member'}
+                                </span>
+                                <span>Click any message to locate in Hub</span>
+                              </div>
+                              {authorRecentMsgs.length === 0 ? (
+                                <div className="text-xs text-white/45">
+                                  No recent chat messages found from this member.
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {authorRecentMsgs.map((msg) => {
+                                    const baseMsgCh = msg.channelId.split('__group__')[0];
+                                    return (
+                                      <button
+                                        key={msg.id}
+                                        type="button"
+                                        onClick={() =>
+                                          onJumpToReportedMessage(
+                                            msg.channelId,
+                                            msg.id,
+                                            msg.authorName || resolvedTargetName,
+                                            msg.text,
+                                            msg.channelId,
+                                            rep.id
+                                          )
+                                        }
+                                        className="w-full text-left px-2.5 py-2 rounded border border-white/10 hover:border-[#FFF025]/50 bg-[#13161e] hover:bg-[#171b24] transition-colors cursor-pointer flex items-start justify-between gap-2 group"
+                                      >
+                                        <div className="min-w-0 flex-1 space-y-0.5">
+                                          <div className="text-[10px] font-mono text-white/50">
+                                            #{baseMsgCh}
+                                          </div>
+                                          <div className="text-xs text-white/90 break-words line-clamp-2">
+                                            {msg.text || msg.linkTitle || msg.linkUrl || 'Message'}
+                                          </div>
+                                        </div>
+                                        <ArrowUpRight className="w-3.5 h-3.5 text-white/45 group-hover:text-[#FFF025] shrink-0 mt-0.5" />
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
 
-                          <div className="text-xs text-white/65">
-                            <span>{rep.reason}</span>
-                            {resolvedReporterName && (
-                              <>
-                                {' '}
-                                <span className="text-white/35">·</span>{' '}
-                                <span className="text-white/50">
-                                  Flagged by {resolvedReporterName}
-                                </span>
-                              </>
-                            )}
-                          </div>
-
                           <div className="flex flex-wrap items-center gap-2 pt-0.5">
-                            {!isUserReport && rep.messageId && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  onJumpToReportedMessage(
-                                    rep.channelId,
-                                    rep.messageId,
-                                    resolvedTargetName,
-                                    resolvedSnippet
-                                  );
-                                }}
-                                className="px-3 py-1.5 rounded-md border border-white/15 text-xs font-medium text-white/85 hover:bg-white/[0.08] transition-colors cursor-pointer"
-                              >
-                                Jump to Message
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={handleOpenFlaggedTarget}
+                              className="px-3 py-1.5 rounded-md border border-white/15 text-xs font-medium text-white/90 hover:bg-white/[0.08] transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                            >
+                              <ArrowUpRight className="w-3.5 h-3.5" />
+                              <span>
+                                {isPublicReport
+                                  ? 'Open Flagged Post'
+                                  : canJumpToSpecificMsg
+                                    ? 'Jump to Message'
+                                    : `Open #${(jumpChannelId || 'general-chat').split('__group__')[0]}`}
+                              </span>
+                            </button>
 
                             {matchedTargetUser && (
                               <button
@@ -2426,7 +2852,7 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                               ringPaddingClass="p-[1.5px]"
                             />
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2 min-w-0">
+                              <div className="flex items-center gap-2 min-w-0 flex-wrap">
                                 <button
                                   type="button"
                                   onClick={() => onInspectMemberProfile(u)}
@@ -2437,6 +2863,24 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                                 <span className="text-[11px] text-white/45 capitalize shrink-0">
                                   {u.role}
                                 </span>
+                                {(openFlagCountByUserId[u.uid] || 0) > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReportUserFilter(u.uid);
+                                      setReportFilter('open');
+                                      onChangeTab('reports');
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FFF025] text-black text-[10px] font-bold uppercase cursor-pointer hover:bg-[#ffe500]"
+                                    title="View why this member was flagged and inspect their messages"
+                                  >
+                                    <Flag className="w-2.5 h-2.5" />
+                                    <span>
+                                      {openFlagCountByUserId[u.uid]} Flag
+                                      {openFlagCountByUserId[u.uid] === 1 ? '' : 's'}
+                                    </span>
+                                  </button>
+                                )}
                               </div>
                               <div className="text-[11px] text-white/55 truncate flex items-center gap-1.5">
                                 <span>{isUserApprovedInHub ? 'Hub Member' : 'Public Only'}</span>
@@ -2657,6 +3101,310 @@ export const AdminControlCenterModal: React.FC<AdminControlCenterModalProps> = (
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+            {/* ==============================================================
+                TAB 8: FEEDBACK SUGGESTIONS & CONTRIBUTION LEDGER (Admin & Global Mod)
+                ============================================================== */}
+            {normalizedTab === 'feedback' && (isSuperAdmin || isGlobalModerator) && (
+              <div className="space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/10">
+                  <div>
+                    <h3 className="text-base font-semibold text-white">
+                      Feedback Suggestions &amp; Contribution Ledger
+                    </h3>
+                    <p className="text-xs text-white/50 mt-0.5">
+                      Review private member feedback, award +2 useful-idea bonuses, or reverse invalid points.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#13161e] border border-white/10 self-start">
+                    <button
+                      type="button"
+                      onClick={() => setFeedbackSubView('suggestions')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
+                        feedbackSubView === 'suggestions'
+                          ? 'bg-[#FFF025] text-black font-semibold'
+                          : 'text-white/65 hover:text-white'
+                      }`}
+                    >
+                      Suggestions ({feedbackSubmissions.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFeedbackSubView('ledger')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer whitespace-nowrap ${
+                        feedbackSubView === 'ledger'
+                          ? 'bg-[#FFF025] text-black font-semibold'
+                          : 'text-white/65 hover:text-white'
+                      }`}
+                    >
+                      Points Ledger ({contributionEvents.length})
+                    </button>
+                  </div>
+                </div>
+
+                {feedbackSubView === 'suggestions' ? (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(
+                        [
+                          'all',
+                          'received',
+                          'under_review',
+                          'accepted',
+                          'planned',
+                          'in_progress',
+                          'completed',
+                          'declined',
+                        ] as const
+                      ).map((st) => (
+                        <button
+                          key={st}
+                          type="button"
+                          onClick={() => setFeedbackFilterStatus(st)}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-medium cursor-pointer ${
+                            feedbackFilterStatus === st
+                              ? 'bg-[#FFF025] text-black font-semibold'
+                              : 'border border-white/15 text-white/65 hover:text-white'
+                          }`}
+                        >
+                          {st === 'all' ? 'All' : FEEDBACK_STATUS_LABELS[st]}
+                        </button>
+                      ))}
+                    </div>
+
+                    {filteredFeedbackSubmissions.length === 0 ? (
+                      <div className="py-10 text-center border border-white/10 rounded-lg bg-[#13161e] text-xs text-white/50">
+                        No feedback submissions match this filter.
+                      </div>
+                    ) : (
+                      <div className="border border-white/10 rounded-lg bg-[#13161e] divide-y divide-white/[0.08]">
+                        {filteredFeedbackSubmissions.map((sub) => {
+                          const isEditing = editingFeedbackId === sub.id;
+                          return (
+                            <div key={sub.id} className="p-4 space-y-3">
+                              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                                <div className="min-w-0 space-y-1">
+                                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                    <span className="px-2 py-0.5 rounded border border-white/20 text-white font-semibold uppercase">
+                                      {FEEDBACK_STATUS_LABELS[sub.status] || sub.status}
+                                    </span>
+                                    <span className="text-white/55">
+                                      {FEEDBACK_CATEGORY_LABELS[sub.category]}
+                                    </span>
+                                    {sub.bonusPointAwarded && (
+                                      <span className="inline-flex items-center gap-1 text-[#FFF025] font-semibold">
+                                        <Award className="w-3 h-3" />
+                                        <span>+2 Useful Bonus</span>
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-sm font-semibold text-white">
+                                    {sub.title}
+                                  </div>
+                                  <div className="text-[11px] text-white/50">
+                                    By {sub.authorName}
+                                    {sub.schoolName ? ` · ${sub.schoolName}` : ''} ·{' '}
+                                    {new Date(sub.createdAt).toLocaleDateString()}
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenFeedbackReview(sub)}
+                                  className="px-3 py-1.5 rounded-md border border-white/15 text-xs font-medium text-white hover:bg-white/[0.08] cursor-pointer shrink-0 self-start"
+                                >
+                                  {isEditing ? 'Close' : 'Review'}
+                                </button>
+                              </div>
+
+                              <p className="text-xs text-white/75 whitespace-pre-wrap leading-relaxed">
+                                {sub.explanation}
+                              </p>
+
+                              {sub.attachmentUrl && (
+                                <a
+                                  href={sub.attachmentUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-[11px] text-[#FFF025] hover:underline"
+                                >
+                                  <span>View Attached Screenshot</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              )}
+
+                              {isEditing && (
+                                <div className="p-3.5 rounded-lg border border-white/15 bg-[#0d0f14] space-y-3">
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div>
+                                      <label className="block text-[11px] text-white/60 mb-1">
+                                        Status
+                                      </label>
+                                      <select
+                                        value={feedbackStatusDraft}
+                                        onChange={(e) =>
+                                          setFeedbackStatusDraft(e.target.value as FeedbackStatus)
+                                        }
+                                        className="w-full px-3 py-2 rounded-md bg-[#13161e] border border-white/15 text-xs text-white"
+                                      >
+                                        {(Object.keys(FEEDBACK_STATUS_LABELS) as FeedbackStatus[]).map(
+                                          (stKey) => (
+                                            <option key={stKey} value={stKey}>
+                                              {FEEDBACK_STATUS_LABELS[stKey]}
+                                            </option>
+                                          )
+                                        )}
+                                      </select>
+                                    </div>
+
+                                    <div className="flex items-end">
+                                      <label className="flex items-center gap-2 px-3 py-2 rounded-md border border-white/15 bg-[#13161e] w-full text-xs text-white cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={feedbackBonusDraft}
+                                          disabled={sub.bonusPointAwarded}
+                                          onChange={(e) => setFeedbackBonusDraft(e.target.checked)}
+                                          className="accent-[#FFF025]"
+                                        />
+                                        <span>
+                                          {sub.bonusPointAwarded
+                                            ? 'Useful Bonus Already Awarded (+2 pts)'
+                                            : 'Mark Useful & Award +2 Bonus Pts'}
+                                        </span>
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-[11px] text-white/60 mb-1">
+                                      Author-Visible Response (sent in notification)
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={feedbackResponseDraft}
+                                      onChange={(e) => setFeedbackResponseDraft(e.target.value)}
+                                      placeholder="Optional reply to the student or creator..."
+                                      className="w-full px-3 py-2 rounded-md bg-[#13161e] border border-white/15 text-xs text-white"
+                                    />
+                                  </div>
+
+                                  <div>
+                                    <label className="block text-[11px] text-white/60 mb-1">
+                                      Private Moderator Notes (admin/mod only)
+                                    </label>
+                                    <textarea
+                                      rows={2}
+                                      value={feedbackInternalNotesDraft}
+                                      onChange={(e) =>
+                                        setFeedbackInternalNotesDraft(e.target.value)
+                                      }
+                                      placeholder="Internal triage context..."
+                                      className="w-full px-3 py-2 rounded-md bg-[#13161e] border border-white/15 text-xs text-white"
+                                    />
+                                  </div>
+
+                                  <div className="flex justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={isSavingFeedback}
+                                      onClick={() => handleSaveFeedbackReview(sub)}
+                                      className="px-4 py-1.5 rounded-md bg-[#FFF025] text-black text-xs font-semibold cursor-pointer disabled:opacity-50"
+                                    >
+                                      {isSavingFeedback ? 'Saving...' : 'Save Review'}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {contributionEvents.length === 0 ? (
+                      <div className="py-10 text-center border border-white/10 rounded-lg bg-[#13161e] text-xs text-white/50">
+                        No verified contribution events recorded yet.
+                      </div>
+                    ) : (
+                      <div className="border border-white/10 rounded-lg bg-[#13161e] divide-y divide-white/[0.08]">
+                        {contributionEvents.map((ev) => {
+                          const targetUser = userLookup.get(ev.uid);
+                          const isReversingThis = reversingEventId === ev.id;
+                          return (
+                            <div key={ev.id} className="p-3.5 space-y-2.5">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                                    <span className="font-semibold text-white">
+                                      {targetUser?.displayName || ev.uid}
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded border border-white/15 text-[10px] font-mono text-white/80">
+                                      {ev.actionType}
+                                    </span>
+                                    <span
+                                      className={`font-mono font-semibold tabular-nums ${
+                                        ev.reversed ? 'line-through text-white/40' : 'text-[#FFF025]'
+                                      }`}
+                                    >
+                                      +{ev.points} pts
+                                    </span>
+                                    {ev.reversed && (
+                                      <span className="text-[10px] font-semibold uppercase text-white/55">
+                                        Reversed
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-white/45 mt-0.5 font-mono">
+                                    {new Date(ev.createdAt).toLocaleString()} · Source: {ev.sourceId}
+                                    {ev.reversalReason ? ` · Reason: ${ev.reversalReason}` : ''}
+                                  </div>
+                                </div>
+
+                                {!ev.reversed && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setReversingEventId(isReversingThis ? null : ev.id);
+                                      setReverseReasonInput('');
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-white/15 text-[11px] text-white/75 hover:text-white hover:bg-white/[0.08] cursor-pointer self-start shrink-0"
+                                  >
+                                    <RotateCw className="w-3 h-3" />
+                                    <span>{isReversingThis ? 'Cancel' : 'Reverse'}</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              {isReversingThis && (
+                                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                                  <input
+                                    type="text"
+                                    value={reverseReasonInput}
+                                    onChange={(e) => setReverseReasonInput(e.target.value)}
+                                    placeholder="Reason for reversing points (e.g. spam reply, duplicate)..."
+                                    className="flex-1 px-3 py-1.5 rounded-md bg-[#0d0f14] border border-white/15 text-xs text-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={isReversingEvent || reverseReasonInput.trim().length < 3}
+                                    onClick={() => handleConfirmReverseEvent(ev.id)}
+                                    className="px-3.5 py-1.5 rounded-md bg-[#FFF025] text-black text-xs font-semibold cursor-pointer disabled:opacity-50"
+                                  >
+                                    {isReversingEvent ? 'Reversing...' : 'Confirm Deduction'}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

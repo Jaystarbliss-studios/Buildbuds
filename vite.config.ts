@@ -11,6 +11,7 @@ import studentSubmitHandler from './api/student-access/submit.ts';
 import studentApproveHandler from './api/student-access/approve.ts';
 import studentRejectHandler from './api/student-access/reject.ts';
 import studentNotifyHandler from './api/student-access/notify.ts';
+import contributionsAwardHandler from './api/contributions/award.ts';
 
 function localVercelApiPlugin(): Plugin {
   const routes: Record<string, typeof cloudinarySignatureHandler> = {
@@ -20,6 +21,7 @@ function localVercelApiPlugin(): Plugin {
     '/api/student-access/approve': studentApproveHandler,
     '/api/student-access/reject': studentRejectHandler,
     '/api/student-access/notify': studentNotifyHandler,
+    '/api/contributions/award': contributionsAwardHandler,
   };
 
   return {
@@ -93,13 +95,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: [
-          'assets/aistudio/images/aurora-logo.png',
-          'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-          'pwa-maskable-512x512.png',
-        ],
+        includeManifestIcons: false,
         manifest: {
           id: '/',
           name: 'Build Buds Community',
@@ -113,19 +109,19 @@ export default defineConfig(() => {
           scope: '/',
           icons: [
             {
-              src: '/assets/aistudio/images/aurora-logo.png',
+              src: '/pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/assets/aistudio/images/aurora-logo.png',
+              src: '/pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/assets/aistudio/images/aurora-logo.png',
+              src: '/pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -133,8 +129,10 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/sw.js', '**/workbox-*.js', '**/assets/aistudio/**'],
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
@@ -168,7 +166,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),

@@ -508,3 +508,361 @@ export function computeChannelUnreadState(
     hasMention,
   };
 }
+
+export interface ReconcileChannelMessagesInput<
+  T extends { id: string; channelId: string; createdAtMillis: number }
+> {
+  activeStreamId: string;
+  liveMessages: T[];
+  cachedMessages: T[];
+  deletedMessageIds: ReadonlySet<string>;
+  fromCache: boolean;
+  isTruncated: boolean;
+}
+
+/**
+ * Reconciles live Firestore channel messages with cached local messages without EVER
+ * resurrecting deleted messages. Once a live non-truncated server snapshot arrives,
+ * live server documents are 100% authoritative for `activeStreamId`.
+ */
+export function reconcileChannelMessagesAfterSnapshot<
+  T extends { id: string; channelId: string; createdAtMillis: number }
+>({
+  activeStreamId,
+  liveMessages,
+  cachedMessages,
+  deletedMessageIds,
+  fromCache,
+  isTruncated,
+}: ReconcileChannelMessagesInput<T>): T[] {
+  const byId = new Map<string, T>();
+
+  const oldestLiveMillis = liveMessages.reduce(
+    (min, item) => (item.createdAtMillis < min ? item.createdAtMillis : min),
+    Infinity
+  );
+
+  cachedMessages.forEach((cached) => {
+    if (cached.channelId !== activeStreamId) return;
+    if (deletedMessageIds.has(cached.id)) return;
+    if (!fromCache) {
+      // Live authoritative snapshot covers the full channel: drop stale cached items missing from server
+      if (!isTruncated) return;
+      // If truncated at query limit, only preserve cached items strictly older than the live window
+      if (oldestLiveMillis === Infinity || cached.createdAtMillis >= oldestLiveMillis) {
+        return;
+      }
+    }
+    byId.set(cached.id, cached);
+  });
+
+  liveMessages.forEach((msg) => {
+    if (msg.channelId !== activeStreamId) return;
+    if (deletedMessageIds.has(msg.id)) return;
+    byId.set(msg.id, msg);
+  });
+
+  return Array.from(byId.values()).sort(
+    (a, b) => a.createdAtMillis - b.createdAtMillis
+  );
+}
+
+export interface ReconcileShowcaseMessagesInput<
+  T extends { id: string; channelId: string; linkUrl?: string; text: string; createdAtMillis: number }
+> {
+  prevMessages: T[];
+  liveLinkMessages: T[];
+  deletedMessageIds: ReadonlySet<string>;
+  fromCache: boolean;
+  isTruncated: boolean;
+  activeStreamId?: string;
+}
+
+/**
+ * Reconciles Shared Links / Showcase items against live `linkUrl` query results so deleted
+ * links vanish cleanly for every user instead of lingering in localStorage or React state.
+ */
+export function reconcileShowcaseMessages<
+  T extends { id: string; channelId: string; linkUrl?: string; text: string; createdAtMillis: number }
+>({
+  prevMessages,
+  liveLinkMessages,
+  deletedMessageIds,
+  fromCache,
+  isTruncated,
+}: ReconcileShowcaseMessagesInput<T>): T[] {
+  const liveLinkIds = new Set(liveLinkMessages.map((m) => m.id));
+  const byId = new Map<string, T>();
+
+  const oldestLiveMillis = liveLinkMessages.reduce(
+    (min, item) => (item.createdAtMillis < min ? item.createdAtMillis : min),
+    Infinity
+  );
+
+  prevMessages.forEach((item) => {
+    if (deletedMessageIds.has(item.id)) return;
+    if (item.linkUrl) {
+      if (!fromCache) {
+        if (!isTruncated && !liveLinkIds.has(item.id)) return;
+        if (
+          isTruncated &&
+          oldestLiveMillis !== Infinity &&
+          item.createdAtMillis >= oldestLiveMillis &&
+          !liveLinkIds.has(item.id)
+        ) {
+          return;
+        }
+      }
+    }
+    byId.set(item.id, item);
+  });
+
+  liveLinkMessages.forEach((item) => {
+    if (!deletedMessageIds.has(item.id)) {
+      byId.set(item.id, item);
+    }
+  });
+
+  return Array.from(byId.values()).sort(
+    (a, b) => b.createdAtMillis - a.createdAtMillis
+  );
+}
+
+/**
+ * Filters a specific channel's serialized localStorage cache by removing `deletedId`
+ * without corrupting it with messages from another active stream.
+ */
+export function filterCachedChannelMessagesJson(
+  rawJson: string | null,
+  deletedId: string
+): string {
+  if (!rawJson) return '[]';
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (!Array.isArray(parsed)) return '[]';
+    const filtered = parsed.filter(
+      (item) => item && typeof item === 'object' && item.id !== deletedId
+    );
+    return JSON.stringify(filtered.slice(-60));
+  } catch {
+    return '[]';
+  }
+}
+
+export interface HubDeepLinkTarget {
+  channelId: string;
+  streamId?: string;
+  subGroupId?: string | null;
+  messageId?: string;
+  reportId?: string;
+  openReports?: boolean;
+}
+
+/**
+ * Parses `/hub?channel=...&stream=...&messageId=...&reportId=...&tab=reports` URLs
+ * into structured Hub deep-link state for smooth navigation and scroll-to-message.
+ */
+export function parseHubDeepLinkParams(path: string): HubDeepLinkTarget | null {
+  if (!path) return null;
+  const cleanPath = path.split('?')[0];
+  if (cleanPath !== '/hub') return null;
+
+  const qIdx = path.indexOf('?');
+  if (qIdx === -1) return null;
+
+  const params = new URLSearchParams(path.slice(qIdx + 1));
+  const rawStream = params.get('stream')?.trim() || '';
+  const rawChannel = params.get('channel')?.trim() || '';
+  const messageId = params.get('messageId')?.trim() || '';
+  const reportId = params.get('reportId')?.trim() || '';
+  const tab = params.get('tab')?.trim() || '';
+
+  const effectiveStream = rawStream || rawChannel;
+  const baseChannelId = (effectiveStream || 'general-chat').split('__group__')[0];
+  const subGroupId =
+    effectiveStream && effectiveStream.includes('__group__')
+      ? effectiveStream.split('__group__')[1] || null
+      : null;
+
+  if (!rawChannel && !rawStream && !messageId && !reportId && tab !== 'reports') {
+    return null;
+  }
+
+  return {
+    channelId: baseChannelId,
+    ...(effectiveStream ? { streamId: effectiveStream } : {}),
+    subGroupId,
+    ...(messageId ? { messageId } : {}),
+    ...(reportId ? { reportId } : {}),
+    ...(tab === 'reports' ? { openReports: true } : {}),
+  };
+}
+
+/**
+ * Resolves the startup route for installed PWA launches so `/` or empty paths
+ * open straight at `/community` rather than the marketing homepage.
+ */
+export function resolveStandaloneInitialRoute(
+  pathname: string,
+  search: string,
+  isStandalone: boolean
+): string {
+  const safePath = pathname || '/';
+  const safeSearch = search || '';
+  if (isStandalone && (safePath === '/' || safePath === '')) {
+    return `/community${safeSearch}`;
+  }
+  return `${safePath}${safeSearch}`;
+}
+
+export interface InspectableReportLike {
+  id?: string;
+  messageId?: string;
+  referencedMessageId?: string;
+  channelId?: string;
+  referencedChannelId?: string;
+  streamId?: string;
+  reportedUserId?: string;
+  status?: string;
+  createdAtMillis?: unknown;
+  createdAt?: unknown;
+}
+
+/**
+ * Extracts a numeric epoch-millisecond timestamp from a Firestore report document
+ * supporting numeric `createdAtMillis`, Firestore `Timestamp` (`.toMillis()`),
+ * `{ seconds }`, or ISO date strings.
+ */
+export function extractReportTimestampMillis(report: {
+  createdAtMillis?: unknown;
+  createdAt?: unknown;
+}): number {
+  if (typeof report.createdAtMillis === 'number' && Number.isFinite(report.createdAtMillis)) {
+    return report.createdAtMillis;
+  }
+  const raw = report.createdAt;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw;
+  }
+  if (raw && typeof raw === 'object') {
+    const withToMillis = raw as { toMillis?: () => number; seconds?: number };
+    if (typeof withToMillis.toMillis === 'function') {
+      try {
+        const ms = withToMillis.toMillis();
+        if (Number.isFinite(ms)) return ms;
+      } catch {
+        // Fallback below
+      }
+    }
+    if (typeof withToMillis.seconds === 'number' && Number.isFinite(withToMillis.seconds)) {
+      return withToMillis.seconds * 1000;
+    }
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/**
+ * Sorts moderation reports newest-first so newly flagged items always appear at the top
+ * of Admin & Moderator queues regardless of query snapshot order.
+ */
+export function sortReportsNewestFirst<T extends { createdAtMillis?: unknown; createdAt?: unknown }>(
+  reports: T[]
+): T[] {
+  return [...reports].sort(
+    (a, b) => extractReportTimestampMillis(b) - extractReportTimestampMillis(a)
+  );
+}
+
+/**
+ * Resolves the underlying Firestore `/messages/{id}` document ID for either a direct
+ * message report or a member report that attached an offending `referencedMessageId`.
+ */
+export function resolveReportInspectMessageId(report: {
+  messageId?: string;
+  referencedMessageId?: string;
+}): string | null {
+  const refId = (report.referencedMessageId || '').trim();
+  if (
+    refId &&
+    !refId.startsWith('user-') &&
+    !refId.startsWith('post:') &&
+    !refId.startsWith('comment:')
+  ) {
+    return refId;
+  }
+  const msgId = (report.messageId || '').trim();
+  if (
+    msgId &&
+    !msgId.startsWith('user-') &&
+    !msgId.startsWith('post:') &&
+    !msgId.startsWith('comment:')
+  ) {
+    return msgId;
+  }
+  return null;
+}
+
+/**
+ * Resolves the reported user's UID from either `reportedUserId` or a `user-{uid}` report target.
+ */
+export function resolveReportTargetUserId(report: {
+  reportedUserId?: string;
+  messageId?: string;
+}): string {
+  const explicit = (report.reportedUserId || '').trim();
+  if (explicit) return explicit;
+  const msgId = (report.messageId || '').trim();
+  if (msgId.startsWith('user-')) {
+    return msgId.slice(5).trim();
+  }
+  return '';
+}
+
+/**
+ * Counts currently open moderation reports keyed by reported user UID.
+ */
+export function groupOpenReportCountByUserId<
+  T extends { status?: string; reportedUserId?: string; messageId?: string }
+>(reports: T[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const r of reports) {
+    if ((r.status || 'open') !== 'open') continue;
+    const uid = resolveReportTargetUserId(r);
+    if (!uid) continue;
+    counts[uid] = (counts[uid] || 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Builds a deep-link URL to inspect a moderation report directly inside `/hub` or `/community/posts/...`.
+ */
+export function buildModerationReportJumpUrl(report: InspectableReportLike): string {
+  const rawChannel = (report.referencedChannelId || report.channelId || '').trim();
+  if (rawChannel.startsWith('publicPosts/')) {
+    const postId = rawChannel.replace('publicPosts/', '');
+    return report.id
+      ? `/community/posts/${postId}?reportId=${encodeURIComponent(report.id)}`
+      : `/community/posts/${postId}`;
+  }
+  const rawStream = (report.streamId || rawChannel || 'general-chat').trim();
+  const baseCh = rawStream.split('__group__')[0] || 'general-chat';
+  const inspectMsgId = resolveReportInspectMessageId(report);
+  const qs = new URLSearchParams();
+  qs.set('channel', baseCh);
+  if (rawStream && rawStream !== baseCh) {
+    qs.set('stream', rawStream);
+  }
+  if (inspectMsgId) {
+    qs.set('messageId', inspectMsgId);
+  }
+  if (report.id) {
+    qs.set('reportId', report.id);
+  }
+  return `/hub?${qs.toString()}`;
+}
+

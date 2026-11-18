@@ -37,14 +37,25 @@ import {
   db,
   collection,
   doc,
+  getDoc,
+  getDocs,
   updateDoc,
   onSnapshot,
   query,
+  where,
   orderBy,
+  limit,
   BuilderProfile,
   User,
   isSuperAdminUser,
 } from '../firebase.ts';
+import {
+  sortReportsNewestFirst,
+  resolveReportInspectMessageId,
+  resolveReportTargetUserId,
+  groupOpenReportCountByUserId,
+  buildModerationReportJumpUrl,
+} from '../utils/messageGrouping.ts';
 import {
   StudentAccessRequest,
   StudentAccessAdminNote,
@@ -93,13 +104,20 @@ type AdminDashboardTab =
 interface ModerationReportRecord {
   id: string;
   channelId?: string;
+  referencedChannelId?: string;
+  streamId?: string;
   channelName?: string;
   messageId?: string;
+  referencedMessageId?: string;
   messageSnippet?: string;
+  messageText?: string;
+  reportedUserId?: string;
+  reportedUserName?: string;
   reason?: string;
   reporterUid?: string;
   reporterName?: string;
   status?: 'open' | 'resolved' | string;
+  createdAtMillis?: number;
   createdAt?: unknown;
 }
 
@@ -136,6 +154,13 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
 
   // Reports filter
   const [reportFilter, setReportFilter] = useState<'open' | 'resolved' | 'all'>('open');
+  const [reportUserFilter, setReportUserFilter] = useState<string | null>(null);
+  const [reportMessageTexts, setReportMessageTexts] = useState<Record<string, string>>({});
+  const [deletedReportMsgs, setDeletedReportMsgs] = useState<Record<string, boolean>>({});
+  const [recentMessagesByAuthorId, setRecentMessagesByAuthorId] = useState<
+    Record<string, Array<{ id: string; channelId: string; text: string; createdAtMillis: number }>>
+  >({});
+  const [fetchedAuthorMsgs, setFetchedAuthorMsgs] = useState<Record<string, boolean>>({});
 
   // Members filter
   const [memberSearch, setMemberSearch] = useState('');
@@ -240,7 +265,7 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
         snap.forEach((d) =>
           list.push({ ...(d.data() as Omit<ModerationReportRecord, 'id'>), id: d.id })
         );
-        setModerationReports(list);
+        setModerationReports(sortReportsNewestFirst(list));
       },
       () => {}
     );
@@ -256,6 +281,120 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
       unsubReports();
     };
   }, [isAdmin]);
+
+  const filteredReports = useMemo(() => {
+    return moderationReports.filter((r) => {
+      const st = r.status || 'open';
+      if (reportFilter !== 'all' && st !== reportFilter) return false;
+      if (reportUserFilter && resolveReportTargetUserId(r) !== reportUserFilter) return false;
+      return true;
+    });
+  }, [moderationReports, reportFilter, reportUserFilter]);
+
+  const openFlagCountByUserId = useMemo(
+    () => groupOpenReportCountByUserId(moderationReports),
+    [moderationReports]
+  );
+
+  useEffect(() => {
+    if (!isAdmin || activeTab !== 'reports') return;
+    const missingMsgIds = Array.from(
+      new Set(
+        filteredReports
+          .map((r) => resolveReportInspectMessageId(r))
+          .filter((id): id is string => Boolean(id))
+          .filter((id) => !reportMessageTexts[id] && !deletedReportMsgs[id])
+      )
+    ).slice(0, 25);
+
+    const missingAuthorUids = Array.from(
+      new Set(
+        filteredReports
+          .map((r) => resolveReportTargetUserId(r))
+          .filter((uid) => Boolean(uid) && !fetchedAuthorMsgs[uid])
+      )
+    ).slice(0, 12);
+
+    if (missingMsgIds.length === 0 && missingAuthorUids.length === 0) return;
+
+    let cancelled = false;
+    if (missingMsgIds.length > 0) {
+      Promise.all(
+        missingMsgIds.map(async (msgId) => {
+          try {
+            const snap = await getDoc(doc(db, 'messages', msgId));
+            if (cancelled) return;
+            if (snap.exists()) {
+              const d = snap.data();
+              const txt = String(d.text || d.linkTitle || d.linkUrl || '').trim();
+              if (txt) {
+                setReportMessageTexts((prev) => ({ ...prev, [msgId]: txt }));
+              }
+            } else {
+              setDeletedReportMsgs((prev) => ({ ...prev, [msgId]: true }));
+            }
+          } catch {
+            // Ignore single fetch failure
+          }
+        })
+      );
+    }
+
+    if (missingAuthorUids.length > 0) {
+      Promise.all(
+        missingAuthorUids.map(async (uid) => {
+          try {
+            const snap = await getDocs(
+              query(collection(db, 'messages'), where('authorId', '==', uid), limit(15))
+            );
+            if (cancelled) return;
+            const list: Array<{
+              id: string;
+              channelId: string;
+              text: string;
+              createdAtMillis: number;
+            }> = [];
+            snap.forEach((docSnap) => {
+              const d = docSnap.data();
+              const txt = String(d.text || d.linkTitle || d.linkUrl || '').trim();
+              const millis =
+                typeof d.createdAtMillis === 'number'
+                  ? d.createdAtMillis
+                  : d.createdAt?.toMillis
+                    ? d.createdAt.toMillis()
+                    : 0;
+              if (txt) {
+                list.push({
+                  id: docSnap.id,
+                  channelId: String(d.channelId || 'general-chat'),
+                  text: txt,
+                  createdAtMillis: millis,
+                });
+              }
+            });
+            list.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+            setRecentMessagesByAuthorId((prev) => ({ ...prev, [uid]: list.slice(0, 5) }));
+            setFetchedAuthorMsgs((prev) => ({ ...prev, [uid]: true }));
+          } catch {
+            if (!cancelled) {
+              setFetchedAuthorMsgs((prev) => ({ ...prev, [uid]: true }));
+            }
+          }
+        })
+      );
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isAdmin,
+    activeTab,
+    filteredReports,
+    reportMessageTexts,
+    deletedReportMsgs,
+    fetchedAuthorMsgs,
+  ]);
 
   const selectedRequest = useMemo(() => {
     if (!selectedUid) return null;
@@ -371,13 +510,7 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
     });
   }, [publicPosts, postFilter, postSearch, membershipsMap]);
 
-  const filteredReports = useMemo(() => {
-    return moderationReports.filter((r) => {
-      const st = r.status || 'open';
-      if (reportFilter !== 'all' && st !== reportFilter) return false;
-      return true;
-    });
-  }, [moderationReports, reportFilter]);
+
 
   const filteredMembers = useMemo(() => {
     return allUsers.filter((u) => {
@@ -1826,6 +1959,24 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                 </div>
               </div>
 
+              {reportUserFilter && (
+                <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-[#FFF025]/35 bg-[#FFF025]/10 text-xs">
+                  <span className="text-white/90">
+                    Showing reports for{' '}
+                    <strong>
+                      @{allUsers.find((u) => u.uid === reportUserFilter)?.displayName || reportUserFilter}
+                    </strong>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setReportUserFilter(null)}
+                    className="text-[#FFF025] font-semibold hover:underline cursor-pointer"
+                  >
+                    Show all reports
+                  </button>
+                </div>
+              )}
+
               {filteredReports.length === 0 ? (
                 <div className="p-8 rounded-lg border border-white/10 bg-[#13161E] text-center text-xs text-white/50">
                   No flagged reports in this view.
@@ -1834,16 +1985,61 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                 <div className="space-y-2.5">
                   {filteredReports.map((rep) => {
                     const isOpen = (rep.status || 'open') === 'open';
+                    const isUserReport = Boolean(rep.messageId?.startsWith('user-'));
+                    const isPublicReport = Boolean(rep.channelId?.startsWith('publicPosts/'));
+                    const targetUid = resolveReportTargetUserId(rep);
+                    const inspectMsgId = !isPublicReport
+                      ? resolveReportInspectMessageId(rep)
+                      : null;
+                    const rawSnippetIsPlaceholder =
+                      isUserReport &&
+                      !rep.referencedMessageId &&
+                      !rep.messageText &&
+                      (rep.messageSnippet || '').startsWith('Flagged profile:');
+                    const resolvedMsgContent =
+                      (inspectMsgId && reportMessageTexts[inspectMsgId]) ||
+                      rep.messageText ||
+                      (rawSnippetIsPlaceholder ? '' : rep.messageSnippet) ||
+                      '';
+                    const isDeletedFromChat = Boolean(
+                      inspectMsgId && deletedReportMsgs[inspectMsgId]
+                    );
+                    const authorRecentMsgs = (
+                      (targetUid && recentMessagesByAuthorId[targetUid]) ||
+                      []
+                    )
+                      .filter((m) => !inspectMsgId || m.id !== inspectMsgId)
+                      .slice(0, 4);
+                    const targetUrl = buildModerationReportJumpUrl(rep);
+                    const displayChannel = (
+                      rep.referencedChannelId ||
+                      rep.channelName ||
+                      rep.channelId ||
+                      'general-chat'
+                    ).split('__group__')[0];
+
                     return (
                       <div
                         key={rep.id}
-                        className="p-4 rounded-lg border border-white/10 bg-[#13161E] flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                        className="p-4 rounded-lg border border-white/10 bg-[#13161E] flex flex-col sm:flex-row sm:items-start justify-between gap-4"
                       >
-                        <div className="space-y-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                        <div className="space-y-2.5 min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="text-xs font-bold text-white">
-                              #{rep.channelName || rep.channelId || 'general-chat'}
+                              {isUserReport
+                                ? 'Flagged Member'
+                                : isPublicReport
+                                  ? 'Flagged Public Post'
+                                  : 'Flagged Message'}
                             </span>
+                            <span className="text-xs font-mono text-white/70">
+                              #{displayChannel}
+                            </span>
+                            {rep.reportedUserName && (
+                              <span className="text-xs text-white/85 font-medium">
+                                · @{rep.reportedUserName}
+                              </span>
+                            )}
                             <span
                               className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                                 isOpen
@@ -1853,25 +2049,109 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                             >
                               {isOpen ? 'Open' : 'Resolved'}
                             </span>
+                            {isDeletedFromChat && (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase border border-white/15 text-white/55">
+                                Deleted
+                              </span>
+                            )}
                           </div>
-                          <p className="text-xs text-white/80">
-                            {rep.reason ||
-                              rep.messageSnippet ||
-                              'Reported by community member for moderator review'}
-                          </p>
-                          {rep.reporterName && (
-                            <p className="text-[11px] text-white/45">
-                              Flagged by: {rep.reporterName}
-                            </p>
+
+                          <div className="px-3 py-2 rounded-md bg-white/[0.04] border border-white/10 text-xs text-white/85 flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="text-[10px] font-mono uppercase tracking-wider text-[#FFF025] mr-2">
+                                Why Flagged
+                              </span>
+                              <span>
+                                {rep.reason || 'Reported by community member for moderator review'}
+                              </span>
+                            </div>
+                            {rep.reporterName && (
+                              <span className="text-[11px] text-white/50">
+                                Reported by {rep.reporterName}
+                              </span>
+                            )}
+                          </div>
+
+                          {resolvedMsgContent ? (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate(targetUrl)}
+                              className="w-full text-left px-3 py-2 rounded-md bg-[#0d0f14] hover:bg-[#171b24] border border-white/10 hover:border-[#FFF025]/50 transition-colors cursor-pointer space-y-1"
+                            >
+                              <div className="text-[10px] font-mono uppercase tracking-wider text-white/45">
+                                {isUserReport
+                                  ? 'Attached Flagged Message'
+                                  : isPublicReport
+                                    ? 'Flagged Showcase Post'
+                                    : 'Flagged Message Content'}
+                              </div>
+                              <div className="text-xs text-white/90 whitespace-pre-wrap break-words">
+                                {resolvedMsgContent}
+                              </div>
+                              <div className="text-[11px] font-medium text-[#FFF025]">
+                                {isPublicReport
+                                  ? 'Click to open flagged post'
+                                  : isDeletedFromChat
+                                    ? 'Original message deleted · Click to open channel'
+                                    : 'Click to scroll directly to flagged message'}
+                              </div>
+                            </button>
+                          ) : null}
+
+                          {isUserReport && targetUid && (
+                            <div className="p-3 rounded-md bg-[#0d0f14] border border-white/10 space-y-2">
+                              <div className="flex items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wider text-white/55">
+                                <span>
+                                  Recent Messages by @{rep.reportedUserName || 'Member'}
+                                </span>
+                                <span>Click to locate in Hub</span>
+                              </div>
+                              {authorRecentMsgs.length === 0 ? (
+                                <div className="text-xs text-white/45">
+                                  No recent chat messages found from this member.
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {authorRecentMsgs.map((msg) => {
+                                    const baseMsgCh = msg.channelId.split('__group__')[0];
+                                    const msgUrl = buildModerationReportJumpUrl({
+                                      id: rep.id,
+                                      channelId: baseMsgCh,
+                                      streamId: msg.channelId,
+                                      messageId: msg.id,
+                                    });
+                                    return (
+                                      <button
+                                        key={msg.id}
+                                        type="button"
+                                        onClick={() => onNavigate(msgUrl)}
+                                        className="w-full text-left px-2.5 py-1.5 rounded border border-white/10 hover:border-[#FFF025]/50 bg-[#13161e] hover:bg-[#171b24] transition-colors cursor-pointer space-y-0.5"
+                                      >
+                                        <div className="text-[10px] font-mono text-white/50">
+                                          #{baseMsgCh}
+                                        </div>
+                                        <div className="text-xs text-white/90 break-words line-clamp-2">
+                                          {msg.text}
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
-                            onClick={() => onNavigate('/hub')}
+                            onClick={() => onNavigate(targetUrl)}
                             className="px-3 py-1.5 rounded border border-white/15 text-xs font-medium text-white hover:bg-white/5 cursor-pointer"
                           >
-                            Open Hub Channel
+                            {isPublicReport
+                              ? 'Open Flagged Post'
+                              : inspectMsgId
+                                ? 'Jump to Message'
+                                : `Open #${displayChannel}`}
                           </button>
                           <button
                             type="button"
@@ -1974,6 +2254,24 @@ export const AdminStudentAccessDashboard: React.FC<AdminStudentAccessDashboardPr
                             >
                               {isApproved ? 'Verified Hub Student' : 'Public Only'}
                             </span>
+                            {(openFlagCountByUserId[u.uid] || 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReportUserFilter(u.uid);
+                                  setReportFilter('open');
+                                  setActiveTab('reports');
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FFF025] text-black text-[10px] font-bold uppercase cursor-pointer hover:bg-[#ffe500]"
+                                title="View why this member was flagged and inspect their messages"
+                              >
+                                <Flag className="w-2.5 h-2.5" />
+                                <span>
+                                  {openFlagCountByUserId[u.uid]} Flag
+                                  {openFlagCountByUserId[u.uid] === 1 ? '' : 's'}
+                                </span>
+                              </button>
+                            )}
                           </div>
                           <div className="text-[11px] text-white/55 mt-0.5">
                             School: <strong className="text-white/85">{schoolName || 'Not set'}</strong>{' '}

@@ -281,17 +281,20 @@ export const InboxCenterModal: React.FC<InboxCenterModalProps> = ({
 
                   {n.message && (
                     <p
-                      className={`text-xs mt-1 line-clamp-2 leading-relaxed ${
-                        isDark ? 'text-white/75' : 'text-slate-700'
-                      }`}
+                      className={`text-xs mt-1 leading-relaxed break-words ${
+                        n.type === 'moderation_report' ? 'line-clamp-4' : 'line-clamp-2'
+                      } ${isDark ? 'text-white/75' : 'text-slate-700'}`}
                     >
                       {n.message}
                     </p>
                   )}
 
-                  {n.actionLabel && (
-                    <div className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-extrabold text-[#B11469] dark:text-[#FFF025]">
-                      <span>{n.actionLabel}</span>
+                  {(n.actionLabel || n.type === 'moderation_report') && (
+                    <div className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-extrabold text-[#B11469] dark:text-[#FFF025]">
+                      <span>
+                        {n.actionLabel ||
+                          (n.messageId ? 'Jump to Flagged Message' : 'Open Reports')}
+                      </span>
                       <ExternalLink className="w-3 h-3" />
                     </div>
                   )}

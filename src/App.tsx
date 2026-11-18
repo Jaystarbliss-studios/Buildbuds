@@ -49,6 +49,7 @@ import {
   signOut,
   ensurePublicUserProfile,
   buildFallbackBuilderProfile,
+  loadCachedBuilderProfile,
   isSuperAdminUser,
   isApprovedStudentMember,
   BuilderProfile,
@@ -85,6 +86,11 @@ import {
   triggerSystemDesktopNotification,
 } from './utils/notifications.ts';
 import { resolveBuilderAvatarUrl } from './utils/avatars.ts';
+import {
+  parseHubDeepLinkParams,
+  resolveStandaloneInitialRoute,
+  HubDeepLinkTarget,
+} from './utils/messageGrouping.ts';
 
 // Types
 import { ProjectItem, DiscussionPost, ChallengeItem } from './types/index.ts';
@@ -148,17 +154,37 @@ function BuildBudsApp() {
     return () => unsub();
   }, []);
 
-  // Client router path state
-  const [currentPath, setCurrentPath] = useState<string>(
-    () => (window.location.pathname || '/') + (window.location.search || '')
-  );
-
   // Detect whether the app was launched as a downloaded/installed Web App (PWA standalone mode)
   const [isStandaloneAppMode, setIsStandaloneAppMode] = useState<boolean>(() =>
     detectStandaloneAppLaunch()
   );
+
+  // Client router path state (installed PWA launches on `/` go straight to `/community`)
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    const standalone = detectStandaloneAppLaunch();
+    const rawPath = window.location.pathname || '/';
+    const rawSearch = window.location.search || '';
+    const resolved = resolveStandaloneInitialRoute(rawPath, rawSearch, standalone);
+    if (resolved !== `${rawPath}${rawSearch}`) {
+      try {
+        window.history.replaceState({}, '', resolved);
+      } catch {
+        // Ignore history errors
+      }
+    }
+    return resolved;
+  });
   const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [hubChannelId, setHubChannelId] = useState<string>('general-chat');
+  const hubLinkTokenRef = useRef<number>(1);
+  const [hubDeepLinkTarget, setHubDeepLinkTarget] = useState<
+    (HubDeepLinkTarget & { token: number }) | null
+  >(() => {
+    const initial = parseHubDeepLinkParams(
+      (window.location.pathname || '/') + (window.location.search || '')
+    );
+    return initial ? { ...initial, token: 1 } : null;
+  });
 
   // Firebase Auth user & Builder Profile
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -195,31 +221,46 @@ function BuildBudsApp() {
   const initialGlobalMessagesSeenRef = useRef(false);
   const knownGlobalMessageIdsRef = useRef<Set<string>>(new Set());
 
-  const navigateTo = useCallback((path: string) => {
-    if (path.startsWith('/#')) {
-      const hash = path.slice(1);
-      window.history.pushState({}, '', '/');
-      setCurrentPath('/');
-      setTimeout(() => {
-        const el = document.querySelector(hash);
-        el?.scrollIntoView({ behavior: 'smooth' });
-      }, 60);
-      return;
+  const syncHubDeepLinkFromPath = useCallback((path: string) => {
+    const parsed = parseHubDeepLinkParams(path);
+    if (parsed) {
+      hubLinkTokenRef.current += 1;
+      setHubChannelId(parsed.channelId);
+      setHubDeepLinkTarget({ ...parsed, token: hubLinkTokenRef.current });
     }
-    window.history.pushState({}, '', path);
-    setCurrentPath(path);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
+
+  const navigateTo = useCallback(
+    (path: string) => {
+      if (path.startsWith('/#')) {
+        const hash = path.slice(1);
+        window.history.pushState({}, '', '/');
+        setCurrentPath('/');
+        setTimeout(() => {
+          const el = document.querySelector(hash);
+          el?.scrollIntoView({ behavior: 'smooth' });
+        }, 60);
+        return;
+      }
+      window.history.pushState({}, '', path);
+      setCurrentPath(path);
+      syncHubDeepLinkFromPath(path);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [syncHubDeepLinkFromPath]
+  );
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPath((window.location.pathname || '/') + (window.location.search || ''));
+      const nextPath = (window.location.pathname || '/') + (window.location.search || '');
+      setCurrentPath(nextPath);
+      syncHubDeepLinkFromPath(nextPath);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [syncHubDeepLinkFromPath]);
 
-  // Listen for PWA installation or display-mode changes
+  // Listen for PWA installation or display-mode changes & ensure installed app starts at /community
   useEffect(() => {
     const mediaQuery = window.matchMedia('(display-mode: standalone)');
     const handleStandaloneChange = (e: MediaQueryListEvent) => {
@@ -243,6 +284,21 @@ function BuildBudsApp() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isStandaloneAppMode) return;
+    const clean = currentPath.split('?')[0];
+    if (clean === '/' || clean === '') {
+      const searchPart = currentPath.includes('?') ? `?${currentPath.split('?')[1]}` : '';
+      const target = `/community${searchPart}`;
+      try {
+        window.history.replaceState({}, '', target);
+      } catch {
+        // Ignore history errors
+      }
+      setCurrentPath(target);
+    }
+  }, [isStandaloneAppMode, currentPath]);
+
   // Listen to Firebase Auth state — restores existing session or creates/retrieves a profile (`users/{uid}`)
   // so users stay signed in across page reloads and visits.
   useEffect(() => {
@@ -253,14 +309,16 @@ function BuildBudsApp() {
 
       if (user) {
         setCurrentUser(user);
+        const immediateProfile =
+          loadCachedBuilderProfile(user.uid) || buildFallbackBuilderProfile(user);
+        setBuilderProfile((prev) => prev || immediateProfile);
+        setIsAuthChecking(false);
         try {
           const profile = await ensurePublicUserProfile(user);
           setBuilderProfile(profile);
         } catch (err) {
           console.warn('Fallback to local auth profile:', err);
-          setBuilderProfile((prev) => prev || buildFallbackBuilderProfile(user));
-        } finally {
-          setIsAuthChecking(false);
+          setBuilderProfile((prev) => prev || immediateProfile);
         }
       } else {
         setCurrentUser(null);
@@ -437,11 +495,11 @@ function BuildBudsApp() {
     if (!('serviceWorker' in navigator)) return;
     const handleSwMessage = (event: MessageEvent) => {
       if (event.data?.type === 'BUILDBUDS_NOTIFICATION_CLICK') {
-        if (event.data.channelId) {
+        if (event.data.actionUrl && String(event.data.actionUrl).startsWith('/')) {
+          navigateTo(String(event.data.actionUrl));
+        } else if (event.data.channelId) {
           setHubChannelId(event.data.channelId);
           navigateTo(`/hub?channel=${encodeURIComponent(event.data.channelId)}`);
-        } else if (event.data.actionUrl) {
-          navigateTo(event.data.actionUrl);
         }
       }
     };
@@ -519,18 +577,52 @@ function BuildBudsApp() {
         );
       }
       setIsInboxOpen(false);
-      const target = notif.actionUrl || '/community';
-      if (target.startsWith('/hub')) {
-        const qIdx = target.indexOf('?');
-        if (qIdx !== -1) {
-          const sp = new URLSearchParams(target.slice(qIdx + 1));
-          const ch = sp.get('channel');
-          if (ch) setHubChannelId(ch);
+      let target = notif.actionUrl || '/community';
+
+      // Enrich moderation_report notifications (including legacy ones lacking messageId/tab params)
+      if (notif.type === 'moderation_report') {
+        if (notif.postId || target.startsWith('/community/posts/')) {
+          if (!target.startsWith('/community/posts/') && notif.postId) {
+            target = `/community/posts/${notif.postId}`;
+          }
+        } else {
+          const existingQuery = target.includes('?') ? target.split('?')[1] : '';
+          const qs = new URLSearchParams(existingQuery);
+          const effectiveChannel = notif.channelId || qs.get('channel') || 'general-chat';
+          qs.set('channel', effectiveChannel);
+          if (notif.streamId && !qs.get('stream')) {
+            qs.set('stream', notif.streamId);
+          }
+          if (notif.messageId && !qs.get('messageId')) {
+            qs.set('messageId', notif.messageId);
+          }
+          if (notif.reportId && !qs.get('reportId')) {
+            qs.set('reportId', notif.reportId);
+          }
+          // For legacy report notifications that lack a messageId, open the Flagged Reports queue directly
+          if (!qs.get('messageId')) {
+            qs.set('tab', 'reports');
+          }
+          target = `/hub?${qs.toString()}`;
         }
-        navigateTo(target);
-      } else {
-        navigateTo(target);
+      } else if (target.startsWith('/hub')) {
+        const existingQuery = target.includes('?') ? target.split('?')[1] : '';
+        const qs = new URLSearchParams(existingQuery);
+        if (notif.channelId && !qs.get('channel')) {
+          qs.set('channel', notif.channelId);
+        }
+        if (notif.streamId && !qs.get('stream')) {
+          qs.set('stream', notif.streamId);
+        }
+        if (notif.messageId && !qs.get('messageId')) {
+          qs.set('messageId', notif.messageId);
+        }
+        if (qs.toString()) {
+          target = `/hub?${qs.toString()}`;
+        }
       }
+
+      navigateTo(target);
     },
     [currentUser?.uid, navigateTo]
   );
@@ -688,11 +780,7 @@ function BuildBudsApp() {
   const handleLaunchStandaloneApp = () => {
     setStandaloneAppSession(true);
     setIsStandaloneAppMode(true);
-    if (currentUser) {
-      navigateTo('/community');
-    } else {
-      setJoinModalMode('signin');
-    }
+    navigateTo('/community');
   };
 
   const handleOpenProjectById = (id: string) => {
@@ -754,62 +842,6 @@ function BuildBudsApp() {
 
   const cleanPathname = currentPath.split('?')[0];
   const queryString = currentPath.includes('?') ? currentPath.split('?')[1] : '';
-
-  // STANDALONE DOWNLOADED WEB APP FIRST-TIME SIGN-IN GATE:
-  // When opened as a downloaded/installed Web App, if the user is not signed in yet,
-  // prompt them with the dedicated Sign-In / Sign-Up screen first; once signed in (and on all
-  // subsequent launches), take them directly to the Community Main Page (`/community`).
-  if (isStandaloneAppMode && cleanPathname !== '/hub' && !cleanPathname.startsWith('/student-access') && !cleanPathname.startsWith('/admin')) {
-    if (isAuthChecking) {
-      return (
-        <div className="fixed inset-0 bg-[#06060c] text-white flex flex-col items-center justify-center p-6 select-none">
-          <img
-            src="/assets/aistudio/images/aurora-logo.png"
-            alt="Build Buds App"
-            className="w-16 h-16 rounded-3xl object-contain drop-shadow-2xl mb-4 animate-pulse"
-          />
-          <div className="font-chewy text-2xl text-[#FFF025] tracking-wide">Build Buds</div>
-          <div className="text-xs font-mono text-white/60 mt-1">
-            Restoring your Build Buds session...
-          </div>
-          <OfflineIndicator />
-        </div>
-      );
-    }
-
-    if (!currentUser) {
-      return (
-        <div className="min-h-screen bg-[#06060c] text-white relative">
-          <SpaceBackdrop />
-          <JoinModal
-            key={`standalone-${joinModalMode}`}
-            isOpen={true}
-            initialMode={joinModalMode}
-            isStandaloneAppScreen={true}
-            onBrowseWebsite={() => {
-              setStandaloneAppSession(false);
-              setIsStandaloneAppMode(false);
-              navigateTo('/community');
-            }}
-            onAuthBusyChange={(busy) => {
-              isAuthModalBusyRef.current = busy;
-            }}
-            onClose={() => {
-              setStandaloneAppSession(false);
-              setIsStandaloneAppMode(false);
-              navigateTo('/community');
-            }}
-            onSuccess={(profile, user) => {
-              setCurrentUser(user);
-              setBuilderProfile(profile);
-              navigateTo('/community');
-            }}
-          />
-          <OfflineIndicator />
-        </div>
-      );
-    }
-  }
 
   // ROUTE 1: GENERALIZED ADMIN CONTROL CENTER (/admin, /admin/student-access)
   if (cleanPathname === '/admin' || cleanPathname.startsWith('/admin/')) {
@@ -877,7 +909,8 @@ function BuildBudsApp() {
             currentUser={currentUser}
             builderProfile={builderProfile}
             initialChannelId={effectiveInitialChannel}
-            isStandaloneApp={false}
+            hubDeepLinkTarget={hubDeepLinkTarget}
+            isStandaloneApp={isStandaloneAppMode}
             isApprovedForHub={isApprovedForHub}
             notifications={notifications}
             onOpenInbox={() => setIsInboxOpen(true)}
@@ -950,9 +983,13 @@ function BuildBudsApp() {
     );
   }
 
-  // ROUTE 4: PUBLIC COMMUNITY DISCOVERY MAIN PAGE (`/community`, `/community/*`, `/login`)
-  // Note: `/` stays on the Landing Homepage until the user explicitly clicks Enter Community / Join Community / Explore Creations.
-  if (cleanPathname.startsWith('/community') || cleanPathname === '/login') {
+  // ROUTE 4: PUBLIC COMMUNITY DISCOVERY MAIN PAGE (`/community`, `/community/*`, `/login`, or installed PWA on `/`)
+  // In installed PWA standalone mode, `/` always starts straight from `/community` rather than the marketing homepage.
+  if (
+    cleanPathname.startsWith('/community') ||
+    cleanPathname === '/login' ||
+    (isStandaloneAppMode && (cleanPathname === '/' || cleanPathname === ''))
+  ) {
     let initialTab: PublicCommunityTab = 'all';
     let initialPostId: string | null = null;
 
@@ -965,6 +1002,8 @@ function BuildBudsApp() {
       initialTab = 'updates';
     } else if (cleanPathname.startsWith('/community/challenges') || tabParam === 'challenges') {
       initialTab = 'challenges';
+    } else if (cleanPathname.startsWith('/community/contributors') || tabParam === 'contributors') {
+      initialTab = 'contributors';
     } else if (cleanPathname.startsWith('/community/saved') || tabParam === 'saved') {
       initialTab = 'saved';
     } else if (cleanPathname.startsWith('/community/my-posts') || tabParam === 'my-posts') {

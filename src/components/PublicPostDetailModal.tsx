@@ -355,7 +355,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
       builderProfile?.displayName || currentUser.displayName || 'Community Member';
     const reason = `Reported public ${targetType} in "${post.title}"`;
     try {
-      await addDoc(collection(db, 'reports'), {
+      const reportRef = await addDoc(collection(db, 'reports'), {
         messageId: `${targetType}:${targetId}`,
         channelId: `publicPosts/${post.id}`,
         reporterId: currentUser.uid,
@@ -363,6 +363,7 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
         reportedUserId: post.authorId || '',
         reportedUserName: post.authorName || '',
         messageSnippet: post.title.slice(0, 140),
+        messageText: (post.summary || post.body || post.title).slice(0, 1000),
         reason,
         status: 'open',
         createdAt: new Date().toISOString(),
@@ -372,6 +373,11 @@ export const PublicPostDetailModal: React.FC<PublicPostDetailModalProps> = ({
         reporterUid: currentUser.uid,
         reporterName,
         channelId: `publicPosts/${post.id}`,
+        channelName: post.categoryName || 'Showcase',
+        messageId: `${targetType}:${targetId}`,
+        reportId: reportRef.id,
+        flaggedMessageText: post.title,
+        flaggedAuthorName: post.authorName || 'Builder',
         targetSummary: `Public ${targetType} on "${post.title.slice(0, 60)}"`,
         reason,
       });

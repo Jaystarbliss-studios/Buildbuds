@@ -339,6 +339,91 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "creatorId", "creatorName", "title", "linkUrl", "status", "createdAt", "updatedAt"]
+    },
+    "CommunityContributionStats": {
+      "title": "CommunityContributionStats",
+      "description": "Server-computed builder contribution points and counts for the Community Contributors leaderboard",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "avatarColor": { "type": "string" },
+        "role": { "type": "string", "enum": ["member", "moderator", "admin"] },
+        "schoolName": { "type": "string" },
+        "lifetimePoints": { "type": "integer" },
+        "monthlyPoints": { "type": "integer" },
+        "monthlyPeriodKey": { "type": "string" },
+        "weeklyPoints": { "type": "integer" },
+        "weeklyPeriodKey": { "type": "string" },
+        "meaningfulRepliesCount": { "type": "integer" },
+        "totalRepliesCount": { "type": "integer" },
+        "approvedCreationsCount": { "type": "integer" },
+        "suggestionsSubmittedCount": { "type": "integer" },
+        "suggestionsAcceptedCount": { "type": "integer" },
+        "dailyReplyDateKey": { "type": "string" },
+        "dailyReplyRewardsCount": { "type": "integer" },
+        "lastContributionAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "lifetimePoints", "monthlyPoints", "monthlyPeriodKey", "weeklyPoints", "weeklyPeriodKey", "updatedAt"]
+    },
+    "ContributionEvent": {
+      "title": "ContributionEvent",
+      "description": "Immutable server-recorded contribution ledger event with reversal audit metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "actionType": { "type": "string", "enum": ["meaningful_reply", "showcase_published", "suggestion_submitted", "suggestion_approved"] },
+        "points": { "type": "integer" },
+        "sourceCollection": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "label": { "type": "string" },
+        "dayKey": { "type": "string" },
+        "monthKey": { "type": "string" },
+        "weekKey": { "type": "string" },
+        "reversed": { "type": "boolean" },
+        "reversalReason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "actionType", "points", "sourceCollection", "sourceId", "reversed", "createdAt"]
+    },
+    "FeedbackSubmission": {
+      "title": "FeedbackSubmission",
+      "description": "Member feedback or feature suggestion reviewed by moderators and admins",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "title": { "type": "string" },
+        "explanation": { "type": "string" },
+        "category": { "type": "string", "enum": ["feature_request", "bug_report", "ux_improvement", "general_suggestion"] },
+        "attachmentUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["received", "under_review", "accepted", "planned", "in_progress", "completed", "declined"] },
+        "isUseful": { "type": "boolean" },
+        "submissionPointAwarded": { "type": "boolean" },
+        "bonusPointAwarded": { "type": "boolean" },
+        "moderatorResponse": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "authorId", "authorName", "title", "explanation", "category", "status", "isUseful", "createdAt", "updatedAt"]
+    },
+    "FeedbackAdminNote": {
+      "title": "FeedbackAdminNote",
+      "description": "Internal staff review notes on feedback submissions",
+      "type": "object",
+      "properties": {
+        "submissionId": { "type": "string" },
+        "internalNotes": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedByEmail": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["submissionId", "internalNotes", "updatedBy", "updatedAt"]
     }
   },
   "firestore": {
@@ -415,6 +500,22 @@
     },
     "/channelActivity/{channelId}": {
       "description": "Lightweight unread and mention activity state per Hub channel"
+    },
+    "/communityContributionStats/{uid}": {
+      "schema": { "$ref": "#/entities/CommunityContributionStats" },
+      "description": "Public Community Contributors leaderboard stats (server-written only)"
+    },
+    "/communityContributionEvents/{eventId}": {
+      "schema": { "$ref": "#/entities/ContributionEvent" },
+      "description": "Deterministic contribution ledger events (server-written only)"
+    },
+    "/feedbackSubmissions/{submissionId}": {
+      "schema": { "$ref": "#/entities/FeedbackSubmission" },
+      "description": "Private member feedback and feature suggestions"
+    },
+    "/feedbackAdminNotes/{submissionId}": {
+      "schema": { "$ref": "#/entities/FeedbackAdminNote" },
+      "description": "Internal moderator and admin notes on feedback submissions"
     }
   }
 }

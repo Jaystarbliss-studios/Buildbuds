@@ -14,15 +14,65 @@ import {
   UserCheck,
   Users,
   Flag,
+  Trophy,
+  Rocket,
+  MessageSquare,
+  Lightbulb,
+  Award,
 } from 'lucide-react';
-import { db, doc, getDoc, type BuilderProfile } from '../firebase.ts';
-import { getCreatorFollowerCount } from '../utils/communityService.ts';
+import {
+  db,
+  doc,
+  getDoc,
+  collection,
+  query,
+  where,
+  limit,
+  getDocs,
+  type BuilderProfile,
+} from '../firebase.ts';
+import {
+  getCreatorFollowerCount,
+  subscribeToMemberContributionStats,
+  subscribeToContributionEvents,
+  subscribeToLeaderboardStats,
+} from '../utils/communityService.ts';
+import {
+  type CommunityContributionStats,
+  type ContributionEvent,
+} from '../types/community.ts';
+import {
+  getContributorPointsForTimeframe,
+  rankContributorsForLeaderboard,
+} from '../utils/contributions.ts';
 import {
   buildPublicMemberProfileSummary,
   formatMemberJoinDate,
   type PublicMemberProfileSummary,
 } from '../utils/memberProfile.ts';
 import { VerifiedAvatarFrame } from './MentionAndEmotes.tsx';
+
+export interface MemberFlagDetails {
+  reason: string;
+  referencedMessageId?: string;
+  referencedMessageText?: string;
+  referencedChannelId?: string;
+}
+
+const FLAG_REASON_OPTIONS = [
+  'Inappropriate message',
+  'Harassment or unkind behavior',
+  'Spam or unwanted links',
+  'Unsafe or off-topic content',
+  'Other',
+] as const;
+
+interface MemberRecentMessagePreview {
+  id: string;
+  channelId: string;
+  text: string;
+  createdAtMillis: number;
+}
 
 interface MemberProfileModalProps {
   member: PublicMemberProfileSummary | null;
@@ -34,7 +84,7 @@ interface MemberProfileModalProps {
   onEditOwnProfile?: () => void;
   isFollowing?: boolean;
   onToggleFollow?: (creatorUid: string, creatorName: string, currentlyFollowing: boolean) => Promise<void> | void;
-  onReportMember?: (member: PublicMemberProfileSummary) => void;
+  onReportMember?: (member: PublicMemberProfileSummary, details?: MemberFlagDetails) => Promise<void> | void;
   variant?: 'dark' | 'light';
 }
 
@@ -57,12 +107,54 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [followerCount, setFollowerCount] = useState<number | null>(null);
   const [isFollowBusy, setIsFollowBusy] = useState(false);
+  const [contribStats, setContribStats] = useState<CommunityContributionStats | null>(null);
+  const [contribEvents, setContribEvents] = useState<ContributionEvent[]>([]);
+  const [allTimeRank, setAllTimeRank] = useState<number | null>(null);
+  const [showFlagForm, setShowFlagForm] = useState(false);
+  const [flagPresetReason, setFlagPresetReason] = useState<string>('Inappropriate message');
+  const [flagDetailsText, setFlagDetailsText] = useState('');
+  const [memberRecentMsgs, setMemberRecentMsgs] = useState<MemberRecentMessagePreview[]>([]);
+  const [isLoadingMemberMsgs, setIsLoadingMemberMsgs] = useState(false);
+  const [selectedReferencedMsgId, setSelectedReferencedMsgId] = useState<string>('');
+  const [isSubmittingFlag, setIsSubmittingFlag] = useState(false);
+
+  useEffect(() => {
+    setContribStats(null);
+    setContribEvents([]);
+    setAllTimeRank(null);
+    if (!member?.uid || member.uid.startsWith('seed-') || member.uid.startsWith('team-')) {
+      return;
+    }
+
+    const unsubStats = subscribeToMemberContributionStats(member.uid, setContribStats);
+    const unsubEvents = subscribeToContributionEvents(
+      { uid: member.uid, limitCount: 6 },
+      setContribEvents
+    );
+    const unsubRank = subscribeToLeaderboardStats(100, (list) => {
+      const ranked = rankContributorsForLeaderboard(list, 'all_time');
+      const match = ranked.find((r) => r.stats.uid === member.uid);
+      setAllTimeRank(match ? match.rank : null);
+    });
+
+    return () => {
+      unsubStats();
+      unsubEvents();
+      unsubRank();
+    };
+  }, [member?.uid]);
 
   useEffect(() => {
     setFetchedProfile(null);
     setFetchedMembershipSchool('');
     setFetchedMembershipGrade('');
     setFollowerCount(null);
+    setShowFlagForm(false);
+    setFlagPresetReason('Inappropriate message');
+    setFlagDetailsText('');
+    setMemberRecentMsgs([]);
+    setSelectedReferencedMsgId('');
+    setIsSubmittingFlag(false);
     if (!member?.uid) return;
     if (member.uid.startsWith('seed-') || member.uid.startsWith('team-')) {
       return;
@@ -99,6 +191,49 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
       cancelled = true;
     };
   }, [member?.uid]);
+
+  useEffect(() => {
+    if (!showFlagForm || !currentUserUid || !member?.uid) return;
+    if (member.uid.startsWith('seed-') || member.uid.startsWith('team-')) return;
+    let cancelled = false;
+    setIsLoadingMemberMsgs(true);
+    getDocs(query(collection(db, 'messages'), where('authorId', '==', member.uid), limit(12)))
+      .then((snap) => {
+        if (cancelled) return;
+        const list: MemberRecentMessagePreview[] = [];
+        snap.forEach((d) => {
+          const data = d.data();
+          const text = String(data.text || data.linkTitle || data.linkUrl || '').trim();
+          if (!text) return;
+          const millis =
+            typeof data.createdAtMillis === 'number'
+              ? data.createdAtMillis
+              : data.createdAt?.toMillis
+                ? data.createdAt.toMillis()
+                : 0;
+          list.push({
+            id: d.id,
+            channelId: String(data.channelId || 'general-chat'),
+            text,
+            createdAtMillis: millis,
+          });
+        });
+        list.sort((a, b) => b.createdAtMillis - a.createdAtMillis);
+        setMemberRecentMsgs(list.slice(0, 5));
+        if (list.length > 0 && !selectedReferencedMsgId) {
+          setSelectedReferencedMsgId(list[0].id);
+        }
+      })
+      .catch(() => {
+        // Non-blocking fallback if non-hub user lacks message read permission
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingMemberMsgs(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showFlagForm, currentUserUid, member?.uid]);
 
   useEffect(() => {
     if (!member) return;
@@ -168,7 +303,7 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`w-full max-w-md rounded-3xl overflow-hidden shadow-2xl transition-all ${
+        className={`w-full max-w-md max-h-[90vh] overflow-y-auto rounded-3xl shadow-2xl transition-all ${
           isDark
             ? 'bg-[#141621] border border-white/15 text-white'
             : 'bg-white border-3 border-black text-black brand-shadow'
@@ -430,6 +565,134 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
             </div>
           )}
 
+          {/* Builder Contributions Recognition Section */}
+          {!mergedProfile.uid.startsWith('seed-') && !mergedProfile.uid.startsWith('team-') && (
+            <div
+              className={`p-3.5 rounded-2xl border mb-4 space-y-2.5 ${
+                isDark
+                  ? 'bg-white/[0.04] border-white/10'
+                  : 'bg-slate-50 border-black/15'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Trophy className="w-3.5 h-3.5 text-[#FFF025]" />
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider ${
+                      isDark ? 'text-white/75' : 'text-slate-700'
+                    }`}
+                  >
+                    Builder Contributions
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {allTimeRank !== null && (
+                    <span className="px-2 py-0.5 rounded-md bg-[#FFF025] text-black border border-black/30 text-[10px] font-black tabular-nums">
+                      Rank #{allTimeRank}
+                    </span>
+                  )}
+                  <span className="text-xs font-black tabular-nums">
+                    {contribStats ? getContributorPointsForTimeframe(contribStats, 'all_time') : 0} pts
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div
+                  className={`p-2 rounded-xl border ${
+                    isDark ? 'bg-[#0e1018] border-white/10' : 'bg-white border-black/10'
+                  }`}
+                >
+                  <div className="flex items-center justify-center gap-1 text-xs font-black tabular-nums">
+                    <Rocket className="w-3 h-3 text-[#B11469]" />
+                    <span>{contribStats?.approvedCreationsCount ?? 0}</span>
+                  </div>
+                  <div className={`text-[10px] mt-0.5 ${isDark ? 'text-white/55' : 'text-slate-500'}`}>
+                    Showcases
+                  </div>
+                </div>
+
+                <div
+                  className={`p-2 rounded-xl border ${
+                    isDark ? 'bg-[#0e1018] border-white/10' : 'bg-white border-black/10'
+                  }`}
+                >
+                  <div className="flex items-center justify-center gap-1 text-xs font-black tabular-nums">
+                    <MessageSquare className="w-3 h-3 text-sky-400" />
+                    <span>{contribStats?.meaningfulRepliesCount ?? 0}</span>
+                  </div>
+                  <div className={`text-[10px] mt-0.5 ${isDark ? 'text-white/55' : 'text-slate-500'}`}>
+                    Replies
+                  </div>
+                </div>
+
+                <div
+                  className={`p-2 rounded-xl border ${
+                    isDark ? 'bg-[#0e1018] border-white/10' : 'bg-white border-black/10'
+                  }`}
+                >
+                  <div className="flex items-center justify-center gap-1 text-xs font-black tabular-nums">
+                    <Lightbulb className="w-3 h-3 text-amber-400" />
+                    <span>{contribStats?.suggestionsSubmittedCount ?? 0}</span>
+                  </div>
+                  <div className={`text-[10px] mt-0.5 ${isDark ? 'text-white/55' : 'text-slate-500'}`}>
+                    Ideas{contribStats && contribStats.suggestionsAcceptedCount > 0
+                      ? ` (${contribStats.suggestionsAcceptedCount}✓)`
+                      : ''}
+                  </div>
+                </div>
+              </div>
+
+              {contribStats && (
+                <div
+                  className={`flex items-center justify-between text-[11px] px-1 ${
+                    isDark ? 'text-white/60' : 'text-slate-600'
+                  }`}
+                >
+                  <span className="tabular-nums">
+                    This Week: <strong>{getContributorPointsForTimeframe(contribStats, 'weekly')} pts</strong>
+                  </span>
+                  <span className="tabular-nums">
+                    This Month: <strong>{getContributorPointsForTimeframe(contribStats, 'monthly')} pts</strong>
+                  </span>
+                </div>
+              )}
+
+              {contribEvents.filter((ev) => !ev.reversed).length > 0 && (
+                <div className={`pt-2 border-t space-y-1 ${isDark ? 'border-white/10' : 'border-black/10'}`}>
+                  <div className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? 'text-white/45' : 'text-slate-500'}`}>
+                    Recent Contribution Activity
+                  </div>
+                  {contribEvents
+                    .filter((ev) => !ev.reversed)
+                    .slice(0, 3)
+                    .map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="flex items-center justify-between gap-2 text-[11px]"
+                      >
+                        <span className={`truncate flex items-center gap-1 ${isDark ? 'text-white/75' : 'text-slate-700'}`}>
+                          <Award className="w-3 h-3 text-[#FFF025] shrink-0" />
+                          <span className="truncate">
+                            {ev.actionType === 'showcase_published'
+                              ? 'Approved Showcase Creation'
+                              : ev.actionType === 'meaningful_reply'
+                                ? 'Meaningful Peer Reply'
+                                : ev.actionType === 'suggestion_approved'
+                                  ? 'Useful Suggestion Bonus'
+                                  : 'Feature Suggestion'}
+                          </span>
+                        </span>
+                        <span className="font-bold text-emerald-400 tabular-nums shrink-0">
+                          +{ev.points}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Footer Actions */}
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             {isSelf && onEditOwnProfile && (
@@ -507,19 +770,18 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
             {onReportMember && !isSelf && (
               <button
                 type="button"
-                onClick={() => {
-                  onReportMember(mergedProfile);
-                  onClose();
-                }}
+                onClick={() => setShowFlagForm((prev) => !prev)}
                 className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer transition-colors ${
-                  isDark
-                    ? 'bg-white/5 hover:bg-rose-500/20 text-white/65 hover:text-rose-300'
-                    : 'bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-700 border border-black/15'
+                  showFlagForm
+                    ? 'bg-[#FFF025] text-black border border-black'
+                    : isDark
+                      ? 'bg-white/5 hover:bg-rose-500/20 text-white/65 hover:text-rose-300'
+                      : 'bg-slate-100 hover:bg-rose-100 text-slate-700 hover:text-rose-700 border border-black/15'
                 }`}
                 title="Flag member for moderator review"
               >
                 <Flag className="w-3.5 h-3.5" />
-                <span>Flag User</span>
+                <span>{showFlagForm ? 'Cancel Flag' : 'Flag User'}</span>
               </button>
             )}
 
@@ -535,6 +797,170 @@ export const MemberProfileModal: React.FC<MemberProfileModalProps> = ({
               Close
             </button>
           </div>
+
+          {showFlagForm && onReportMember && !isSelf && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (isSubmittingFlag) return;
+                const cleanExtra = flagDetailsText.trim();
+                const composedReason = cleanExtra
+                  ? `${flagPresetReason}: ${cleanExtra}`.slice(0, 450)
+                  : `${flagPresetReason} (Member @${mergedProfile.displayName})`.slice(0, 450);
+                const selectedMsg = memberRecentMsgs.find(
+                  (m) => m.id === selectedReferencedMsgId
+                );
+                setIsSubmittingFlag(true);
+                try {
+                  await onReportMember(mergedProfile, {
+                    reason: composedReason,
+                    referencedMessageId: selectedMsg?.id,
+                    referencedMessageText: selectedMsg?.text,
+                    referencedChannelId: selectedMsg?.channelId,
+                  });
+                  onClose();
+                } finally {
+                  setIsSubmittingFlag(false);
+                }
+              }}
+              className={`mt-4 p-3.5 rounded-2xl border space-y-3 ${
+                isDark
+                  ? 'bg-[#0e1018] border-[#FFF025]/35 text-white'
+                  : 'bg-[#FFFDF5] border-black/25 text-black'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-bold">
+                  Why are you flagging @{mergedProfile.displayName}?
+                </div>
+                <span className={`text-[10px] ${isDark ? 'text-white/50' : 'text-slate-500'}`}>
+                  Sent to Admins &amp; Mods
+                </span>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                {FLAG_REASON_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => setFlagPresetReason(opt)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors ${
+                      flagPresetReason === opt
+                        ? 'bg-[#FFF025] text-black border border-black'
+                        : isDark
+                          ? 'bg-white/[0.06] text-white/75 hover:bg-white/10 border border-white/10'
+                          : 'bg-white text-slate-700 hover:bg-slate-100 border border-black/15'
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+
+              <textarea
+                rows={2}
+                maxLength={350}
+                value={flagDetailsText}
+                onChange={(e) => setFlagDetailsText(e.target.value)}
+                placeholder={`Add details for admins (optional if you pick a reason or message below)...`}
+                className={`w-full px-3 py-2 rounded-xl border text-xs resize-none focus:outline-none ${
+                  isDark
+                    ? 'bg-[#141621] border-white/15 text-white placeholder:text-white/35 focus:border-[#FFF025]/60'
+                    : 'bg-white border-black/20 text-black placeholder:text-slate-400 focus:border-black'
+                }`}
+              />
+
+              {(isLoadingMemberMsgs || memberRecentMsgs.length > 0) && (
+                <div className="space-y-1.5">
+                  <div
+                    className={`text-[10px] font-bold uppercase tracking-wider ${
+                      isDark ? 'text-white/55' : 'text-slate-600'
+                    }`}
+                  >
+                    Attach specific message (optional)
+                  </div>
+                  {isLoadingMemberMsgs ? (
+                    <div className={`text-[11px] ${isDark ? 'text-white/45' : 'text-slate-500'}`}>
+                      Loading recent messages...
+                    </div>
+                  ) : (
+                    <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+                      <label
+                        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer ${
+                          selectedReferencedMsgId === ''
+                            ? isDark
+                              ? 'border-[#FFF025]/60 bg-[#FFF025]/10 text-white'
+                              : 'border-black bg-[#FFF025]/25 text-black'
+                            : isDark
+                              ? 'border-white/10 text-white/65'
+                              : 'border-black/10 text-slate-600'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="flag-referenced-msg"
+                          checked={selectedReferencedMsgId === ''}
+                          onChange={() => setSelectedReferencedMsgId('')}
+                          className="accent-[#FFF025]"
+                        />
+                        <span>General behavior (no specific message)</span>
+                      </label>
+                      {memberRecentMsgs.map((msg) => {
+                        const baseCh = msg.channelId.split('__group__')[0];
+                        return (
+                          <label
+                            key={msg.id}
+                            className={`flex items-start gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer ${
+                              selectedReferencedMsgId === msg.id
+                                ? isDark
+                                  ? 'border-[#FFF025]/60 bg-[#FFF025]/10 text-white'
+                                  : 'border-black bg-[#FFF025]/25 text-black'
+                                : isDark
+                                  ? 'border-white/10 text-white/75 hover:bg-white/[0.04]'
+                                  : 'border-black/10 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="flag-referenced-msg"
+                              checked={selectedReferencedMsgId === msg.id}
+                              onChange={() => setSelectedReferencedMsgId(msg.id)}
+                              className="mt-0.5 accent-[#FFF025]"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <span className="font-mono text-[10px] opacity-65 mr-1.5">
+                                #{baseCh}
+                              </span>
+                              <span className="break-words line-clamp-2">{msg.text}</span>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowFlagForm(false)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${
+                    isDark ? 'text-white/65 hover:text-white' : 'text-slate-600 hover:text-black'
+                  }`}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingFlag}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#FFF025] hover:bg-[#ffe500] text-black border border-black text-xs font-black cursor-pointer disabled:opacity-50"
+                >
+                  {isSubmittingFlag ? 'Submitting...' : 'Submit Flag'}
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       </div>
     </div>

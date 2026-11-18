@@ -68,6 +68,8 @@ export interface AdminAuditLog {
     | 'curate_showcase'
     | 'manage_challenge'
     | 'manage_schools'
+    | 'manage_feedback'
+    | 'reverse_contribution'
     | 'retry_notification';
   targetUid: string;
   targetEmail: string;
@@ -100,6 +102,8 @@ export interface UserNotificationItem {
     | 'followed_creator_post'
     | 'new_follower'
     | 'hub_message'
+    | 'feedback_status'
+    | 'contribution_awarded'
     | 'general';
   title: string;
   message: string;
@@ -109,6 +113,9 @@ export interface UserNotificationItem {
   senderName?: string;
   senderAvatar?: string;
   channelId?: string;
+  streamId?: string;
+  messageId?: string;
+  reportId?: string;
   postId?: string;
   read: boolean;
   createdAt: string;
@@ -432,6 +439,120 @@ export interface RegisteredSchoolsDoc {
   schools: string[];
   updatedBy?: string;
   updatedByEmail?: string;
+  updatedAt: string;
+}
+
+export type FeedbackCategory =
+  | 'feature_request'
+  | 'bug_report'
+  | 'ux_improvement'
+  | 'general_suggestion';
+
+export type FeedbackStatus =
+  | 'received'
+  | 'under_review'
+  | 'accepted'
+  | 'planned'
+  | 'in_progress'
+  | 'completed'
+  | 'declined';
+
+export const FEEDBACK_CATEGORY_LABELS: Record<FeedbackCategory, string> = {
+  feature_request: 'Feature Request',
+  bug_report: 'Bug Report',
+  ux_improvement: 'User Experience Improvement',
+  general_suggestion: 'General Suggestion',
+};
+
+export const FEEDBACK_STATUS_LABELS: Record<FeedbackStatus, string> = {
+  received: 'Received',
+  under_review: 'Under Review',
+  accepted: 'Accepted',
+  planned: 'Planned',
+  in_progress: 'In Progress',
+  completed: 'Completed',
+  declined: 'Declined',
+};
+
+export interface FeedbackSubmission {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  authorColor?: string;
+  schoolName?: string;
+  title: string;
+  explanation: string;
+  category: FeedbackCategory;
+  attachmentUrl?: string;
+  attachmentPublicId?: string;
+  status: FeedbackStatus;
+  isUseful: boolean;
+  submissionPointAwarded: boolean;
+  bonusPointAwarded: boolean;
+  moderatorResponse?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FeedbackAdminNote {
+  submissionId: string;
+  internalNotes: string;
+  updatedBy: string;
+  updatedByEmail: string;
+  updatedAt: string;
+}
+
+export type ContributionEventType =
+  | 'meaningful_reply'
+  | 'showcase_published'
+  | 'suggestion_submitted'
+  | 'suggestion_approved';
+
+export interface ContributionEvent {
+  id: string;
+  uid: string;
+  displayName: string;
+  actionType: ContributionEventType;
+  points: number;
+  sourceCollection: string;
+  sourceId: string;
+  parentId?: string;
+  label: string;
+  dayKey: string;
+  monthKey: string;
+  weekKey: string;
+  fingerprint?: string;
+  reversed: boolean;
+  reversedAt?: string;
+  reversedBy?: string;
+  reversalReason?: string;
+  createdAt: string;
+}
+
+export interface CommunityContributionStats {
+  uid: string;
+  displayName: string;
+  avatarUrl?: string;
+  avatarColor?: string;
+  role?: 'member' | 'moderator' | 'admin';
+  schoolName?: string;
+  lifetimePoints: number;
+  monthlyPoints: number;
+  monthlyPeriodKey: string;
+  weeklyPoints: number;
+  weeklyPeriodKey: string;
+  meaningfulRepliesCount: number;
+  totalRepliesCount: number;
+  approvedCreationsCount: number;
+  suggestionsSubmittedCount: number;
+  suggestionsAcceptedCount: number;
+  dailyReplyDateKey: string;
+  dailyReplyRewardsCount: number;
+  recentReplyFingerprints?: string[];
+  lastContributionAt: string;
   updatedAt: string;
 }
 

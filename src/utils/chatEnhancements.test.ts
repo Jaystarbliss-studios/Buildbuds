@@ -16,6 +16,17 @@ import {
   shouldShowScrollToBottomButton,
   resolveMentionedTargets,
   computeChannelUnreadState,
+  reconcileChannelMessagesAfterSnapshot,
+  reconcileShowcaseMessages,
+  filterCachedChannelMessagesJson,
+  parseHubDeepLinkParams,
+  resolveStandaloneInitialRoute,
+  extractReportTimestampMillis,
+  sortReportsNewestFirst,
+  resolveReportInspectMessageId,
+  resolveReportTargetUserId,
+  groupOpenReportCountByUserId,
+  buildModerationReportJumpUrl,
   INITIAL_VISIBLE_MESSAGES_COUNT,
   SCROLL_UP_LOAD_BATCH_SIZE,
   GROUPING_TIME_WINDOW_MS,
@@ -784,3 +795,182 @@ test('computeChannelUnreadState tracks unread and @mention badges per channel ac
     { hasUnread: false, hasMention: false }
   );
 });
+
+test('reconcileChannelMessagesAfterSnapshot permanently excludes deleted messages across live and cached states', () => {
+  const cached = [
+    { id: 'm1', channelId: 'general-chat', createdAtMillis: 1000 },
+    { id: 'm2', channelId: 'general-chat', createdAtMillis: 2000 },
+    { id: 'm3', channelId: 'general-chat', createdAtMillis: 3000 },
+    { id: 'other-ch', channelId: 'games', createdAtMillis: 3500 },
+  ];
+
+  // Authoritative live snapshot without m2 (deleted by another user): m2 must NEVER resurrect from cache
+  const afterRemoteDelete = reconcileChannelMessagesAfterSnapshot({
+    activeStreamId: 'general-chat',
+    liveMessages: [
+      { id: 'm1', channelId: 'general-chat', createdAtMillis: 1000 },
+      { id: 'm3', channelId: 'general-chat', createdAtMillis: 3000 },
+    ],
+    cachedMessages: cached,
+    deletedMessageIds: new Set(),
+    fromCache: false,
+    isTruncated: false,
+  });
+  assert.deepEqual(
+    afterRemoteDelete.map((m) => m.id),
+    ['m1', 'm3']
+  );
+
+  // Even when the last message in a channel is deleted (liveMessages === []), cache must clear cleanly
+  const afterLastDeleted = reconcileChannelMessagesAfterSnapshot({
+    activeStreamId: 'general-chat',
+    liveMessages: [],
+    cachedMessages: cached,
+    deletedMessageIds: new Set(),
+    fromCache: false,
+    isTruncated: false,
+  });
+  assert.deepEqual(afterLastDeleted, []);
+
+  // Even while reading from offline cache (`fromCache: true`), locally tombstoned IDs stay excluded
+  const whileOfflineWithTombstone = reconcileChannelMessagesAfterSnapshot({
+    activeStreamId: 'general-chat',
+    liveMessages: [{ id: 'm1', channelId: 'general-chat', createdAtMillis: 1000 }],
+    cachedMessages: cached,
+    deletedMessageIds: new Set(['m2']),
+    fromCache: true,
+    isTruncated: false,
+  });
+  assert.deepEqual(
+    whileOfflineWithTombstone.map((m) => m.id),
+    ['m1', 'm3']
+  );
+});
+
+test('reconcileShowcaseMessages and filterCachedChannelMessagesJson remove deleted items cleanly', () => {
+  const prevShowcase = [
+    { id: 'link-1', channelId: 'games', linkUrl: 'https://demo1.vercel.app', text: 'Game 1', createdAtMillis: 2000 },
+    { id: 'link-2', channelId: 'games', linkUrl: 'https://demo2.vercel.app', text: 'Game 2', createdAtMillis: 1000 },
+  ];
+  const reconciled = reconcileShowcaseMessages({
+    prevMessages: prevShowcase,
+    liveLinkMessages: [prevShowcase[0]],
+    deletedMessageIds: new Set(),
+    fromCache: false,
+    isTruncated: false,
+  });
+  assert.deepEqual(
+    reconciled.map((m) => m.id),
+    ['link-1']
+  );
+
+  const rawJson = JSON.stringify([
+    { id: 'a', channelId: 'games' },
+    { id: 'b', channelId: 'games' },
+  ]);
+  const filtered = JSON.parse(filterCachedChannelMessagesJson(rawJson, 'a')) as Array<{ id: string }>;
+  assert.deepEqual(
+    filtered.map((x) => x.id),
+    ['b']
+  );
+});
+
+test('parseHubDeepLinkParams extracts channel, sub-group stream, messageId, reportId, and reports tab', () => {
+  assert.deepEqual(
+    parseHubDeepLinkParams('/hub?channel=general-chat&stream=general-chat__group__grp42&messageId=msg-99&reportId=rep-7'),
+    {
+      channelId: 'general-chat',
+      streamId: 'general-chat__group__grp42',
+      subGroupId: 'grp42',
+      messageId: 'msg-99',
+      reportId: 'rep-7',
+    }
+  );
+
+  assert.deepEqual(parseHubDeepLinkParams('/hub?channel=games&tab=reports'), {
+    channelId: 'games',
+    streamId: 'games',
+    subGroupId: null,
+    openReports: true,
+  });
+
+  assert.equal(parseHubDeepLinkParams('/community/posts/post-1'), null);
+});
+
+test('resolveStandaloneInitialRoute sends installed PWA launches straight to /community instead of /', () => {
+  assert.equal(resolveStandaloneInitialRoute('/', '', true), '/community');
+  assert.equal(resolveStandaloneInitialRoute('', '?app=1', true), '/community?app=1');
+  assert.equal(resolveStandaloneInitialRoute('/hub', '?channel=games', true), '/hub?channel=games');
+  assert.equal(resolveStandaloneInitialRoute('/', '', false), '/');
+});
+
+test('Moderation report helpers resolve flagged member messages, sort newest-first, count open flags, and build jump URLs', () => {
+  const reports = [
+    {
+      id: 'rep-old',
+      messageId: 'user-uid2',
+      channelId: 'general-chat',
+      status: 'open',
+      createdAt: '2025-11-10T10:00:00.000Z',
+    },
+    {
+      id: 'rep-new',
+      messageId: 'user-uid1',
+      referencedMessageId: 'msg-bad-99',
+      referencedChannelId: 'games__group__teamA',
+      reportedUserId: 'uid1',
+      channelId: 'games',
+      streamId: 'games__group__teamA',
+      status: 'open',
+      createdAtMillis: 1_763_400_000_000,
+    },
+    {
+      id: 'rep-closed',
+      messageId: 'msg-55',
+      reportedUserId: 'uid1',
+      channelId: 'websites',
+      status: 'resolved',
+      createdAt: { toMillis: () => 1_763_450_000_000 },
+    },
+  ];
+
+  const sorted = sortReportsNewestFirst(reports);
+  assert.deepEqual(
+    sorted.map((r) => r.id),
+    ['rep-closed', 'rep-new', 'rep-old']
+  );
+
+  // Resolves offending message attached to a user report AND direct message reports
+  assert.equal(resolveReportInspectMessageId(reports[1]), 'msg-bad-99');
+  assert.equal(resolveReportInspectMessageId(reports[2]), 'msg-55');
+  assert.equal(resolveReportInspectMessageId(reports[0]), null);
+
+  // Extracts UID from either explicit reportedUserId or user-{uid}
+  assert.equal(resolveReportTargetUserId(reports[0]), 'uid2');
+  assert.equal(resolveReportTargetUserId(reports[1]), 'uid1');
+
+  // Counts only open flags per user
+  assert.deepEqual(groupOpenReportCountByUserId(reports), {
+    uid1: 1,
+    uid2: 1,
+  });
+
+  // Builds deep-link jump URLs for flagged members with attached messages, channel fallbacks, and public posts
+  assert.equal(
+    buildModerationReportJumpUrl(reports[1]),
+    '/hub?channel=games&stream=games__group__teamA&messageId=msg-bad-99&reportId=rep-new'
+  );
+  assert.equal(
+    buildModerationReportJumpUrl(reports[0]),
+    '/hub?channel=general-chat&reportId=rep-old'
+  );
+  assert.equal(
+    buildModerationReportJumpUrl({
+      id: 'rep-pub',
+      channelId: 'publicPosts/post-123',
+      messageId: 'post:post-123',
+    }),
+    '/community/posts/post-123?reportId=rep-pub'
+  );
+});
+

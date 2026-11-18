@@ -102,6 +102,11 @@ import {
 import { triggerHapticFeedback } from '../utils/haptics.ts';
 import { MemberProfileModal } from './MemberProfileModal.tsx';
 import {
+  CommunityContributorsLeaderboard,
+  CommunityContributorsPreview,
+} from './CommunityContributorsView.tsx';
+import { FeedbackCenterModal } from './FeedbackCenterModal.tsx';
+import {
   buildPublicMemberProfileSummary,
   type PublicMemberProfileSummary,
 } from '../utils/memberProfile.ts';
@@ -111,6 +116,7 @@ export type PublicCommunityTab =
   | 'creations'
   | 'updates'
   | 'challenges'
+  | 'contributors'
   | 'saved'
   | 'my-posts'
   | 'review';
@@ -236,6 +242,8 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const [curateSummary, setCurateSummary] = useState('');
   const [curateCategory, setCurateCategory] = useState('project-showcases');
   const [isSubmittingCuration, setIsSubmittingCuration] = useState(false);
+  const [curationError, setCurationError] = useState<string | null>(null);
+  const [isFeedbackModalOpen, setIsFeedbackModalOpen] = useState(false);
 
   const isAdmin = isSuperAdminUser(currentUser, builderProfile);
   const isModeratorOrAdmin = isAdmin || builderProfile?.role === 'moderator';
@@ -432,6 +440,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
 
     let cancelled = false;
     const postsToCheck = allMergedPosts
+      .filter((p) => !p.id.startsWith('seed-'))
       .slice(0, 8)
       .filter((p) => cachedMap[p.id] === undefined);
 
@@ -996,6 +1005,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   };
 
   const handleStartCuratingSubmission = (sub: ShowcaseSubmission) => {
+    setCurationError(null);
     setCuratingSubmission(sub);
     setCurateTitle(sub.title || `${sub.creatorName}'s Creation`);
     setCurateSummary(sub.description || '');
@@ -1011,6 +1021,7 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
   const handleExecuteCuration = async (approved: boolean) => {
     if (!curatingSubmission) return;
     setIsSubmittingCuration(true);
+    setCurationError(null);
     try {
       const cat = categories.find((c) => c.id === curateCategory) || categories[0];
       await adminCurateShowcaseSubmission(curatingSubmission.id, {
@@ -1027,7 +1038,9 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
       });
       setCuratingSubmission(null);
     } catch (err) {
-      console.warn('Failed to curate submission:', err);
+      setCurationError(
+        err instanceof Error ? err.message : 'Failed to update showcase submission.'
+      );
     } finally {
       setIsSubmittingCuration(false);
     }
@@ -1138,6 +1151,24 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
               >
                 <Trophy className="w-3.5 h-3.5 text-[#C15D00] shrink-0" />
                 <span>Challenges</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('contributors');
+                  onNavigate('/community/contributors');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer border-2 transition-all flex items-center gap-1.5 ${
+                  activeTab === 'contributors'
+                    ? 'bg-[#FFF025] text-black border-black brand-shadow-sm'
+                    : isDark
+                    ? 'border-transparent text-slate-200 hover:bg-white/10'
+                    : 'border-transparent text-slate-800 hover:bg-slate-100'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#B11469] shrink-0" />
+                <span>Contributors</span>
               </button>
 
               {isModeratorOrAdmin && (
@@ -1358,6 +1389,23 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 }`}
               >
                 Challenges
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileNavOpen(false);
+                  setActiveTab('contributors');
+                  onNavigate('/community/contributors');
+                }}
+                className={`py-2 px-3 rounded-xl border-2 border-black text-xs font-black text-left ${
+                  activeTab === 'contributors'
+                    ? 'bg-[#FFF025] text-black'
+                    : isDark
+                    ? 'bg-[#1a1a2e] text-white'
+                    : 'bg-white text-black'
+                }`}
+              >
+                Contributors
               </button>
               {canPublish && (
                 <button
@@ -1755,6 +1803,28 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                 })}
               </div>
             )}
+          </section>
+        ) : activeTab === 'contributors' ? (
+          <section aria-label="Community Contributors Leaderboard">
+            <CommunityContributorsLeaderboard
+              isDark={isDark}
+              onSelectContributor={(uid) => {
+                const match = directoryUsers.find((u) => u.uid === uid);
+                handleOpenMemberProfile({
+                  uid,
+                  displayName: match?.displayName || 'Community Builder',
+                  avatarUrl: match?.avatarUrl,
+                  role: match?.role,
+                });
+              }}
+              onOpenFeedbackModal={() => {
+                if (!currentUser || !builderProfile) {
+                  onRequireAuth('submit a feature suggestion or feedback');
+                  return;
+                }
+                setIsFeedbackModalOpen(true);
+              }}
+            />
           </section>
         ) : (
           /* ============================================================================
@@ -2527,6 +2597,24 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
               {/* SECTION 4 — RIGHT-HAND DISCOVERY SIDEBAR (4 Columns on Desktop)
                   Note: Yellow Student Hub side box removed per specification; pink bottom CTA banner retained. */}
               <aside className="lg:col-span-4 space-y-5" aria-label="Community Discovery Sidebar">
+                {/* Community Contributors Compact Top-5 Leaderboard Preview */}
+                <CommunityContributorsPreview
+                  isDark={isDark}
+                  onViewFullLeaderboard={() => {
+                    setActiveTab('contributors');
+                    onNavigate('/community/contributors');
+                  }}
+                  onSelectContributor={(uid) => {
+                    const match = directoryUsers.find((u) => u.uid === uid);
+                    handleOpenMemberProfile({
+                      uid,
+                      displayName: match?.displayName || 'Community Builder',
+                      avatarUrl: match?.avatarUrl,
+                      role: match?.role,
+                    });
+                  }}
+                />
+
                 {/* Trending Topics & Tags */}
                 <div
                   className={`p-5 rounded-3xl border-3 border-black brand-shadow space-y-3.5 ${
@@ -3571,6 +3659,12 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
               </button>
             </div>
 
+            {curationError && (
+              <div className="p-3 rounded-xl border-2 border-rose-500 bg-rose-50 text-rose-800 text-xs font-bold">
+                {curationError}
+              </div>
+            )}
+
             <div className="space-y-3 text-xs">
               <div>
                 <label className="block font-bold mb-1">Public Title</label>
@@ -3654,6 +3748,16 @@ export const PublicCommunityPage: React.FC<PublicCommunityPageProps> = ({
                   p.status === 'published'
               ).length
             : undefined
+        }
+        variant={isDark ? 'dark' : 'light'}
+      />
+
+      <FeedbackCenterModal
+        isOpen={isFeedbackModalOpen}
+        onClose={() => setIsFeedbackModalOpen(false)}
+        authorProfile={builderProfile}
+        onOpenAuthModal={(mode) =>
+          onRequireAuth('submit feature suggestions', undefined, mode === 'signup' ? 'join' : 'signin')
         }
         variant={isDark ? 'dark' : 'light'}
       />

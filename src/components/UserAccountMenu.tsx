@@ -373,6 +373,20 @@ export const UserAccountMenu: React.FC<UserAccountMenuProps> = ({
               type="button"
               onClick={() => {
                 setIsOpen(false);
+                onNavigate('/community/contributors');
+              }}
+              className={rowClass}
+            >
+              <span className="flex items-center gap-2.5">
+                <Sparkles className="w-4 h-4 opacity-70" />
+                <span>Community Contributors</span>
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
                 onNavigate('/community/my-posts');
               }}
               className={rowClass}

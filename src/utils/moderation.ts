@@ -146,7 +146,7 @@ export function extractFirstUrl(text: string): string | null {
   }
   // 3. Bare domain URLs for common creator platforms & TLDs (avoiding @mentions and emails)
   const bareMatch = text.match(
-    /(?:^|\s)((?![a-z0-9._%+-]+@)(?:[a-z0-9-]+\.)+(?:vercel\.app|netlify\.app|github\.io|github\.com|itch\.io|scratch\.mit\.edu|roblox\.com|youtube\.com|youtu\.be|vimeo\.com|loom\.com|wattpad\.com|docs\.google\.com|replit\.com|codepen\.io|codesandbox\.io|com|org|net|io|app|dev|edu|gg)(?:\/[^\s<>"]*)?)/i
+    /(?:^|\s)((?![a-z0-9._%+-]+@)(?:[a-z0-9-]+\.)+(?:name\.ng|vercel\.app|netlify\.app|github\.io|github\.com|itch\.io|scratch\.mit\.edu|roblox\.com|youtube\.com|youtu\.be|vimeo\.com|loom\.com|wattpad\.com|docs\.google\.com|drive\.google\.com|dropbox\.com|onedrive\.live\.com|1drv\.ms|replit\.com|codepen\.io|codesandbox\.io|com|org|net|io|app|dev|edu|gg|ng)(?:\/[^\s<>"]*)?)/i
   );
   if (bareMatch) {
     return cleanExtractedUrl(bareMatch[1]);
@@ -158,6 +158,188 @@ export interface VercelGameUrlValidation {
   valid: boolean;
   normalizedUrl: string;
   error?: string;
+}
+
+export type ShowcaseUrlValidationResult = VercelGameUrlValidation;
+
+const BLOCKED_PUBLIC_FILE_STORAGE_HOSTS = [
+  'drive.google.com',
+  'docs.google.com',
+  'sheets.google.com',
+  'slides.google.com',
+  'forms.google.com',
+  'dropbox.com',
+  'dl.dropboxusercontent.com',
+  'onedrive.live.com',
+  '1drv.ms',
+  'sharepoint.com',
+  'box.com',
+  'mega.nz',
+  'mediafire.com',
+  'wetransfer.com',
+  'icloud.com',
+  'terabox.com',
+];
+
+function isBlockedFileStorageHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return BLOCKED_PUBLIC_FILE_STORAGE_HOSTS.some(
+    (blocked) => lower === blocked || lower.endsWith(`.${blocked}`)
+  );
+}
+
+/**
+ * Validates URLs shared inside the Private Student Hub (#games, #websites, #general-chat, etc.).
+ * Accepts any legitimate HTTP or HTTPS link (Vercel, .com, .name.ng, Google Drive, Google Docs,
+ * GitHub, Dropbox, OneDrive, etc.), while rejecting dangerous/malformed protocols.
+ */
+export function validateHubUrl(rawUrl: string): VercelGameUrlValidation {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    return {
+      valid: false,
+      normalizedUrl: '',
+      error: 'Please enter a URL.',
+    };
+  }
+
+  if (/^(javascript|data|vbscript|file):/i.test(trimmed)) {
+    return {
+      valid: false,
+      normalizedUrl: trimmed,
+      error: 'Only standard http:// or https:// website links are allowed.',
+    };
+  }
+
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: 'Only http:// and https:// URLs are allowed.',
+      };
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (!host || !host.includes('.') || /\s/.test(host) || host.startsWith('.') || host.endsWith('.')) {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: 'Please enter a valid website link (e.g. https://example.com or https://drive.google.com/...).',
+      };
+    }
+    const normalizedPath = parsed.pathname === '/' && !parsed.search && !parsed.hash ? '' : parsed.pathname;
+    return {
+      valid: true,
+      normalizedUrl: `${parsed.protocol}//${host}${normalizedPath}${parsed.search}${parsed.hash}`,
+    };
+  } catch {
+    return {
+      valid: false,
+      normalizedUrl: trimmed,
+      error: 'Please enter a valid web link starting with https:// or http://.',
+    };
+  }
+}
+
+/**
+ * Enforces strict Public Showcase publishing URL policy using URL hostname parsing:
+ * Accepts ONLY HTTPS URLs ending in:
+ * - `.vercel.app` (e.g. `https://my-game.vercel.app`)
+ * - `.com` (regular live websites)
+ * - `.name.ng` (regular `.name.ng` websites)
+ * Explicitly rejects file-sharing / cloud storage hosts (`drive.google.com`, `docs.google.com`,
+ * `dropbox.com`, `onedrive.live.com`, `1drv.ms`, etc.), deceptive suffixes, non-HTTPS, and malformed URLs.
+ */
+export function validatePublicShowcaseUrl(
+  rawUrl: string,
+  options?: { label?: string; required?: boolean }
+): ShowcaseUrlValidationResult {
+  const label = options?.label || 'Project link';
+  const trimmed = (rawUrl || '').trim();
+
+  if (!trimmed) {
+    if (options?.required === false) {
+      return { valid: true, normalizedUrl: '' };
+    }
+    return {
+      valid: false,
+      normalizedUrl: '',
+      error: `${label} is required for this showcase post. Use a live https:// link on .vercel.app, .com, or .name.ng.`,
+    };
+  }
+
+  if (!/^https:\/\//i.test(trimmed)) {
+    return {
+      valid: false,
+      normalizedUrl: trimmed,
+      error: `${label} must start with https:// and point to a live .vercel.app, .com, or .name.ng website.`,
+    };
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+
+    if (
+      parsed.protocol !== 'https:' ||
+      !host ||
+      parsed.port ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: `${label} must be a clean https:// website URL without embedded credentials or custom ports.`,
+      };
+    }
+
+    if (isBlockedFileStorageHostname(host)) {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: `Cloud storage and document links (${host}) are allowed in the Private Student Hub, but Public Showcase projects require a live hosted website on .vercel.app, .com, or .name.ng.`,
+      };
+    }
+
+    if (host.includes('.vercel.app.') || host.includes('.name.ng.')) {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: `${label} appears to use a deceptive subdomain (${host}). Please use your real .vercel.app, .com, or .name.ng domain.`,
+      };
+    }
+
+    const labelPart = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+    const isVercelDomain =
+      host !== 'vercel.app' && new RegExp(`^(?:${labelPart}\\.)+vercel\\.app$`).test(host);
+    const isComDomain =
+      host !== 'com' && new RegExp(`^(?:${labelPart}\\.)+com$`).test(host);
+    const isNameNgDomain =
+      host !== 'name.ng' && new RegExp(`^(?:${labelPart}\\.)+name\\.ng$`).test(host);
+
+    if (!isVercelDomain && !isComDomain && !isNameNgDomain) {
+      return {
+        valid: false,
+        normalizedUrl: trimmed,
+        error: `${label} must use an approved live website domain: .vercel.app (e.g. https://my-app.vercel.app), .com, or .name.ng. File-sharing/storage hosts are only allowed in the Private Hub.`,
+      };
+    }
+
+    const normalizedPath = parsed.pathname === '/' && !parsed.search && !parsed.hash ? '' : parsed.pathname;
+    return {
+      valid: true,
+      normalizedUrl: `https://${host}${normalizedPath}${parsed.search}${parsed.hash}`,
+    };
+  } catch {
+    return {
+      valid: false,
+      normalizedUrl: trimmed,
+      error: `Please enter a valid https:// ${label.toLowerCase()} on .vercel.app, .com, or .name.ng.`,
+    };
+  }
 }
 
 /**
@@ -230,13 +412,13 @@ const AUTO_GENERATED_DESC_PATTERNS = [
   /^Shared project link from .+ for the Build Buds community\.$/i,
 ];
 
-function isAutoGeneratedTitle(title: string | undefined): boolean {
+export function isAutoGeneratedTitle(title: string | undefined): boolean {
   const trimmed = (title || '').trim();
   if (!trimmed) return true;
   return AUTO_GENERATED_TITLE_PATTERNS.some((re) => re.test(trimmed));
 }
 
-function isAutoGeneratedDescription(desc: string | undefined): boolean {
+export function isAutoGeneratedDescription(desc: string | undefined): boolean {
   const trimmed = (desc || '').trim();
   if (!trimmed) return true;
   return AUTO_GENERATED_DESC_PATTERNS.some((re) => re.test(trimmed));
@@ -305,8 +487,20 @@ export function detectCategoryFromUrl(rawUrl: string): CreationCategory | null {
     return 'novel';
   }
 
-  // Clear website / web-app slugs on generic hosting domains
+  // Cloud drive & external file-sharing resources (valid in Private Student Hub)
   if (
+    lowerHost === 'drive.google.com' ||
+    lowerHost === 'dropbox.com' ||
+    lowerHost.endsWith('.dropbox.com') ||
+    lowerHost === 'onedrive.live.com' ||
+    lowerHost === '1drv.ms'
+  ) {
+    return 'other';
+  }
+
+  // Clear website / web-app slugs on generic hosting domains or .name.ng domains
+  if (
+    lowerHost.endsWith('.name.ng') ||
     /\b(website|websites|web|site|portfolio|school|academy|college|university|shop|store|blog|agency|clinic|hospital|dashboard|landing|company|restaurant|library|tracker|calculator|converter|weather|notes|todo|calendar|resume|profile|church)\b/.test(
       `${lowerHost.replace(/[-_.]/g, ' ')} ${lowerPath.replace(/[-_/]/g, ' ')}`
     )
@@ -401,17 +595,21 @@ export function generateLinkPreview(
   const titleHintCategory = inferCategoryFromHintText(`${cleanUserTitle} ${cleanUserDesc}`);
 
   let detectedCategory: CreationCategory = 'website';
+  const lowerDomain = domain.toLowerCase();
+  const isCloudResourceHost = isBlockedFileStorageHostname(lowerDomain);
+
   if (options?.isExplicitOverride && overrideCategory && overrideCategory !== 'other') {
     detectedCategory = overrideCategory;
   } else if (
     urlCategory &&
     (urlCategory === 'video' ||
-      domain.toLowerCase().includes('itch.io') ||
-      domain.toLowerCase().includes('scratch.mit.edu') ||
-      domain.toLowerCase().includes('roblox.com') ||
-      domain.toLowerCase().includes('wattpad.com'))
+      urlCategory === 'other' ||
+      lowerDomain.includes('itch.io') ||
+      lowerDomain.includes('scratch.mit.edu') ||
+      lowerDomain.includes('roblox.com') ||
+      lowerDomain.includes('wattpad.com'))
   ) {
-    // Dedicated platform hosts are unambiguous
+    // Dedicated platform or cloud-resource hosts
     detectedCategory = urlCategory;
   } else if (titleHintCategory) {
     detectedCategory = titleHintCategory;
@@ -419,6 +617,8 @@ export function generateLinkPreview(
     detectedCategory = urlCategory;
   } else if (overrideCategory && overrideCategory !== 'other') {
     detectedCategory = overrideCategory;
+  } else if (isCloudResourceHost) {
+    detectedCategory = 'other';
   } else {
     detectedCategory = 'website';
   }
@@ -428,7 +628,9 @@ export function generateLinkPreview(
   const slugSegment =
     rawSlugSegment === 'watch' && searchParams?.get('v')
       ? `Video ${searchParams.get('v')}`
-      : rawSlugSegment;
+      : ['view', 'edit', 'usp'].includes(rawSlugSegment.toLowerCase()) || isCloudResourceHost
+        ? ''
+        : rawSlugSegment;
   const humanizedSlug = slugSegment
     ? slugSegment
         .replace(/[-_]+/g, ' ')
@@ -439,6 +641,16 @@ export function generateLinkPreview(
     .split('.')[0]
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (l) => l.toUpperCase());
+
+  const resourceHostLabel = lowerDomain.includes('drive.google.com')
+    ? 'Google Drive Resource'
+    : lowerDomain.includes('docs.google.com')
+      ? 'Google Docs File'
+      : lowerDomain.includes('dropbox.com')
+        ? 'Dropbox Shared Resource'
+        : lowerDomain.includes('onedrive.live.com') || lowerDomain === '1drv.ms'
+          ? 'OneDrive Shared Resource'
+          : `Creator Project on ${domain}`;
 
   const categoryTitles: Record<CreationCategory, string> = {
     game: humanizedSlug
@@ -453,7 +665,7 @@ export function generateLinkPreview(
     novel: humanizedSlug
       ? `${humanizedSlug} — Original Story`
       : `Original Story & Novel (${domain})`,
-    other: humanizedSlug || `Creator Project on ${domain}`,
+    other: isCloudResourceHost ? resourceHostLabel : humanizedSlug || `Creator Project on ${domain}`,
   };
 
   const categoryDescriptions: Record<CreationCategory, string> = {
@@ -461,7 +673,9 @@ export function generateLinkPreview(
     website: `Live web creation published on ${domain}. Explore the interface, design, and code built by a Build Buds creator.`,
     video: `Video devlog, animation, or tutorial shared from ${domain}. Watch and drop your thoughts below!`,
     novel: `Original serialized novel, worldbuilding lore, or creative writing piece hosted on ${domain}.`,
-    other: `Shared project link from ${domain} for the Build Buds community.`,
+    other: isCloudResourceHost
+      ? `Shared resource hosted on ${domain} inside the Private Student Hub.`
+      : `Shared project link from ${domain} for the Build Buds community.`,
   };
 
   return {

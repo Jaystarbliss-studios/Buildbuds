@@ -51,10 +51,93 @@ import {
   ChallengeResourceLink,
   DEFAULT_REGISTERED_SCHOOLS,
   RegisteredSchoolsDoc,
+  FeedbackCategory,
+  FeedbackStatus,
+  FeedbackSubmission,
+  FeedbackAdminNote,
+  FEEDBACK_STATUS_LABELS,
+  CommunityContributionStats,
+  ContributionEvent,
 } from '../types/community.ts';
-import { filterProfanity, validateVercelGameUrl } from './moderation.ts';
+import {
+  filterProfanity,
+  normalizeCoverImageUrl,
+  validatePublicShowcaseUrl,
+} from './moderation.ts';
+import { validateSuggestionContribution } from './contributions.ts';
 import { resolveMentionedTargets } from './messageGrouping.ts';
 import { INITIAL_PUBLIC_COMMUNITY_POSTS } from '../data/publicCommunitySeeds.ts';
+
+export type ContributionAwardApiPayload =
+  | {
+      action: 'meaningful_reply';
+      sourceKind: 'hub_thread' | 'hub_message_reply' | 'public_comment';
+      sourceId: string;
+      parentId: string;
+      replyToMessageId?: string;
+    }
+  | {
+      action: 'showcase_published';
+      postId: string;
+    }
+  | {
+      action: 'suggestion_submitted';
+      submissionId: string;
+    }
+  | {
+      action: 'suggestion_approved';
+      submissionId: string;
+    };
+
+export async function triggerContributionAward(
+  payload: ContributionAwardApiPayload
+): Promise<{
+  awarded: boolean;
+  alreadyAwarded?: boolean;
+  skippedReason?: string;
+  pointsDelta?: number;
+  error?: string;
+}> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    return { awarded: false, skippedReason: 'Not authenticated.' };
+  }
+  try {
+    const idToken = await currentUser.getIdToken();
+    const res = await fetch('/api/contributions/award', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      awarded?: boolean;
+      alreadyAwarded?: boolean;
+      skippedReason?: string;
+      pointsDelta?: number;
+      error?: string;
+    };
+    if (!res.ok) {
+      return {
+        awarded: false,
+        error: data.error || 'Contribution award request failed.',
+      };
+    }
+    return {
+      awarded: Boolean(data.awarded),
+      alreadyAwarded: Boolean(data.alreadyAwarded),
+      skippedReason: data.skippedReason,
+      pointsDelta: data.pointsDelta,
+    };
+  } catch (err) {
+    return {
+      awarded: false,
+      error: err instanceof Error ? err.message : 'Network error triggering contribution award.',
+    };
+  }
+}
 
 export const ALLOWED_IMAGE_MIME_TYPES = [
   'image/jpeg',
@@ -340,11 +423,11 @@ export function clearPostDraftLocally(uid: string): void {
  */
 export async function seedDefaultCategoriesIfNeeded(): Promise<void> {
   try {
-    const snap = await getDocs(collection(db, 'publicCategories'));
-    if (!snap.empty) return;
     if (!auth.currentUser || auth.currentUser.email?.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
       return;
     }
+    const snap = await getDocs(collection(db, 'publicCategories'));
+    if (!snap.empty) return;
     for (const cat of DEFAULT_PUBLIC_CATEGORIES) {
       await setDoc(doc(db, 'publicCategories', cat.id), cat);
     }
@@ -408,16 +491,33 @@ export async function savePublicPost(params: {
   const isModeratorOrAdmin = isAdmin || params.authorProfile.role === 'moderator';
 
   const cleanGameUrl = params.gameUrl?.trim() || '';
+  const cleanWebsiteUrl = params.websiteUrl?.trim() || '';
   const isGameCategory = params.categoryId === 'games' || Boolean(cleanGameUrl);
-  if (isGameCategory) {
-    if (!accessState.isApprovedForHub) {
-      throw new Error('Only verified and approved Private Student Hub members can post games.');
-    }
-    if (params.desiredStatus !== 'draft') {
-      const gameCheck = validateVercelGameUrl(cleanGameUrl);
+
+  let validatedGameUrl = cleanGameUrl;
+  let validatedWebsiteUrl = cleanWebsiteUrl;
+
+  if (params.desiredStatus !== 'draft') {
+    if (isGameCategory) {
+      const gameCheck = validatePublicShowcaseUrl(cleanGameUrl, {
+        label: 'Game link',
+        required: true,
+      });
       if (!gameCheck.valid) {
-        throw new Error(gameCheck.error || 'Games must use a valid https://game-name.vercel.app link.');
+        throw new Error(gameCheck.error);
       }
+      validatedGameUrl = gameCheck.normalizedUrl;
+    }
+
+    if (cleanWebsiteUrl) {
+      const webCheck = validatePublicShowcaseUrl(cleanWebsiteUrl, {
+        label: 'Live Website link',
+        required: false,
+      });
+      if (!webCheck.valid) {
+        throw new Error(webCheck.error);
+      }
+      validatedWebsiteUrl = webCheck.normalizedUrl;
     }
   }
 
@@ -468,8 +568,8 @@ export async function savePublicPost(params: {
       categoryName: params.categoryName,
       tags: cleanTags,
       media: attachedMedia,
-      websiteUrl: params.websiteUrl?.trim() || '',
-      gameUrl: cleanGameUrl,
+      websiteUrl: validatedWebsiteUrl,
+      gameUrl: validatedGameUrl,
       githubUrl: params.githubUrl?.trim() || '',
       challengeId: params.challengeId?.trim() || existingData.challengeId || '',
       challengeTitle: params.challengeTitle?.trim() || existingData.challengeTitle || '',
@@ -491,6 +591,10 @@ export async function savePublicPost(params: {
         postId: updatedPost.id,
         contextTitle: updatedPost.title,
       });
+      void triggerContributionAward({
+        action: 'showcase_published',
+        postId: updatedPost.id,
+      });
     }
     return updatedPost;
   }
@@ -504,8 +608,8 @@ export async function savePublicPost(params: {
     categoryName: params.categoryName,
     tags: cleanTags,
     media: attachedMedia,
-    websiteUrl: params.websiteUrl?.trim() || '',
-    gameUrl: cleanGameUrl,
+    websiteUrl: validatedWebsiteUrl,
+    gameUrl: validatedGameUrl,
     githubUrl: params.githubUrl?.trim() || '',
     challengeId: params.challengeId?.trim() || '',
     challengeTitle: params.challengeTitle?.trim() || '',
@@ -538,6 +642,10 @@ export async function savePublicPost(params: {
       sourceType: 'public_post',
       postId: newPost.id,
       contextTitle: newPost.title,
+    });
+    void triggerContributionAward({
+      action: 'showcase_published',
+      postId: newPost.id,
     });
   }
 
@@ -783,6 +891,13 @@ export async function addPublicPostComment(params: {
     postId: params.postId,
     contextTitle: postTitle,
     excludeUids: postAuthorId ? [postAuthorId] : [],
+  });
+
+  void triggerContributionAward({
+    action: 'meaningful_reply',
+    sourceKind: 'public_comment',
+    sourceId: commentRef.id,
+    parentId: params.postId,
   });
 
   return newComment;
@@ -1678,6 +1793,14 @@ export async function submitCreationForPublicShowcase(params: {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error('Authentication required.');
 
+  const linkCheck = validatePublicShowcaseUrl(params.linkUrl, {
+    label: 'Showcase link',
+    required: true,
+  });
+  if (!linkCheck.valid) {
+    throw new Error(linkCheck.error);
+  }
+
   const nowIso = new Date().toISOString();
   const subRef = doc(db, 'showcaseSubmissions', params.messageId);
 
@@ -1691,7 +1814,7 @@ export async function submitCreationForPublicShowcase(params: {
     creatorColor: params.creatorColor || '#FFF025',
     title: params.title.trim(),
     description: params.description.trim(),
-    linkUrl: params.linkUrl.trim(),
+    linkUrl: linkCheck.normalizedUrl,
     linkCategory: params.linkCategory || 'projects',
     linkDomain: params.linkDomain || '',
     coverImageUrl: params.coverImageUrl || '',
@@ -1732,6 +1855,18 @@ export async function adminCurateShowcaseSubmission(
     media?: CloudinaryMediaItem[];
     status: 'approved' | 'rejected';
     adminNotes?: string;
+    fallbackSubmission?: {
+      sourceMessageId?: string;
+      channelId?: string;
+      creatorId: string;
+      creatorName: string;
+      creatorAvatar?: string;
+      creatorColor?: string;
+      linkUrl: string;
+      linkCategory?: string;
+      linkDomain?: string;
+      coverImageUrl?: string;
+    };
   }
 ): Promise<{ success: boolean; publicPostId?: string }> {
   const currentUser = auth.currentUser;
@@ -1743,22 +1878,87 @@ export async function adminCurateShowcaseSubmission(
   const subRef = doc(db, 'showcaseSubmissions', submissionId);
   const subSnap = await getDoc(subRef);
 
-  if (!subSnap.exists()) {
+  let submission: ShowcaseSubmission | null = null;
+  if (subSnap.exists()) {
+    submission = subSnap.data() as ShowcaseSubmission;
+  } else if (updates.fallbackSubmission && updates.fallbackSubmission.linkUrl) {
+    const fb = updates.fallbackSubmission;
+    submission = {
+      id: submissionId,
+      sourceMessageId: fb.sourceMessageId || submissionId,
+      channelId: fb.channelId || 'general-chat',
+      creatorId: fb.creatorId || currentUser.uid,
+      creatorName: fb.creatorName || 'Student Builder',
+      creatorAvatar: fb.creatorAvatar || '',
+      creatorColor: fb.creatorColor || '#FFF025',
+      title: updates.title.trim() || 'Student Creation',
+      description: updates.body.trim() || updates.summary.trim() || '',
+      linkUrl: fb.linkUrl.trim(),
+      linkCategory: fb.linkCategory || 'other',
+      linkDomain: fb.linkDomain || '',
+      coverImageUrl: fb.coverImageUrl || '',
+      status: 'pending',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  } else {
+    // Fallback to checking the source message document directly in Firestore
+    try {
+      const msgSnap = await getDoc(doc(db, 'messages', submissionId));
+      if (msgSnap.exists()) {
+        const msgData = msgSnap.data() as Record<string, any>;
+        submission = {
+          id: submissionId,
+          sourceMessageId: submissionId,
+          channelId: String(msgData.channelId || 'general-chat'),
+          creatorId: String(msgData.authorId || currentUser.uid),
+          creatorName: String(msgData.authorName || 'Student Builder'),
+          creatorAvatar: String(msgData.authorAvatar || ''),
+          creatorColor: String(msgData.authorColor || '#FFF025'),
+          title: updates.title.trim() || String(msgData.linkTitle || 'Student Creation'),
+          description: updates.body.trim() || String(msgData.linkDescription || msgData.text || ''),
+          linkUrl: String(msgData.linkUrl || ''),
+          linkCategory: String(msgData.linkCategory || 'other'),
+          linkDomain: String(msgData.linkDomain || ''),
+          coverImageUrl: String(msgData.coverImageUrl || ''),
+          status: 'pending',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+      }
+    } catch {
+      // Fall through to error if truly missing
+    }
+  }
+
+  if (!submission) {
     throw new Error('Showcase submission not found.');
   }
 
-  const submission = subSnap.data() as ShowcaseSubmission;
+  const resolvedCover = normalizeCoverImageUrl(
+    submission.coverImageUrl || '',
+    (submission.linkCategory as any) || (updates.categoryId === 'games' ? 'game' : updates.categoryId === 'websites' ? 'website' : 'other')
+  );
 
   if (updates.status === 'approved') {
+    const linkCheck = validatePublicShowcaseUrl(submission.linkUrl, {
+      label: 'Showcase link',
+      required: true,
+    });
+    if (!linkCheck.valid) {
+      throw new Error(linkCheck.error);
+    }
+    const cleanShowcaseUrl = linkCheck.normalizedUrl;
+
     const postRef = doc(collection(db, 'publicPosts'));
     const mediaItems: CloudinaryMediaItem[] =
       updates.media && updates.media.length > 0
         ? updates.media
-        : submission.coverImageUrl
+        : resolvedCover
         ? [
             {
               publicId: `submission-${submissionId}`,
-              secureUrl: submission.coverImageUrl,
+              secureUrl: resolvedCover,
               ownerUid: submission.creatorId,
               format: 'jpg',
               width: 1200,
@@ -1769,17 +1969,22 @@ export async function adminCurateShowcaseSubmission(
           ]
         : [];
 
+    const isGame =
+      updates.categoryId === 'games' ||
+      submission.linkCategory === 'game' ||
+      submission.linkCategory === 'games';
+
     const newPublicPost: PublicPost = {
       id: postRef.id,
       title: updates.title.trim(),
       summary: updates.summary.trim() || updates.body.slice(0, 160),
-      body: updates.body.trim(),
+      body: updates.body.trim() || updates.summary.trim() || updates.title.trim(),
       categoryId: updates.categoryId,
       categoryName: updates.categoryName,
-      tags: updates.tags || ['Showcase', 'Student Builder'],
+      tags: updates.tags && updates.tags.length > 0 ? updates.tags : ['Showcase', 'Student Builder'],
       media: mediaItems,
-      websiteUrl: submission.linkUrl,
-      gameUrl: submission.linkCategory === 'games' ? submission.linkUrl : '',
+      websiteUrl: cleanShowcaseUrl,
+      gameUrl: isGame ? cleanShowcaseUrl : '',
       githubUrl: '',
       authorId: submission.creatorId,
       authorName: submission.creatorName,
@@ -1797,16 +2002,23 @@ export async function adminCurateShowcaseSubmission(
 
     await setDoc(postRef, newPublicPost);
 
-    await updateDoc(subRef, {
-      status: 'approved',
-      publicPostId: postRef.id,
-      reviewedBy: currentUser.uid,
-      adminNotes: updates.adminNotes || 'Featured in public community showcase.',
-      updatedAt: nowIso,
-    });
+    await setDoc(
+      subRef,
+      {
+        ...submission,
+        title: updates.title.trim() || submission.title,
+        description: updates.summary.trim() || submission.description,
+        status: 'approved',
+        publicPostId: postRef.id,
+        reviewedBy: currentUser.uid,
+        adminNotes: updates.adminNotes || 'Featured in public community showcase.',
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
 
     try {
-      const msgRef = doc(db, 'messages', submission.sourceMessageId);
+      const msgRef = doc(db, 'messages', submission.sourceMessageId || submissionId);
       await updateDoc(msgRef, {
         showcaseStatus: 'approved',
         publicPostId: postRef.id,
@@ -1821,6 +2033,8 @@ export async function adminCurateShowcaseSubmission(
       const notif: UserNotificationItem = {
         id: notifRef.id,
         uid: submission.creatorId,
+        senderId: currentUser.uid,
+        senderName: currentUser.displayName || 'Build Buds Admin',
         type: 'curation_approved',
         title: 'Project Featured in Public Showcase! 🎉',
         message: `Your project "${updates.title}" has been curated by our mentors and is now showcased publicly on the Build Buds Explore page.`,
@@ -1834,30 +2048,44 @@ export async function adminCurateShowcaseSubmission(
       // Non-fatal
     }
 
-    await addDoc(collection(db, 'adminAuditLogs'), {
-      action: 'curate_showcase',
-      targetUid: submission.creatorId,
-      targetEmail: 'student-builder',
-      targetName: submission.creatorName,
-      adminUid: currentUser.uid,
-      adminEmail: currentUser.email,
-      verifiedAgainstOfficialRecords: true,
-      reason: `Approved & published showcase post ${postRef.id}`,
-      createdAt: nowIso,
-    } satisfies AdminAuditLog);
+    try {
+      await addDoc(collection(db, 'adminAuditLogs'), {
+        action: 'curate_showcase',
+        targetUid: submission.creatorId,
+        targetEmail: 'student-builder',
+        targetName: submission.creatorName,
+        adminUid: currentUser.uid,
+        adminEmail: currentUser.email,
+        verifiedAgainstOfficialRecords: true,
+        reason: `Approved & published showcase post ${postRef.id}`,
+        createdAt: nowIso,
+      } satisfies AdminAuditLog);
+    } catch {
+      // Non-fatal
+    }
+
+    void triggerContributionAward({
+      action: 'showcase_published',
+      postId: postRef.id,
+    });
 
     return { success: true, publicPostId: postRef.id };
   } else {
     // Rejected
-    await updateDoc(subRef, {
-      status: 'rejected',
-      reviewedBy: currentUser.uid,
-      adminNotes: updates.adminNotes || 'Not selected for public showcase at this time.',
-      updatedAt: nowIso,
-    });
+    await setDoc(
+      subRef,
+      {
+        ...submission,
+        status: 'rejected',
+        reviewedBy: currentUser.uid,
+        adminNotes: updates.adminNotes || 'Not selected for public showcase at this time.',
+        updatedAt: nowIso,
+      },
+      { merge: true }
+    );
 
     try {
-      const msgRef = doc(db, 'messages', submission.sourceMessageId);
+      const msgRef = doc(db, 'messages', submission.sourceMessageId || submissionId);
       await updateDoc(msgRef, {
         showcaseStatus: 'rejected',
       });
@@ -1870,6 +2098,8 @@ export async function adminCurateShowcaseSubmission(
       const notif: UserNotificationItem = {
         id: notifRef.id,
         uid: submission.creatorId,
+        senderId: currentUser.uid,
+        senderName: currentUser.displayName || 'Build Buds Admin',
         type: 'curation_rejected',
         title: 'Showcase Submission Review',
         message: updates.adminNotes || 'Your project submission was reviewed. Keep building and sharing updates in the student hub!',
@@ -1994,6 +2224,9 @@ export async function sendUserInboxNotification(
       senderName: payload.senderName || currentUser.displayName || 'Builder',
       senderAvatar: payload.senderAvatar || '',
       channelId: payload.channelId || '',
+      ...(payload.streamId ? { streamId: payload.streamId } : {}),
+      ...(payload.messageId ? { messageId: payload.messageId } : {}),
+      ...(payload.reportId ? { reportId: payload.reportId } : {}),
       postId: payload.postId || '',
       read: false,
       createdAt: new Date().toISOString(),
@@ -2247,38 +2480,83 @@ export async function notifyModeratorsAndAdminsOfReport(params: {
   reporterUid: string;
   reporterName: string;
   channelId: string;
+  streamId?: string;
+  channelName?: string;
+  messageId?: string;
+  reportId?: string;
+  flaggedMessageText?: string;
+  flaggedAuthorName?: string;
   targetSummary: string;
   reason: string;
   channelModeratorIds?: string[];
 }): Promise<void> {
   try {
-    const usersSnap = await getDocs(
-      query(collection(db, 'users'), where('role', 'in', ['moderator', 'admin']), limit(40))
-    );
+    const [usersSnap, adminsSnap] = await Promise.all([
+      getDocs(
+        query(collection(db, 'users'), where('role', 'in', ['moderator', 'admin']), limit(40))
+      ),
+      getDocs(query(collection(db, 'admins'), limit(20))).catch(() => null),
+    ]);
     const recipientUids = new Set<string>(params.channelModeratorIds || []);
     usersSnap.docs.forEach((d) => {
       const u = d.data() as BuilderProfile;
       if (u.uid) recipientUids.add(u.uid);
     });
+    adminsSnap?.docs.forEach((d) => {
+      if (d.id) recipientUids.add(d.id);
+    });
     recipientUids.delete(params.reporterUid);
 
     const isPublic = params.channelId.startsWith('publicPosts/');
+    const rawStreamId = params.streamId || params.channelId;
     const baseChannelId = params.channelId.split('__group__')[0];
-    const actionUrl = isPublic
+
+    let actionUrl = isPublic
       ? `/${params.channelId.replace('publicPosts/', 'community/posts/')}`
       : `/hub?channel=${encodeURIComponent(baseChannelId)}`;
+
+    if (isPublic && params.reportId) {
+      actionUrl = `${actionUrl}?reportId=${encodeURIComponent(params.reportId)}`;
+    } else if (!isPublic) {
+      const qs = new URLSearchParams();
+      qs.set('channel', baseChannelId);
+      if (rawStreamId && rawStreamId !== baseChannelId) {
+        qs.set('stream', rawStreamId);
+      }
+      if (params.messageId) {
+        qs.set('messageId', params.messageId);
+      }
+      if (params.reportId) {
+        qs.set('reportId', params.reportId);
+      }
+      actionUrl = `/hub?${qs.toString()}`;
+    }
+
+    const previewText = (params.flaggedMessageText || '').trim();
+    const channelDisplay = params.channelName || baseChannelId;
+    const richMessage = previewText
+      ? `${params.flaggedAuthorName ? `${params.flaggedAuthorName} in #${channelDisplay}: ` : `#${channelDisplay}: `}"${previewText.slice(0, 320)}" (${params.reason.slice(0, 120)})`
+      : `${params.targetSummary} — "${params.reason.slice(0, 140)}"`;
 
     await Promise.all(
       Array.from(recipientUids).map((uid) =>
         sendUserInboxNotification(uid, {
           type: 'moderation_report',
-          title: `🚩 Flagged report by ${params.reporterName}`,
-          message: `${params.targetSummary} — "${params.reason.slice(0, 140)}"`,
+          title: `Flagged ${isPublic ? 'post' : 'message'} in #${channelDisplay} · Reported by ${params.reporterName}`,
+          message: richMessage.slice(0, 950),
           actionUrl,
-          actionLabel: isPublic ? 'Open Post' : 'Open Hub Reports',
+          actionLabel: isPublic
+            ? 'Open Flagged Post'
+            : params.messageId
+              ? 'Jump to Flagged Message'
+              : 'Open Flagged Reports',
           senderId: params.reporterUid,
           senderName: params.reporterName,
           channelId: isPublic ? undefined : baseChannelId,
+          streamId: isPublic ? undefined : rawStreamId,
+          messageId: params.messageId,
+          reportId: params.reportId,
+          postId: isPublic ? params.channelId.replace('publicPosts/', '') : undefined,
         })
       )
     );
@@ -2371,6 +2649,10 @@ export async function moderatePublicPostStatus(params: {
       sourceType: 'public_post',
       postId: publishedPost.id,
       contextTitle: publishedPost.title,
+    });
+    void triggerContributionAward({
+      action: 'showcase_published',
+      postId: publishedPost.id,
     });
   }
 
@@ -2990,6 +3272,324 @@ export async function sendCollaborationRequest(params: {
   });
 }
 
+// ===============================================================
+// Feature Suggestions, Feedback Centre & Community Contributors
+// ===============================================================
 
+export async function submitFeedbackSuggestion(params: {
+  title: string;
+  explanation: string;
+  category: FeedbackCategory;
+  attachmentUrl?: string;
+  attachmentPublicId?: string;
+  authorProfile: BuilderProfile;
+}): Promise<{ submission: FeedbackSubmission; pointsAwarded: number }> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Please sign in to submit a suggestion or feedback report.');
+  }
 
+  const cleanTitle = filterProfanity(params.title.trim()).filteredText;
+  const cleanExplanation = filterProfanity(params.explanation.trim()).filteredText;
+  const check = validateSuggestionContribution({
+    title: cleanTitle,
+    explanation: cleanExplanation,
+  });
+  if (!check.valid) {
+    throw new Error(check.reason || 'Please provide a clear title and explanation.');
+  }
 
+  const docRef = doc(collection(db, 'feedbackSubmissions'));
+  const nowIso = new Date().toISOString();
+
+  const submission: FeedbackSubmission = {
+    id: docRef.id,
+    authorId: currentUser.uid,
+    authorName: params.authorProfile.displayName || 'Builder',
+    authorAvatar: params.authorProfile.avatarUrl || '',
+    authorColor: params.authorProfile.avatarColor || '#FFF025',
+    schoolName: params.authorProfile.schoolName || '',
+    title: cleanTitle.slice(0, 160),
+    explanation: cleanExplanation.slice(0, 5000),
+    category: params.category,
+    attachmentUrl: params.attachmentUrl?.trim() || '',
+    attachmentPublicId: params.attachmentPublicId?.trim() || '',
+    status: 'received',
+    isUseful: false,
+    submissionPointAwarded: false,
+    bonusPointAwarded: false,
+    moderatorResponse: '',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  await setDoc(docRef, submission);
+
+  const awardRes = await triggerContributionAward({
+    action: 'suggestion_submitted',
+    submissionId: submission.id,
+  });
+
+  return {
+    submission: {
+      ...submission,
+      submissionPointAwarded: Boolean(awardRes.awarded),
+    },
+    pointsAwarded: awardRes.awarded ? awardRes.pointsDelta || 1 : 0,
+  };
+}
+
+export function subscribeToMyFeedbackSubmissions(
+  uid: string,
+  callback: (items: FeedbackSubmission[]) => void
+): () => void {
+  if (!uid) {
+    callback([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, 'feedbackSubmissions'),
+    where('authorId', '==', uid),
+    limit(50)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items: FeedbackSubmission[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ ...(docSnap.data() as FeedbackSubmission), id: docSnap.id });
+      });
+      items.sort(
+        (a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime()
+      );
+      callback(items);
+    },
+    () => callback([])
+  );
+}
+
+export function subscribeToAllFeedbackSubmissions(
+  callback: (items: FeedbackSubmission[]) => void
+): () => void {
+  const q = query(
+    collection(db, 'feedbackSubmissions'),
+    orderBy('createdAt', 'desc'),
+    limit(150)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items: FeedbackSubmission[] = [];
+      snap.forEach((docSnap) => {
+        items.push({ ...(docSnap.data() as FeedbackSubmission), id: docSnap.id });
+      });
+      callback(items);
+    },
+    () => callback([])
+  );
+}
+
+export function subscribeToFeedbackAdminNote(
+  submissionId: string,
+  callback: (note: FeedbackAdminNote | null) => void
+): () => void {
+  if (!submissionId) {
+    callback(null);
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, 'feedbackAdminNotes', submissionId),
+    (snap) => {
+      callback(snap.exists() ? (snap.data() as FeedbackAdminNote) : null);
+    },
+    () => callback(null)
+  );
+}
+
+export async function adminUpdateFeedbackSubmission(params: {
+  submission: FeedbackSubmission;
+  status: FeedbackStatus;
+  awardUsefulBonus?: boolean;
+  moderatorResponse?: string;
+  internalNotes?: string;
+}): Promise<{ bonusAwarded: boolean }> {
+  const currentUser = auth.currentUser;
+  if (!currentUser || !currentUser.email) {
+    throw new Error('Moderator or administrator credentials required.');
+  }
+
+  const nowIso = new Date().toISOString();
+  const cleanResponse = params.moderatorResponse?.trim() || '';
+  const shouldMarkUseful = Boolean(params.awardUsefulBonus) || params.submission.isUseful;
+
+  await updateDoc(doc(db, 'feedbackSubmissions', params.submission.id), {
+    status: params.status,
+    isUseful: shouldMarkUseful,
+    moderatorResponse: cleanResponse,
+    reviewedBy: currentUser.uid,
+    reviewedAt: nowIso,
+    updatedAt: nowIso,
+  });
+
+  if (typeof params.internalNotes === 'string') {
+    await setDoc(
+      doc(db, 'feedbackAdminNotes', params.submission.id),
+      {
+        submissionId: params.submission.id,
+        internalNotes: params.internalNotes.trim(),
+        updatedBy: currentUser.uid,
+        updatedByEmail: currentUser.email,
+        updatedAt: nowIso,
+      } satisfies FeedbackAdminNote,
+      { merge: true }
+    );
+  }
+
+  let bonusAwarded = false;
+  if (params.awardUsefulBonus && !params.submission.bonusPointAwarded) {
+    const res = await triggerContributionAward({
+      action: 'suggestion_approved',
+      submissionId: params.submission.id,
+    });
+    bonusAwarded = Boolean(res.awarded);
+  }
+
+  const statusLabel = FEEDBACK_STATUS_LABELS[params.status] || params.status;
+  if (params.submission.authorId && params.submission.authorId !== currentUser.uid) {
+    void sendUserInboxNotification(params.submission.authorId, {
+      type: 'feedback_status',
+      title: `Suggestion Update: ${statusLabel}`,
+      message: cleanResponse
+        ? `"${params.submission.title.slice(0, 65)}" is now ${statusLabel}: ${cleanResponse.slice(0, 180)}`
+        : `Your feedback "${params.submission.title.slice(0, 75)}" was moved to ${statusLabel}.`,
+      actionUrl: '/community',
+      actionLabel: 'Open Feedback Centre',
+      senderId: currentUser.uid,
+      senderName: currentUser.displayName || 'Build Buds Team',
+    });
+  }
+
+  try {
+    await addDoc(collection(db, 'adminAuditLogs'), {
+      action: 'manage_feedback',
+      targetUid: params.submission.authorId,
+      targetEmail: params.submission.authorName,
+      targetName: params.submission.title.slice(0, 80),
+      adminUid: currentUser.uid,
+      adminEmail: currentUser.email,
+      verifiedAgainstOfficialRecords: true,
+      reason: `Updated feedback status to ${statusLabel}${params.awardUsefulBonus ? ' (+2 bonus pts)' : ''}`,
+      createdAt: nowIso,
+    } satisfies AdminAuditLog);
+  } catch {
+    // Non-blocking audit log
+  }
+
+  return { bonusAwarded };
+}
+
+export function subscribeToLeaderboardStats(
+  limitCount = 100,
+  callback: (stats: CommunityContributionStats[]) => void
+): () => void {
+  const q = query(
+    collection(db, 'communityContributionStats'),
+    orderBy('lifetimePoints', 'desc'),
+    limit(Math.max(10, Math.min(limitCount, 200)))
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: CommunityContributionStats[] = [];
+      snap.forEach((docSnap) => {
+        list.push({ ...(docSnap.data() as CommunityContributionStats), uid: docSnap.id });
+      });
+      callback(list);
+    },
+    () => callback([])
+  );
+}
+
+export function subscribeToMemberContributionStats(
+  uid: string,
+  callback: (stats: CommunityContributionStats | null) => void
+): () => void {
+  if (!uid) {
+    callback(null);
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, 'communityContributionStats', uid),
+    (snap) => {
+      callback(snap.exists() ? ({ ...(snap.data() as CommunityContributionStats), uid: snap.id }) : null);
+    },
+    () => callback(null)
+  );
+}
+
+export function subscribeToContributionEvents(
+  options: { uid?: string; limitCount?: number },
+  callback: (events: ContributionEvent[]) => void
+): () => void {
+  const colRef = collection(db, 'communityContributionEvents');
+  const maxItems = Math.max(5, Math.min(options.limitCount || 40, 150));
+  const q = options.uid
+    ? query(colRef, where('uid', '==', options.uid), limit(maxItems))
+    : query(colRef, orderBy('createdAt', 'desc'), limit(maxItems));
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const events: ContributionEvent[] = [];
+      snap.forEach((docSnap) => {
+        events.push({ ...(docSnap.data() as ContributionEvent), id: docSnap.id });
+      });
+      events.sort(
+        (a, b) => new Date(b.createdAt || '').getTime() - new Date(a.createdAt || '').getTime()
+      );
+      callback(events);
+    },
+    () => callback([])
+  );
+}
+
+export async function adminReverseContributionEvent(
+  eventId: string,
+  reason: string
+): Promise<{ reversed: boolean; pointsDeducted?: number }> {
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Administrator authentication required.');
+  }
+  const cleanReason = reason.trim();
+  if (cleanReason.length < 3) {
+    throw new Error('Please enter a brief moderation reason for reversing these points.');
+  }
+
+  const idToken = await currentUser.getIdToken();
+  const res = await fetch('/api/contributions/award', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      action: 'reverse_event',
+      eventId,
+      reason: cleanReason,
+    }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    reversed?: boolean;
+    pointsDeducted?: number;
+    error?: string;
+    skippedReason?: string;
+  };
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to reverse contribution points.');
+  }
+  return {
+    reversed: Boolean(data.reversed),
+    pointsDeducted: data.pointsDeducted,
+  };
+}

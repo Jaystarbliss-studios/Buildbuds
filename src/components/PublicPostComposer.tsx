@@ -31,7 +31,7 @@ import {
   MAX_IMAGES_PER_POST,
   getCloudinaryResponsiveUrl,
 } from '../utils/communityService.ts';
-import { validateVercelGameUrl } from '../utils/moderation.ts';
+import { validatePublicShowcaseUrl } from '../utils/moderation.ts';
 import { MentionAutocompletePopover, useMentionableUsers } from './MentionAndEmotes.tsx';
 import { useTheme } from '../utils/themeContext.tsx';
 
@@ -83,7 +83,12 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
   const directoryUsers = useMentionableUsers();
   const isModOrAdmin = authorProfile.role === 'admin' || authorProfile.role === 'moderator';
   const isGamePost = categoryId === 'games' || Boolean(gameUrl.trim());
-  const gameUrlCheck = gameUrl.trim() ? validateVercelGameUrl(gameUrl) : null;
+  const gameUrlCheck = gameUrl.trim()
+    ? validatePublicShowcaseUrl(gameUrl, { label: 'Game link', required: true })
+    : null;
+  const websiteUrlCheck = websiteUrl.trim()
+    ? validatePublicShowcaseUrl(websiteUrl, { label: 'Live Website link', required: false })
+    : null;
 
   useEffect(() => {
     const unsub = subscribeToCommunityChallenges((list) => {
@@ -237,11 +242,22 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
         return;
       }
       if (categoryId === 'games' || gameUrl.trim()) {
-        const check = validateVercelGameUrl(gameUrl);
+        const check = validatePublicShowcaseUrl(gameUrl, {
+          label: 'Game link',
+          required: categoryId === 'games',
+        });
         if (!check.valid) {
-          setErrorMessage(
-            check.error || 'Game links must follow the format https://game-name.vercel.app'
-          );
+          setErrorMessage(check.error || 'Please enter a valid live https:// game link on .vercel.app, .com, or .name.ng.');
+          return;
+        }
+      }
+      if (websiteUrl.trim()) {
+        const webCheck = validatePublicShowcaseUrl(websiteUrl, {
+          label: 'Live Website link',
+          required: false,
+        });
+        if (!webCheck.valid) {
+          setErrorMessage(webCheck.error || 'Please enter a valid live https:// website link on .vercel.app, .com, or .name.ng.');
           return;
         }
       }
@@ -461,11 +477,16 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
                   type="url"
                   value={websiteUrl}
                   onChange={(e) => setWebsiteUrl(e.target.value)}
-                  placeholder="https://..."
-                  className={`w-full px-2.5 py-1.5 text-xs rounded-lg border-2 border-black ${
-                    isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'
-                  }`}
+                  placeholder="https://my-project.vercel.app or https://mysite.com"
+                  className={`w-full px-2.5 py-1.5 text-xs rounded-lg border-2 ${
+                    websiteUrlCheck && !websiteUrlCheck.valid ? 'border-rose-500' : 'border-black'
+                  } ${isDark ? 'bg-[#121222] text-white' : 'bg-white text-black'}`}
                 />
+                {websiteUrlCheck && !websiteUrlCheck.valid && (
+                  <p className="text-[10px] font-bold mt-1 text-rose-500">
+                    {websiteUrlCheck.error}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -481,7 +502,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
                   type="url"
                   value={gameUrl}
                   onChange={(e) => setGameUrl(e.target.value)}
-                  placeholder="https://game-name.vercel.app"
+                  placeholder="https://game-name.vercel.app or .com / .name.ng"
                   className={`w-full px-2.5 py-1.5 text-xs rounded-lg border-2 ${
                     gameUrlCheck && !gameUrlCheck.valid
                       ? 'border-rose-500'
@@ -500,7 +521,7 @@ export const PublicPostComposer: React.FC<PublicPostComposerProps> = ({
                   >
                     {gameUrlCheck && !gameUrlCheck.valid
                       ? gameUrlCheck.error
-                      : 'Private Student Hub only • Must use https://game-name.vercel.app'}
+                      : 'Live https:// website required (.vercel.app, .com, or .name.ng). File-sharing links belong in Private Hub.'}
                   </p>
                 )}
               </div>

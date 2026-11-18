@@ -18,10 +18,10 @@ import {
 import {
   getFirestore,
   initializeFirestore,
-  persistentLocalCache,
-  persistentMultipleTabManager,
+  memoryLocalCache,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
   setDoc,
   updateDoc,
@@ -74,24 +74,48 @@ setPersistence(auth, browserLocalPersistence).catch((err) => {
 
 function createFirestoreInstance() {
   try {
-    if (typeof window !== 'undefined' && 'indexedDB' in window) {
-      return initializeFirestore(
-        app,
-        {
-          localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager(),
-          }),
-        },
-        firestoreDatabaseId
-      );
-    }
+    return initializeFirestore(
+      app,
+      {
+        localCache: memoryLocalCache(),
+        ...(typeof window !== 'undefined' ? { experimentalForceLongPolling: true } : {}),
+        ignoreUndefinedProperties: true,
+      },
+      firestoreDatabaseId
+    );
   } catch {
-    // Fallback if already initialized or IndexedDB unavailable
+    // Fallback if already initialized
   }
   return getFirestore(app, firestoreDatabaseId);
 }
 
 export const db = createFirestoreInstance();
+
+function withFirestoreTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Firestore request timed out'));
+    }, timeoutMs);
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+if (typeof window !== 'undefined') {
+  getDocFromServer(doc(db, 'community_settings', 'public_config')).catch((error: unknown) => {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration.');
+    }
+  });
+}
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
@@ -369,7 +393,7 @@ export async function checkUsernameAvailability(
   const baseForSuggestion = clean || 'Builder';
 
   try {
-    const snap = await getDocs(query(collection(db, 'users'), limit(300)));
+    const snap = await withFirestoreTimeout(getDocs(query(collection(db, 'users'), limit(300))));
     const takenLowerSet = new Set<string>();
     let conflictName: string | undefined;
 
@@ -506,7 +530,7 @@ export function loadCachedBuilderProfile(uid: string): BuilderProfile | null {
 export async function checkExistingBuilderProfile(user: User): Promise<BuilderProfile | null> {
   const userRef = doc(db, 'users', user.uid);
   try {
-    const snap = await getDoc(userRef);
+    const snap = await withFirestoreTimeout(getDoc(userRef));
     if (snap.exists()) {
       const raw = snap.data() as Partial<BuilderProfile>;
       const isAdminEmail = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
@@ -585,7 +609,7 @@ export async function verifyAndRestoreStudentHubAccess(
 
   try {
     // 1. Check communityMemberships/{uid}
-    const memSnap = await getDoc(doc(db, 'communityMemberships', user.uid));
+    const memSnap = await withFirestoreTimeout(getDoc(doc(db, 'communityMemberships', user.uid)));
     if (memSnap.exists()) {
       const memData = memSnap.data();
       if (memData.status === 'revoked' || memData.status === 'suspended') {
@@ -618,7 +642,7 @@ export async function verifyAndRestoreStudentHubAccess(
     }
 
     // 2. Check studentAccessRequests/{uid}
-    const reqSnap = await getDoc(doc(db, 'studentAccessRequests', user.uid));
+    const reqSnap = await withFirestoreTimeout(getDoc(doc(db, 'studentAccessRequests', user.uid)));
     if (reqSnap.exists()) {
       const reqData = reqSnap.data();
       if (
@@ -668,8 +692,8 @@ export async function verifyAndRestoreStudentHubAccess(
     }
 
     // 3. Check if this user has prior messages in the Private Student Hub (`/messages`)
-    const priorMsgsSnap = await getDocs(
-      query(collection(db, 'messages'), where('authorId', '==', user.uid), limit(1))
+    const priorMsgsSnap = await withFirestoreTimeout(
+      getDocs(query(collection(db, 'messages'), where('authorId', '==', user.uid), limit(1)))
     );
     if (!priorMsgsSnap.empty) {
       const healed: BuilderProfile = {
@@ -866,7 +890,9 @@ export async function getStudentAccessState(
   let resolvedProfile: BuilderProfile | null = profile || null;
 
   try {
-    const membershipSnap = await getDoc(doc(db, 'communityMemberships', user.uid));
+    const membershipSnap = await withFirestoreTimeout(
+      getDoc(doc(db, 'communityMemberships', user.uid))
+    );
     if (membershipSnap.exists()) {
       membership = membershipSnap.data() as CommunityMembership;
     }
@@ -875,7 +901,9 @@ export async function getStudentAccessState(
   }
 
   try {
-    const reqSnap = await getDoc(doc(db, 'studentAccessRequests', user.uid));
+    const reqSnap = await withFirestoreTimeout(
+      getDoc(doc(db, 'studentAccessRequests', user.uid))
+    );
     if (reqSnap.exists()) {
       request = reqSnap.data() as StudentAccessRequest;
     }

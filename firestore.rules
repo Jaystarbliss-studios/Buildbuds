@@ -85,16 +85,28 @@ service cloud.firestore {
         );
     }
 
+    function baseChannelIdOf(channelId) {
+      return channelId.split('__group__')[0];
+    }
+
     function isChannelModerator(channelId) {
       return isAuthenticated() &&
-        exists(/databases/$(database)/documents/community_channels/$(channelId)) &&
-        request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.moderatorIds;
+        (
+          (exists(/databases/$(database)/documents/community_channels/$(channelId)) &&
+            request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.moderatorIds) ||
+          (exists(/databases/$(database)/documents/community_channels/$(baseChannelIdOf(channelId))) &&
+            request.auth.uid in get(/databases/$(database)/documents/community_channels/$(baseChannelIdOf(channelId))).data.moderatorIds)
+        );
     }
 
     function isNotKickedFromChannel(channelId) {
       return isAdmin() ||
-        !exists(/databases/$(database)/documents/community_channels/$(channelId)) ||
-        !(request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.kickedUserIds);
+        (
+          (!exists(/databases/$(database)/documents/community_channels/$(channelId)) ||
+            !(request.auth.uid in get(/databases/$(database)/documents/community_channels/$(channelId)).data.kickedUserIds)) &&
+          (!exists(/databases/$(database)/documents/community_channels/$(baseChannelIdOf(channelId))) ||
+            !(request.auth.uid in get(/databases/$(database)/documents/community_channels/$(baseChannelIdOf(channelId))).data.kickedUserIds))
+        );
     }
 
     function isValidUserProfile(data, userId) {
@@ -121,6 +133,19 @@ service cloud.firestore {
         (!('createdAt' in data) || data.createdAt is timestamp || (data.createdAt is string && data.createdAt.size() <= 60)) &&
         (!('coverImageUrl' in data) || (data.coverImageUrl is string && data.coverImageUrl.size() <= 800000)) &&
         (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 2000));
+    }
+
+    function isValidPublicShowcaseUrl(url) {
+      return url is string &&
+        url.size() <= 2000 &&
+        url.lower().matches('^https://([a-z0-9-]+\\.)+((vercel\\.app)|com|(name\\.ng))([/?#].*)?$') &&
+        !url.lower().matches('^https://[^/?#]*(\\.vercel\\.app\\.|\\.name\\.ng\\.)') &&
+        !url.lower().matches('^https://([a-z0-9-]+\\.)?(drive|docs|sheets|slides|forms)\\.google\\.com([/?#].*)?$') &&
+        !url.lower().matches('^https://([a-z0-9-]+\\.)?(dropbox\\.com|dropboxusercontent\\.com|onedrive\\.live\\.com|1drv\\.ms|sharepoint\\.com|box\\.com|mega\\.nz|mediafire\\.com|wetransfer\\.com|icloud\\.com|terabox\\.com)([/?#].*)?$');
+    }
+
+    function isValidOptionalPublicShowcaseUrl(url) {
+      return url is string && (url == '' || isValidPublicShowcaseUrl(url));
     }
 
     // ===============================================================
@@ -231,7 +256,9 @@ service cloud.firestore {
             'new_follower',
             'post_pending_review',
             'moderation_report',
-            'hub_message'
+            'hub_message',
+            'feedback_status',
+            'contribution_awarded'
           ] &&
           request.resource.data.senderId == request.auth.uid &&
           request.resource.data.title is string && request.resource.data.title.size() <= 200 &&
@@ -299,6 +326,12 @@ service cloud.firestore {
             request.resource.data.body is string && request.resource.data.body.size() >= 1 && request.resource.data.body.size() <= 20000 &&
             (request.resource.data.status in ['draft', 'pending_review'] ||
               (request.resource.data.status == 'published' && (isAdmin() || isGlobalModeratorUser()))) &&
+            (request.resource.data.status == 'draft' ||
+              (
+                (!('websiteUrl' in request.resource.data) || isValidOptionalPublicShowcaseUrl(request.resource.data.websiteUrl)) &&
+                (!('gameUrl' in request.resource.data) || isValidOptionalPublicShowcaseUrl(request.resource.data.gameUrl)) &&
+                (request.resource.data.categoryId != 'games' || isValidPublicShowcaseUrl(request.resource.data.get('gameUrl', '')))
+              )) &&
             (request.resource.data.get('isFeatured', false) == false || isAdmin() || isGlobalModeratorUser())) ||
           // Allow first-time transaction initialization of official seed posts when reacting/commenting
           (postId.matches('^seed-.*') && request.resource.data.status == 'published') ||
@@ -312,6 +345,12 @@ service cloud.firestore {
         request.resource.data.authorId == resource.data.authorId &&
         (request.resource.data.status in ['draft', 'pending_review'] ||
           (request.resource.data.status == 'published' && (isAdmin() || isGlobalModeratorUser()))) &&
+        (request.resource.data.status == 'draft' ||
+          (
+            (!('websiteUrl' in request.resource.data) || isValidOptionalPublicShowcaseUrl(request.resource.data.websiteUrl)) &&
+            (!('gameUrl' in request.resource.data) || isValidOptionalPublicShowcaseUrl(request.resource.data.gameUrl)) &&
+            (request.resource.data.categoryId != 'games' || isValidPublicShowcaseUrl(request.resource.data.get('gameUrl', '')))
+          )) &&
         (request.resource.data.get('isFeatured', false) == resource.data.get('isFeatured', false) || isAdmin() || isGlobalModeratorUser())) ||
         // Allow Moderators & Admins to review, approve, hide, remove, or feature any post
         (isGlobalModeratorUser() &&
@@ -397,7 +436,7 @@ service cloud.firestore {
     // ===============================================================
     match /showcaseSubmissions/{submissionId} {
       allow read: if (isAuthenticated() && resource.data.creatorId == request.auth.uid) || isAdmin();
-      allow create: if isApprovedStudent() &&
+      allow create: if (isApprovedStudent() &&
         isNotBanned() &&
         request.resource.data.creatorId == request.auth.uid &&
         request.resource.data.title is string &&
@@ -405,7 +444,9 @@ service cloud.firestore {
         request.resource.data.title.size() <= 200 &&
         request.resource.data.linkUrl is string &&
         request.resource.data.linkUrl.size() <= 1000 &&
-        request.resource.data.status == 'pending';
+        isValidPublicShowcaseUrl(request.resource.data.linkUrl) &&
+        request.resource.data.status == 'pending') ||
+        isAdmin();
       allow update, delete: if isAdmin();
     }
 
@@ -486,76 +527,78 @@ service cloud.firestore {
     // Private Student Hub Chat Messages (/messages/{messageId})
     // ===============================================================
     match /messages/{messageId} {
-      allow read: if (isApprovedStudent() && isActiveUser() && isNotBanned()) ||
-        isAdmin() ||
-        isChannelModerator(resource.data.channelId) ||
-        isGlobalModeratorUser();
+      allow read: if isAdmin() ||
+        isGlobalModeratorUser() ||
+        (isApprovedStudent() && isNotBanned());
 
       allow create: if (isApprovedStudent() &&
         isActiveUser() &&
         isValidMessage(request.resource.data)) ||
         isAdmin();
 
-      allow update: if isApprovedStudent() &&
-        isActiveUser() &&
-        request.resource.data.authorId == resource.data.authorId &&
-        request.resource.data.channelId == resource.data.channelId &&
-        (
-          (request.resource.data.text == resource.data.text &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'reactions',
-              'userReactions',
-              'threadCount',
-              'updatedAt',
-              'showcaseStatus',
-              'showcaseRequestedAt',
-              'publicPostId',
-              'linkUrl',
-              'linkTitle',
-              'linkDescription',
-              'linkCategory',
-              'linkDomain',
-              'coverImageUrl'
-            ])) ||
-          (resource.data.authorId == request.auth.uid &&
-            request.resource.data.text is string &&
-            request.resource.data.text.size() >= 1 &&
-            request.resource.data.text.size() <= 4000 &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'text',
-              'isEdited',
-              'updatedAt',
-              'hadProfanity',
-              'linkUrl',
-              'linkTitle',
-              'linkDescription',
-              'linkCategory',
-              'linkDomain',
-              'coverImageUrl'
-            ])) ||
-          ((isAdmin() || isChannelModerator(resource.data.channelId) || isGlobalModeratorUser()) &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'isPinned',
-              'pinnedAtMillis',
-              'pinnedBy',
-              'updatedAt'
-            ])) ||
-          isAdmin() ||
-          isChannelModerator(resource.data.channelId) ||
-          isGlobalModeratorUser()
-        );
+      allow update: if isAdmin() ||
+        isGlobalModeratorUser() ||
+        (isApprovedStudent() &&
+          isActiveUser() &&
+          request.resource.data.authorId == resource.data.authorId &&
+          request.resource.data.channelId == resource.data.channelId &&
+          (
+            (request.resource.data.text == resource.data.text &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'reactions',
+                'userReactions',
+                'threadCount',
+                'updatedAt',
+                'showcaseStatus',
+                'showcaseRequestedAt',
+                'publicPostId',
+                'linkUrl',
+                'linkTitle',
+                'linkDescription',
+                'linkCategory',
+                'linkDomain',
+                'categoryManuallySet',
+                'coverImageUrl'
+              ])) ||
+            (resource.data.authorId == request.auth.uid &&
+              request.resource.data.text is string &&
+              request.resource.data.text.size() >= 1 &&
+              request.resource.data.text.size() <= 4000 &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'text',
+                'isEdited',
+                'updatedAt',
+                'hadProfanity',
+                'linkUrl',
+                'linkTitle',
+                'linkDescription',
+                'linkCategory',
+                'linkDomain',
+                'categoryManuallySet',
+                'coverImageUrl'
+              ])) ||
+            (isChannelModerator(resource.data.channelId) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'isPinned',
+                'pinnedAtMillis',
+                'pinnedBy',
+                'updatedAt'
+              ])) ||
+            isChannelModerator(resource.data.channelId)
+          ));
 
-      allow delete: if isApprovedStudent() &&
-        (resource.data.authorId == request.auth.uid ||
-          isAdmin() ||
-          isChannelModerator(resource.data.channelId) ||
-          isGlobalModeratorUser());
+      allow delete: if isAdmin() ||
+        isGlobalModeratorUser() ||
+        (isApprovedStudent() && isNotBanned() &&
+          (resource.data.authorId == request.auth.uid ||
+            isChannelModerator(resource.data.channelId))) ||
+        (isAuthenticated() && isNotBanned() && resource.data.authorId == request.auth.uid);
 
       // Nested Thread Replies
       match /threadReplies/{replyId} {
-        allow read: if (isApprovedStudent() && isActiveUser() && isNotBanned()) ||
-          isAdmin() ||
-          isGlobalModeratorUser();
+        allow read: if isAdmin() ||
+          isGlobalModeratorUser() ||
+          (isApprovedStudent() && isNotBanned());
 
         allow create: if isApprovedStudent() &&
           isActiveUser() &&
@@ -581,8 +624,9 @@ service cloud.firestore {
           request.resource.data.text.size() <= 2500 &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text', 'isEdited', 'updatedAt']);
 
-        allow delete: if isApprovedStudent() &&
-          (resource.data.authorId == request.auth.uid || isAdmin());
+        allow delete: if isAdmin() ||
+          isGlobalModeratorUser() ||
+          (isAuthenticated() && isNotBanned() && resource.data.authorId == request.auth.uid);
       }
     }
 
@@ -605,6 +649,60 @@ service cloud.firestore {
       allow update, delete: if isAdmin() ||
         isGlobalModeratorUser() ||
         isChannelModerator(resource.data.channelId);
+    }
+
+    // ===============================================================
+    // Builder Contribution Stats (/communityContributionStats/{uid})
+    // Public leaderboard reads; STRICTLY server-only writes via Admin SDK
+    // ===============================================================
+    match /communityContributionStats/{uid} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ===============================================================
+    // Trusted Contribution Audit Events (/communityContributionEvents/{eventId})
+    // Owner or Admin/Moderator reads; STRICTLY server-only writes via Admin SDK
+    // ===============================================================
+    match /communityContributionEvents/{eventId} {
+      allow read: if (isAuthenticated() && resource.data.uid == request.auth.uid) ||
+        isAdmin() ||
+        isGlobalModeratorUser();
+      allow write: if false;
+    }
+
+    // ===============================================================
+    // Feedback & Feature Suggestions (/feedbackSubmissions/{submissionId})
+    // Private to the submitting member and Moderators/Admins
+    // ===============================================================
+    match /feedbackSubmissions/{submissionId} {
+      allow read: if (isAuthenticated() && resource.data.authorId == request.auth.uid) ||
+        isAdmin() ||
+        isGlobalModeratorUser();
+
+      allow create: if isAuthenticated() &&
+        isNotBanned() &&
+        request.resource.data.authorId == request.auth.uid &&
+        request.resource.data.title is string &&
+        request.resource.data.title.size() >= 3 &&
+        request.resource.data.title.size() <= 160 &&
+        request.resource.data.explanation is string &&
+        request.resource.data.explanation.size() >= 10 &&
+        request.resource.data.explanation.size() <= 5000 &&
+        request.resource.data.category in ['feature_request', 'bug_report', 'ux_improvement', 'general_suggestion'] &&
+        request.resource.data.status == 'received' &&
+        request.resource.data.isUseful == false &&
+        request.resource.data.submissionPointAwarded == false &&
+        request.resource.data.bonusPointAwarded == false;
+
+      allow update, delete: if isAdmin() || isGlobalModeratorUser();
+    }
+
+    // ===============================================================
+    // Internal Staff Notes on Feedback (/feedbackAdminNotes/{submissionId})
+    // ===============================================================
+    match /feedbackAdminNotes/{submissionId} {
+      allow read, write: if isAdmin() || isGlobalModeratorUser();
     }
   }
 }
